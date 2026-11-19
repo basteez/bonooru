@@ -1,0 +1,24 @@
+[package]
+name = "ocarina-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "Throwaway feasibility spike: Ocarina Bot desktop app in Rust + egui (ADR-008)"
+
+[dependencies]
+eframe = "0.37.0"
+egui = "0.37.0"
+serialport = "4.10.1"  # default feature `libudev` gives VID/PID on Linux
+rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
+sysinfo = { version = "0.40.4", default-features = false, features = ["disk"] }
+midly = { version = "0.5.3", default-features = false, features = ["alloc", "std"] }
+crossbeam-channel = "0.5.17"
+
+[dev-dependencies]
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+opt-level = 3

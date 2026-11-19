@@ -1,0 +1,89 @@
+# Throwaway spike CI: build the egui feasibility app for 3 OS and upload unsigned binaries.
+name: spike-app-egui
+
+on:
+  push:
+    paths:
+      - "spikes/app-egui/**"
+      - ".github/workflows/spike-app-egui.yml"
+  pull_request:
+    paths:
+      - "spikes/app-egui/**"
+      - ".github/workflows/spike-app-egui.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bin: ocarina-spike
+          - os: windows-latest
+            bin: ocarina-spike.exe
+          - os: macos-latest
+            bin: ocarina-spike
+    defaults:
+      run:
+        working-directory: spikes/app-egui
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # serialport (libudev), cpal (ALSA), winit/wgpu (X11 + Wayland + xkbcommon)
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libudev-dev libasound2-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/app-egui -> target
+
+      - name: Test (GUI-free core)
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Build release
+        run: cargo build --locked --release
+
+      - name: Package (tar keeps the exec bit, which upload-artifact's zip drops)
+        shell: bash
+        run: |
+          ls -l target/release/${{ matrix.bin }}
+          mkdir -p dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp target/release/${{ matrix.bin }} dist/
+          else
+            tar czf dist/ocarina-spike-$RUNNER_OS.tar.gz -C target/release ${{ matrix.bin }}
+          fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ocarina-spike-${{ runner.os }}-${{ runner.arch }}
+          path: spikes/app-egui/dist/*
+          if-no-files-found: error
+          retention-days: 14

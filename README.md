@@ -14,9 +14,9 @@ PC (desktop app) ──USB──▶ bridge (RP2040-Zero) ──UART──▶ con
 |------------------------|-------------------------------------------------------------------|
 | `firmware/`            | One CMake project (pico-sdk + TinyUSB), two targets               |
 | `firmware/common/`     | Code shared by both boards: link protocol, version, UART          |
-| `firmware/bridge/`     | PC-side board: USB CDC ↔ UART, 1200-baud touch → BOOTSEL          |
+| `firmware/bridge/`     | PC-side board: frame-aware USB CDC ↔ UART pipe + link heartbeat, 1200-baud touch → BOOTSEL |
 | `firmware/controller/` | Switch-side board: Pro Controller emulation, scheduler, watchdog  |
-| `app/`                 | Desktop app (Python): score import, preview, playback, flasher    |
+| `app/`                 | Desktop app (stack per ADR-008): score import, preview, playback, flasher |
 | `spikes/`              | Throwaway experiments (M2 timing / fingering checks)              |
 | `docs/`                | Reference docs used during development                            |
 | `_bmad/`, `_bmad-output/` | BMad Method tooling and planning artifacts                     |
