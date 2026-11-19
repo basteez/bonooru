@@ -1,0 +1,31 @@
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Firmware (CMake / pico-sdk)
+build/
+firmware/build*/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.map
+*.dis
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+.coverage
+htmlcov/
