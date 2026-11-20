@@ -32,3 +32,9 @@ htmlcov/
 
 # UX references: copyrighted game screenshots, never commit
 _bmad-output/planning-artifacts/ux-designs/*/imports/
+
+# BMad framework and its skills: installed locally, never committed.
+# Only BMad outputs (_bmad-output/) belong in the repo.
+_bmad/
+.claude/skills/bmad-*/
+.claude/skills/gds-*/
