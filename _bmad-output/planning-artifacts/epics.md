@@ -311,7 +311,7 @@ The owner knows, from measurements on their own Switch 2, which buttons and modi
 ### Epic 2: Own controller firmware plays on the Switch (M3)
 The owner's own controller firmware enumerates as a wired Pro Controller (P2), reports `console_ready`, enforces the safety rules and plays a hard-coded test timeline on the console with ≤ 1 frame jitter.
 **Covers:** FR-23 (firmware side), NFR-02, NFR-05 (controller watchdog), NFR-11; AD-1, AD-2, AD-3, AD-5, AD-6, AD-7, AD-8, AD-9, AD-10, AD-11, AD-12, AD-14, AD-19, AD-20; F.1–F.6, F.9, F.10, H.2.
-**Notes:** runs in parallel with Epic 1; only U11 (other ocarina inputs) can change the AD-9 allow-list. No logic analyser is available: jitter is checked in two layers — firmware self-timing in debug builds (apply time vs `t_us`, IN-poll intervals → `report_period_us`, reported via debug STATUS/EVENT; max lateness ≤ one report period) and end-to-end console-audio recording with onset detection (e.g. aubio; IOI p95 ≤ 1 frame).
+**Notes:** runs in parallel with Epic 1, with two sync points: Story 2.4 takes the AD-9 allow-list as confirmed by Story 1.1 (U11), and Story 2.5 needs the measured profile from Story 1.5. Stories 2.1–2.3 are independent of Epic 1. No logic analyser is available: jitter is checked in two layers — firmware self-timing in debug builds (apply time vs `t_us`, IN-poll intervals → `report_period_us`, reported via debug STATUS/EVENT; max lateness ≤ one report period) and end-to-end console-audio recording with onset detection (e.g. aubio; IOI p95 ≤ 1 frame).
 
 ### Epic 3: The PC drives the controller through the bridge (M4)
 With the bridge firmware flashed, a GUI-free development tool on the PC streams frames end to end and plays a melody on the Switch; unplugging the bridge or a wire returns the controller to neutral within 100 ms.
@@ -392,8 +392,12 @@ So that the scripted spikes and the walking skeleton can run without any firmwar
 
 **Acceptance Criteria:**
 
+**Given** the 2wiCC / 2wiCC_Comms serial command set is not recorded in this repo (only `+QD` appears in Spike 0b)
+**When** the owner reads the upstream 2wiCC and RiiDraw sources and docs (reading only, no code copied)
+**Then** `spikes/README.md` documents the subset the script uses: command syntax, the state encoding (buttons, hat, sticks), how queued states are timed (per frame or timestamp), the queue size and how the script avoids overflowing it, with links to the sources
+
 **Given** the 2wiCC pair wired as in Spike 0b and the bridge port at 460800 8N1
-**When** the owner runs the script in `spikes/` with a small input file of `(time, buttons, hat, stick)` rows
+**When** the owner runs the script in `spikes/` (Python 3 with `pyserial`, single file, run with `uv run`) with a small input file of `(time, buttons, hat, stick)` rows
 **Then** the console receives the presses in order using the 2wiCC queue commands
 **And** the script and its README say it is throwaway spike code, licensed MIT, and that 2wiCC binaries are used for testing only and never committed
 
@@ -467,7 +471,7 @@ So that I hear the project work end to end early (R4).
 
 ## Epic 2: Own controller firmware plays on the Switch (M3)
 
-The owner's own controller firmware enumerates as a wired Pro Controller (P2), reports `console_ready`, enforces the safety rules and plays a hard-coded test timeline on the console with ≤ 1 frame jitter. Runs in parallel with Epic 1; only U11 can change the AD-9 allow-list. Jitter is measured in two layers (firmware self-timing + console audio), because no logic analyser is available.
+The owner's own controller firmware enumerates as a wired Pro Controller (P2), reports `console_ready`, enforces the safety rules and plays a hard-coded test timeline on the console with ≤ 1 frame jitter. Runs in parallel with Epic 1, except two sync points: Story 2.4 starts after Story 1.1 (U11 can change the AD-9 allow-list) and Story 2.5 starts after Story 1.5 (measured profile). Jitter is measured in two layers (firmware self-timing + console audio), because no logic analyser is available.
 
 ### Story 2.1: Firmware build skeleton and CI
 
@@ -490,7 +494,7 @@ So that both boards are always built the same way from day one.
 
 **Given** a push to any branch
 **When** the GitHub Actions firmware job runs on ubuntu
-**Then** it uses the pinned Arm GNU Toolchain 15.2.Rel1 and picotool 2.3.1, uploads `bridge.uf2` and `controller.uf2`, runs `ctest` for `host-tests`, and fails if a grep finds a GPIO number outside `pins.h`
+**Then** it uses the pinned Arm GNU Toolchain 15.2.Rel1 and picotool 2.3.1, uploads `bridge.uf2` and `controller.uf2`, runs `ctest --no-tests=error` for `host-tests` (this story adds one trivial host test, e.g. that `pins.h` defines GP0, GP1 and GP16, so the gate is real from day one), and fails if a grep finds a GPIO number outside `pins.h`
 **And** the firmware version comes from `git describe` with fallback `0.0.0-dev` (AD-14)
 
 ### Story 2.2: Protocol library and conformance vectors
