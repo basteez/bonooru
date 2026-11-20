@@ -84,7 +84,7 @@ SPIKE_AUTOPLAY=1 SPIKE_AUDIO=1 cargo run --release   # stress roll + audio, fram
 | 4. UF2 flasher (simulated) | PASS | Copied → WaitingForReboot → Done (volume gone after ~310 ms). |
 | 4b. Real BOOTSEL volume detection | PASS | Zero plugged with BOOT held: `/Volumes/RPI-RP2` detected, label "RPI-RP2", model "Raspberry Pi RP2", board "RPI-RP2"; listed but not selectable (no real flash done). |
 | Gamepad stub | PASS | Pointer press/release pairs correct; holding a key: 1 press, 1 release, 101 auto-repeats ignored. |
-| 5. CI on 3 OS | NOT RUN | Needs a push to GitHub. |
+| 5. CI on 3 OS | PASS | GitHub Actions run 44707349933 (2026-11-20): macOS ARM64, Linux x64 and Windows x64 release builds all succeeded; zipped artifacts 4.8 MB / 8.1 MB / 6.1 MB. Runtime on Windows/Linux still untested by hand. |
 
 ### Findings for the real app
 - macOS lists each device twice (`/dev/cu.*` and `/dev/tty.*`): show and use only `cu.*`.
