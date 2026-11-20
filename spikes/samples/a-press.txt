@@ -1,0 +1,6 @@
+# Minimal check: press A for 500 ms, then release. Expect one A press and release
+# on the console; Ctrl+C during the press must release A at once.
+# time(ms)  buttons  hat  stick
+0           -        -    -
+500         A        -    -
+1000        -        -    -
