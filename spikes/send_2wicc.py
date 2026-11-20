@@ -23,6 +23,7 @@ Upstream sources (read only):
 Usage: uv run spikes/send_2wicc.py --port PORT FILE
        uv run spikes/send_2wicc.py --dry-run FILE
        uv run spikes/send_2wicc.py --list-ports
+       uv run spikes/send_2wicc.py --port PORT --announce FILE   # print row labels as they play
 """
 
 from __future__ import annotations
@@ -199,6 +200,7 @@ class Row:
     line: int
     time: Time
     state: State
+    label: str = ""  # the row's `# comment`, shown only with --announce
 
 
 _FRAMES_RE = re.compile(r"[0-9]+[fF]")
@@ -278,7 +280,8 @@ def parse_lines(lines: Iterable[str]) -> list[Row]:
     """Parse input rows: `time [buttons [hat [stick]]]`, `#` starts a comment."""
     rows: list[Row] = []
     for n, raw in enumerate(lines, start=1):
-        text = raw.split("#", 1)[0].strip()
+        text, _, comment = raw.partition("#")
+        text = text.strip()
         if not text:
             continue
         toks = text.split()
@@ -290,7 +293,7 @@ def parse_lines(lines: Iterable[str]) -> list[Row]:
             state = State(parse_buttons(toks[1]), parse_hat(toks[2]), parse_stick(toks[3]))
         except ParseError as e:
             raise ParseError(f"line {n}: {e}") from None
-        rows.append(Row(n, t, state))
+        rows.append(Row(n, t, state, comment.strip()))
     return rows
 
 
@@ -399,7 +402,8 @@ class Pacer:
     """
 
     def __init__(self, write: Callable[[bytes], object], clock: Callable[[], float],
-                 sleep: Callable[[float], object], frame_rate: float = 60.0, max_lead: int = 30):
+                 sleep: Callable[[float], object], frame_rate: float = 60.0, max_lead: int = 30,
+                 announce: Sequence[tuple[int, str]] = (), emit: Callable[[str], object] | None = None):
         if not 1 <= max_lead <= MAX_LEAD_LIMIT:
             raise ValueError(f"max_lead must be 1..{MAX_LEAD_LIMIT}")
         self.write = write
@@ -410,6 +414,16 @@ class Pacer:
         self.sent = 0
         self.max_seen_lead = 0
         self.min_seen_lead: int | None = None
+        # --announce: (frame, label) pairs in frame order, printed once the frame is played.
+        self.announce = list(announce)
+        self.emit = emit if emit is not None else (lambda text: print(text, flush=True))
+        self._next_announce = 0
+
+    def _announce_played(self, played: int) -> None:
+        while self._next_announce < len(self.announce) and self.announce[self._next_announce][0] <= played:
+            frame, label = self.announce[self._next_announce]
+            self.emit(f"t={frame / self.frame_rate:.1f}s  {label}")
+            self._next_announce += 1
 
     def played(self, t0: float) -> int:
         return int((self.clock() - t0) * self.frame_rate)
@@ -426,6 +440,8 @@ class Pacer:
         self.max_seen_lead = first
         while self.sent < n:
             played = self.played(t0)
+            if self.announce:
+                self._announce_played(played)
             lead = self.sent - played
             self.min_seen_lead = lead if self.min_seen_lead is None else min(self.min_seen_lead, lead)
             if lead <= 0:
@@ -439,7 +455,11 @@ class Pacer:
         # Let the queue drain: the last frame plus one tick of start offset.
         end = t0 + (n + 1) * period
         while (left := end - self.clock()) > 0:
+            if self.announce:
+                self._announce_played(self.played(t0))
             self.sleep(max(0.001, min(left, period)))
+        if self.announce:
+            self._announce_played(n)
 
 
 def send_stop(write: Callable[[bytes], object], attempts: int = 3) -> bool:
@@ -477,13 +497,14 @@ def _set_handlers(handlers: dict) -> dict:
 
 
 def play(commands: Sequence[str], write: Callable[[bytes], object], clock, sleep,
-         frame_rate: float, max_lead: int, stats: dict | None = None) -> int:
+         frame_rate: float, max_lead: int, stats: dict | None = None,
+         announce: Sequence[tuple[int, str]] = (), emit: Callable[[str], object] | None = None) -> int:
     """Run the pacer; always send the stop sequence. Returns the exit code.
 
     If `stats` is given, stats["sent"] is set to the frames actually queued.
     """
     code = 1
-    pacer = Pacer(write, clock, sleep, frame_rate, max_lead)
+    pacer = Pacer(write, clock, sleep, frame_rate, max_lead, announce, emit)
     originals = {s: signal.getsignal(s) for s in STOP_SIGNALS}
     _set_handlers({s: _raise_terminated for s in STOP_SIGNALS if s != signal.SIGINT})
     try:
@@ -536,13 +557,28 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"max frames queued ahead of playback, 1..{MAX_LEAD_LIMIT} (default 30)")
     p.add_argument("--dry-run", action="store_true", help="print the lines instead of opening a port")
     p.add_argument("--list-ports", action="store_true", help="list serial ports and exit")
+    p.add_argument("--announce", action="store_true",
+                   help="print each row's `# label` when its first frame plays (estimated from the host "
+                        "clock); with --dry-run, show the labels next to the frame lines")
     return p
 
 
-def dry_run_lines(commands: Sequence[str], frame_rate: float) -> list[str]:
+def announcements(rows: Sequence[Row], frame_rate: float) -> list[tuple[int, str]]:
+    """(first frame, label) for every labelled row, in frame order (input to --announce)."""
+    return [(time_to_frame(r.time, frame_rate), r.label) for r in rows if r.label]
+
+
+def dry_run_lines(commands: Sequence[str], frame_rate: float,
+                  announce: Sequence[tuple[int, str]] = ()) -> list[str]:
+    labels: dict[int, list[str]] = {}
+    for frame, label in announce:
+        labels.setdefault(frame, []).append(label)
     out = [f"{'pre':>6} {'':>9}  {line}" for line in PREAMBLE]
     for i, cmd in enumerate(commands):
-        out.append(f"{i:>6} {i * 1000.0 / frame_rate:>7.1f}ms  {cmd}")
+        line = f"{i:>6} {i * 1000.0 / frame_rate:>7.1f}ms  {cmd}"
+        if i in labels:
+            line += "  # " + " | ".join(labels[i])
+        out.append(line)
     out += [f"{'stop':>6} {'':>9}  {line}" for line in STOP_SEQUENCE]
     return out
 
@@ -593,9 +629,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     commands = [encode(s) for s in frames]
     duration = len(frames) / args.frame_rate
+    announce = announcements(rows, args.frame_rate) if args.announce else []
 
     if args.dry_run:
-        for line in dry_run_lines(commands, args.frame_rate):
+        for line in dry_run_lines(commands, args.frame_rate, announce):
             print(line)
         print(f"summary: {len(rows)} rows, {len(frames)} frames, {duration:.3f} s, port (dry run)")
         return 0
@@ -612,7 +649,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     stats: dict = {"sent": 0}
     try:
-        code = play(commands, write, time.monotonic, time.sleep, args.frame_rate, args.max_lead_frames, stats)
+        code = play(commands, write, time.monotonic, time.sleep, args.frame_rate, args.max_lead_frames, stats,
+                    announce)
     finally:
         ser.close()
     print(f"summary: {len(rows)} rows, {len(frames)} frames, {duration:.3f} s, port {args.port}, exit {code}"
