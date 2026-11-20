@@ -28,14 +28,14 @@ UART RX (IRQ, break flag read; no 8-bit DMA) → frame decoder (COBS + CRC, type
 | `firmware/common/` | Shared: link protocol, version, UART |
 | `firmware/bridge/` | frame-aware USB CDC ↔ UART pipe + heartbeat, 1200-baud touch → BOOTSEL |
 | `firmware/controller/` | Pro Controller emulation, scheduler, watchdog |
-| `app/` | Desktop app (stack per ADR-008): score import, preview, playback, flasher |
+| `app/` | Desktop app, Rust + egui/eframe Cargo project (ADR-008): score import, preview, playback, flasher |
 | `spikes/` | Throwaway experiments (M2 timing / fingering checks) |
 | `docs/` | Reference docs used during development |
 
 ## Stack
 
 - Firmware: C, pico-sdk 2.3.1 (BSD-3) + TinyUSB 0.18.0 (MIT), picotool 2.3.1 (ADR-004, AD-1).
-- App: conditional per ADR-008 (AD-18) — Rust + egui/eframe if the spike passes, otherwise Python 3.12 + PySide6; per-option libraries and packaging in `app-stack-options.md`. Verdict before M5 (Q7).
+- App: Rust + egui/eframe (ADR-008, accepted 2026-11-20; AD-18) — Cargo workspace (GUI-free core crate + app binary); crates `eframe`/`egui` 0.37, `serialport`, `midly`, `rodio`; full list and packaging in `app-stack-options.md`. On macOS only `/dev/cu.*` ports are used; audio output open failures show Retry and the output re-opens on default-device change.
 - Versioning: one repo version `vX.Y.Z`; firmware and app from the same tag agree on the protocol version (FR-10).
 
 ## Hardware and wiring

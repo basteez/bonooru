@@ -38,7 +38,7 @@ flowchart TB
   WD["Link / app watchdog,<br/>USB events"] -->|abort: NEUTRAL, set latch| MODE
 ```
 
-## GUI screens (first idea, stack per ADR-008)
+## GUI screens (first idea, Rust + egui per ADR-008)
 
 ```mermaid
 flowchart LR

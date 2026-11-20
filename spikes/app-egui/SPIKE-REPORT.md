@@ -72,3 +72,20 @@ SPIKE_AUTOPLAY=1 SPIKE_AUDIO=1 cargo run --release   # stress roll + audio, fram
 3. Tab 4: "Create fake RPI-RP2 + dummy UF2", "Scan volumes", "Flash simulated drive". The progress bar should fill and the log should end with "flash OK".
 4. Gamepad tab: hold a key and check that `repeats ignored` rises while `presses` stays at 1. Switch away from the window while holding a key and check the button releases.
 5. Push a branch and check the 3 CI artefacts download and start (Windows SmartScreen and macOS Gatekeeper will warn, because they are unsigned).
+
+## Owner hand test (2026-11-20, macOS arm64)
+
+| Check | Result | Notes |
+|---|---|---|
+| 1. Discovery with a real RP2040-Zero (RiiDraw firmware) | PASS | Listed as `2e8a:000a`, manufacturer/product "RiiDraw", serial shown, highlighted yellow (not green: product ≠ filter). RiiDraw uses the same generic VID:PID chosen for our bridge (Q1), confirming the product-string / confirmed-port rule before any 1200-baud touch. |
+| 1b. Hot-plug | PASS | Unplug/replug picked up by the 1 s auto-rescan. |
+| 2. Piano roll | PASS | Pan/zoom smooth; cpu/frame p50 ≈ 0.31–0.36 ms, p99 ≈ 0.38–0.41 ms. |
+| 3. Audio preview | PASS (after retry) | First attempt failed with "Error opening the stream with the OS" on AirPods (transient, likely Bluetooth profile switch); worked on retry. Playhead/audio offset judged very small by ear. |
+| 4. UF2 flasher (simulated) | PASS | Copied → WaitingForReboot → Done (volume gone after ~310 ms). |
+| 4b. Real BOOTSEL volume detection | PASS | Zero plugged with BOOT held: `/Volumes/RPI-RP2` detected, label "RPI-RP2", model "Raspberry Pi RP2", board "RPI-RP2"; listed but not selectable (no real flash done). |
+| Gamepad stub | PASS | Pointer press/release pairs correct; holding a key: 1 press, 1 release, 101 auto-repeats ignored. |
+| 5. CI on 3 OS | NOT RUN | Needs a push to GitHub. |
+
+### Findings for the real app
+- macOS lists each device twice (`/dev/cu.*` and `/dev/tty.*`): show and use only `cu.*`.
+- Audio device open can fail transiently (Bluetooth): show a clear error with a Retry action and re-open the output when the default device changes, instead of falling back to silent mode.

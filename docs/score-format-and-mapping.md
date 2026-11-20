@@ -102,10 +102,12 @@ r/4                # rest
 
 Conclusion: possible as a "fun mode" (real-time `SET_STATE`), after file playback works. Decision: ADR-007 (author's notes).
 
-## Libraries (host) **[HYPOTHESIS — unverified]**
+## Libraries (app)
 
-- `mido` (MIT) to read `.mid` files; `python-rtmidi` (MIT) for live input
-- pure Python for the rest; music21 only if MusicXML import is ever needed (too heavy for this)
+The app is Rust + egui/eframe (ADR-008):
+
+- `midly` (Unlicense) to read `.mid` files; `midir` (MIT) for live input
+- plain Rust for the rest; MusicXML import is not planned (ADR-007)
 
 ## Related
 

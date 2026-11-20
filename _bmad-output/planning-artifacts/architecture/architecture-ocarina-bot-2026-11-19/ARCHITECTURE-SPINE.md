@@ -4,14 +4,15 @@ type: architecture-spine
 purpose: build-substrate
 altitude: initiative
 paradigm: 'compile-ahead / play-on-device; firmware: layered with a hardware-free core; app: hexagonal (functional core, imperative shell, sans-IO link)'
-scope: 'Whole system: firmware (common, bridge, controller), desktop app (stack-independent core + UI), link protocol realisation, build, CI and release'
+scope: 'Whole system: firmware (common, bridge, controller), desktop app (Rust + egui/eframe: GUI-free core crate + UI), link protocol realisation, build, CI and release'
 status: final
 created: '2026-11-19'
-updated: '2026-11-19'
+updated: '2026-11-20'
 binds: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7, CAP-8, CAP-9, CAP-10, CAP-11, CAP-12, NFR-01, NFR-04, NFR-05, NFR-06, NFR-07, NFR-09, NFR-10]
 sources:
   - _bmad-output/specs/spec-ocarina-bot/SPEC.md (+ companions, docs/*)
   - _bmad-output/planning-artifacts/research/app-stack-evaluation.md
+  - spikes/app-egui/SPIKE-REPORT.md
 companions:
   - app-stack-options.md
 ---
@@ -224,7 +225,7 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
 
 - **Binds:** bridge, app device discovery, flasher, FR-08, FR-10, R8
 - **Prevents:**
-  - a discovery method that differs by OS (Windows does not report the USB product string through `serialport` or `pyserial`);
+  - a discovery method that differs by OS (Windows does not report the USB product string through `serialport`);
   - a 1200-baud touch rebooting somebody else's board;
   - two `tud_cdc_line_coding_cb` definitions.
 - **Rule:**
@@ -293,16 +294,17 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
   - User copies, including calibration output, live in the OS config dir and override the bundled default with the same name and game version. A user copy that cannot be migrated is refused with a message.
   - App settings live in a separate file.
 
-### AD-18 — App stack (ADR-008, conditional)
+### AD-18 — App stack: Rust + egui/eframe (ADR-008, accepted 2026-11-20)
 
 - **Binds:** app/
-- **Prevents:** stack-specific choices leaking into the core design before the spike verdict.
+- **Prevents:** a second app stack, GUI types leaking into the core, and platform quirks found by the spike resurfacing in the real app.
 - **Rule:**
-  - If `spikes/app-egui` meets exit criteria (a)–(e) of the research report, the app uses Rust + egui/eframe. Otherwise it uses Python 3.12 + PySide6.
-  - **NFR-07 amended 2026-11-19 (Q2 resolved):** MPL-2.0 for Rust `serialport` and LGPL-3 for Qt are both allowed when used unmodified.
-  - The verdict must land before M5 starts.
-  - AD-15 to AD-17 and the module boundaries apply to both options. Per-option details are in `app-stack-options.md`.
-  - The core/UI boundary is enforced mechanically: by a separate crate, or by an import-linter contract.
+  - The app is Rust + egui/eframe, a Cargo workspace in `app/`. Crates proven by `spikes/app-egui`: `eframe`/`egui` 0.37 (pinned exactly), `serialport`, `midly`, `rodio`. Full list, versions and packaging: `app-stack-options.md`.
+  - The core/UI boundary is enforced mechanically: the core crate has no `egui`/`eframe` dependency. AD-15 to AD-17 and the module boundaries apply.
+  - **Serial ports on macOS.** Each device appears as `/dev/cu.*` and `/dev/tty.*`; discovery shows and opens only `cu.*`.
+  - **Audio output.** Opening the output device can fail transiently (e.g. Bluetooth profile switch). The UI shows a clear error with a Retry action, and the audio adapter re-opens the output when the default device changes; it never silently falls back to no sound.
+  - **NFR-07 amended 2026-11-19 (Q2 resolved):** `serialport` is MPL-2.0, used unmodified. egui's default fonts are OFL-1.1 / Ubuntu-font-1.0; their licence texts ship with the app (AD-21), or the fonts are replaced.
+  - **Rejected alternative:** Python 3.12 + PySide6 (bundle ~113 MB vs ~11 MB Rust binary; LGPL Qt + FFmpeg obligations; PyInstaller antivirus false positives).
 
 ### AD-19 — STATUS and controller→app reporting
 
@@ -332,8 +334,8 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
 - **Prevents:** a well-meant update check or telemetry feature, and a non-compliant dependency slipping into a release.
 - **Rule:**
   - The app opens no network connections.
-  - CI runs a licence gate (`cargo-deny` or `pip-licenses --fail-on`) against the NFR-07 allow-list, as amended.
-  - Releases ship a third-party notices file and the project licence.
+  - CI runs a licence gate (`cargo-deny`) against the NFR-07 allow-list, as amended.
+  - Releases ship a third-party notices file (including the MPL-2.0 `serialport` notice with a source pointer and the OFL/Ubuntu font licence texts) and the project licence.
 
 ## Consistency Conventions
 
@@ -360,7 +362,7 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
 | CMake | ≥ 3.25 |
 | Board | `waveshare_rp2040_zero` |
 | UART link | 460800 8N1 (build constant) |
-| App language and toolkit | per AD-18; see `app-stack-options.md` |
+| App language and toolkit | Rust 1.100.0 + egui/eframe 0.37.0 (AD-18); crates in `app-stack-options.md` |
 | CI | GitHub Actions |
 
 ## Structural Seed
@@ -377,11 +379,11 @@ firmware/
   controller/platform/        # core0 usb, core1 loop, uart, seqlock
   controller/profile_p2/      # P2 descriptors + handshake + report
   tests/                      # host-tests preset (ctest)
-app/
-  core/      # score, pipeline, profile, protocol, link (sans-IO), device, flasher, preview
+app/        # Cargo workspace, rust-toolchain.toml
+  core/      # crate ocb-core (no egui): score, pipeline, profile, protocol, link (sans-IO), device, flasher, preview
   adapters/  # serial, drives+fs, audio, midi, config dir
   services/  # worker threads, command/event types
-  ui/        # setup wizard, song, play, gamepad, settings, advanced
+  ui/        # egui: setup wizard, song, play, gamepad, settings, advanced
   profiles/  # bundled default mapping profiles (TOML)
   tests/
 .github/workflows/  # ci.yml (from the first code story), release.yml (M8-M9)
@@ -438,7 +440,7 @@ Release assets are `ocarina-bot-<ver>-<os>-<arch>.<ext>`, `bridge.uf2` and `cont
 | Q4 | Restate NFR-04 on inter-onset error (R3) | **Resolved 2026-11-19: accepted** — p95 ≤ 1 frame, max ≤ 1.5 frames, drift < 1 frame over 5 min; T.1 rewritten. | M7 |
 | Q5 | Project licence | **Resolved 2026-11-19: MIT** (LICENSE at repo root). | AD-21 |
 | Q6 | macOS universal vs per-arch build; Linux AppImage vs tarball | **Resolved 2026-11-19:** universal `.app`; AppImage, plus a tarball if it is cheap. | M9 |
-| Q7 | ADR-008 spike verdict date | **Resolved 2026-11-19:** before M5 starts; owner hand-test of `spikes/app-egui` pending. | M5 |
+| Q7 | ADR-008 spike verdict | **Resolved 2026-11-20: Rust + egui/eframe.** Spike passed; owner hand test passed (`spikes/app-egui/SPIKE-REPORT.md`). ADR-008 accepted. | — |
 
 ## Deferred
 

@@ -1,6 +1,6 @@
 # Decisions (ADR-001 … ADR-008)
 
-Written 2026-11-18. ADR-001…006 **accepted** 2026-11-18; ADR-007 **accepted** 2026-11-19. ADR-005's language part **reopened by ADR-008** (2026-11-19). ADR-008 **conditional — decided by the `spikes/app-egui` verdict, due before M5 (Q7)**. Architecture ADs: `ARCHITECTURE-SPINE.md`.
+Written 2026-11-18. ADR-001…006 **accepted** 2026-11-18; ADR-007 **accepted** 2026-11-19. ADR-005's language part reopened by ADR-008 (2026-11-19) and settled by it: **ADR-008 accepted 2026-11-20 — the app is Rust + egui/eframe**. Architecture ADs: `ARCHITECTURE-SPINE.md`.
 
 ## ADR-001 — Two RP2040-Zero boards (bridge + controller) — accepted
 
@@ -23,7 +23,7 @@ Written 2026-11-18. ADR-001…006 **accepted** 2026-11-18; ADR-007 **accepted** 
 
 ## ADR-003 — Timing scheduled on the controller board — accepted
 
-- **Context:** onsets within ~1 game frame (16.7 ms at 60 fps), no drift; PC jitter from OS scheduling (Windows ~1–15 ms), USB-CDC buffering, Python GC; 2wiCC's per-frame queue; RiiDraw had desync on large drawings.
+- **Context:** onsets within ~1 game frame (16.7 ms at 60 fps), no drift; PC jitter from OS scheduling (Windows ~1–15 ms), USB-CDC buffering, runtime pauses (e.g. garbage collection); 2wiCC's per-frame queue; RiiDraw had desync on large drawings.
 - **Decision:** app compiles the whole piece into `(t_us, state)` events with absolute times from START; controller buffers them and applies each from a 1 MHz hardware timer; app streams ahead with credit flow control; real-time `SET_STATE` only for virtual gamepad / live mode.
 - **Consequences:** timing independent of host OS; µs events work for 30 or 60 fps (app still snaps to the profile's frame grid); firmware needs queue + scheduler and underrun handling (neutral + event); live MIDI cannot use this path (ADR-007).
 - **Rejected:** app sends each state at its time (OS jitter into the music); fixed 60 Hz frame queue (assumes 60 fps); VSYNC input (no video tap).
@@ -35,14 +35,14 @@ Written 2026-11-18. ADR-001…006 **accepted** 2026-11-18; ADR-007 **accepted** 
 - **Licences surveyed:** 2wiCC none; GP2040-CE MIT; ProBridge-S2 MIT; Pico-PIO-USB MIT; pico-sdk BSD-3; TinyUSB MIT.
 - **Rejected:** 2wiCC as-is (no licence, frame queue only); fork GP2040-CE (too large); Arduino-Pico (less USB timing control); MicroPython/CircuitPython (HID descriptor + µs timing harder).
 
-## ADR-005 — Cross-platform Python app with built-in flasher — accepted; language part reopened by ADR-008
+## ADR-005 — Cross-platform app with built-in flasher — accepted; language settled by ADR-008 (Rust)
 
-- **Reopened (2026-11-19):** the language, packaging and library choices below are superseded by ADR-008 (conditional: Rust + egui or Python 3.12 + PySide6). The flashing flow, the no-toolchain rule and the GUI-only rule stand for either stack.
-- **Decision (original):** Python 3.12+, packaged per OS with PyInstaller (no Python install for users). GUI only, no CLI for users (toolkit: ADR-008). Libraries: `pyserial` (ports, VID/PID lookup), `mido` + `python-rtmidi`; UF2s bundled in the app.
+- **Language (2026-11-20):** the app is **Rust + egui/eframe** (ADR-008). The original Python language, packaging and library choices below are superseded; the flashing flow, the no-toolchain rule and the GUI-only rule stand. Libraries: `serialport` (ports, VID/PID lookup), `midly` (`.mid`), `midir` (live MIDI, M10); UF2s bundled in the binary.
+- **Decision (original, superseded language part):** Python 3.12+, packaged per OS with PyInstaller (no Python install for users). GUI only, no CLI for users (toolkit: ADR-008). Libraries: `pyserial` (ports, VID/PID lookup), `mido` + `python-rtmidi`; UF2s bundled in the app.
 - **Flashing, RiiDraw style:** (1) user holds BOOT and plugs a Zero into the PC; (2) app finds the `RPI-RP2` drive (all mounted volumes, label + `INFO_UF2.TXT`); (3) user picks role (bridge / controller), app copies the UF2, waits for the drive to vanish; (4) app checks the new firmware (bridge: USB product string; controller: HELLO through the bridge once wired). Bridge update without BOOT: 1200-baud touch → BOOTSEL → same copy. picotool not required.
 - **Consequences:** one code base, three OS; mass-storage copy is driverless. Linux: `RPI-RP2` may need auto-mount (udisks) or manual mount → detect and explain; serial access needs `dialout` group → check and explain. Controller board sits on the Switch, so it can only be flashed when moved to the PC.
-- **HYPOTHESIS (unverified):** mass-storage UF2 copy is reliable on all three OS — verify in M8; fallback PICOBOOT via `pyusb` or bundled picotool.
-- **Rejected:** bundle picotool (native binary + Windows driver); web app/WebSerial (no Firefox/Safari support); Rust/Go (slower iteration; Python fine for a non-real-time app) — superseded: Rust is back as an option in ADR-008.
+- **HYPOTHESIS (unverified):** mass-storage UF2 copy is reliable on all three OS — verify in M8; fallback PICOBOOT (USB library or bundled picotool).
+- **Rejected:** bundle picotool (native binary + Windows driver); web app/WebSerial (no Firefox/Safari support); Rust/Go (slower iteration; Python fine for a non-real-time app) — reversed 2026-11-20: Rust chosen in ADR-008.
 
 ## ADR-006 — Direct USB connection to the Switch 2 — accepted
 
@@ -59,10 +59,16 @@ Written 2026-11-18. ADR-001…006 **accepted** 2026-11-18; ADR-007 **accepted** 
 - **Consequences:** pipeline assumes look-ahead (global fingering optimisation); live mode reuses `SET_STATE`, not the queue.
 - **HYPOTHESIS (unverified):** live latency acceptable for "fun" use — judged after M6 with a key-to-sound test; live mode stays an M10 extra.
 
-## ADR-008 — App stack (language + GUI toolkit) — CONDITIONAL (verdict pending, Q7)
+## ADR-008 — App stack (language + GUI toolkit) — accepted 2026-11-20
 
-- **Context:** GUI only, easy for first-time users (FR-15, NFR-10); 3 OS, pre-built (NFR-01). Needs native file dialogs, timeline/piano-roll view, audio preview, step-by-step flashing wizard, on-screen gamepad, background serial I/O without freezing the UI. Screen flow: `architecture-diagrams.md`. Research: `_bmad-output/planning-artifacts/research/app-stack-evaluation.md`.
-- **Decision (conditional, AD-18):** if `spikes/app-egui` meets exit criteria (a)–(e) of the research report, the app uses **Rust + egui/eframe**; otherwise **Python 3.12 + PySide6** (QtWidgets). The verdict must land before M5 starts (Q7). Per-option libraries, packaging and risks: `app-stack-options.md`.
-- **Dropped:** CustomTkinter (per the research report), Dear PyGui, Flet, Toga.
-- **Licence:** covered by NFR-07 as amended 2026-11-19 (Q2) — MPL-2.0 Rust `serialport` (unmodified), LGPL-3 Qt (dynamically linked, onedir bundle).
-- **Consequences (either option):** hexagonal app — core (score, pipeline, profile, protocol, sans-IO link, device, flasher, preview) has no GUI, threads or I/O and is unit-testable; the core/UI boundary is enforced mechanically (separate crate or import-linter contract); one serial worker thread owns the port, the UI exchanges only messages with it (AD-16); AD-15–AD-17 apply unchanged.
+- **Context:** GUI only, easy for first-time users (FR-15, NFR-10); 3 OS, pre-built (NFR-01). Needs native file dialogs, timeline/piano-roll view, audio preview, step-by-step flashing wizard, on-screen gamepad, background serial I/O without freezing the UI. Screen flow: `architecture-diagrams.md`. Research: `_bmad-output/planning-artifacts/research/app-stack-evaluation.md`. Evidence: `spikes/app-egui/SPIKE-REPORT.md`.
+- **Decision (AD-18):** the app is **Rust + egui/eframe**. Crates from the spike: `eframe`/`egui` 0.37 (pin exactly), `serialport`, `midly`, `rodio`; full list and packaging in `app-stack-options.md`.
+- **Reasons:** spike passed — no exit criterion failed; owner hand test (macOS arm64) passed discovery of a real Zero, hot-plug, piano roll, audio preview, simulated flash and real `RPI-RP2` detection. Release binary ~11 MB (4.8 MB zipped), cold start ~115 ms, frame time p95 1.5 ms with ~2,000 notes on screen, idle CPU 0.2 %. All dependencies permissive or MPL-2.0; no LGPL/GPL-only.
+- **Rejected alternative:** Python 3.12 + PySide6 — bundle ~113 MB, LGPL Qt + FFmpeg obligations, PyInstaller antivirus false positives. Also dropped: CustomTkinter, Dear PyGui, Flet, Toga.
+- **Licence:** NFR-07 as amended 2026-11-19 — `serialport` is MPL-2.0 (used unmodified, source pointed to); egui's default fonts are OFL-1.1 / Ubuntu-font-1.0, so their licence texts ship with the app (or the fonts are replaced). See R12.
+- **Consequences:**
+  - `app/` is a Cargo workspace: core crate (score, pipeline, profile, protocol, sans-IO link, device, flasher, preview) has no egui/eframe dependency, no threads, no I/O, and is unit-testable; one serial worker thread owns the port, the UI exchanges only messages with it (AD-16); AD-15–AD-17 apply.
+  - macOS lists each serial device twice (`/dev/cu.*`, `/dev/tty.*`): the app shows and uses only `cu.*`.
+  - Audio output open can fail transiently (e.g. Bluetooth profile switch): show a clear error with Retry and re-open the output when the default device changes; no silent fallback.
+  - Cost: egui/rodio/sysinfo APIs churn between 0.x versions (pin exact versions); ~2 GB `target/`; Linux build needs `libudev` and ALSA dev packages.
+  - Not yet verified: GUI on Windows/Linux, 3-OS CI run (M5).

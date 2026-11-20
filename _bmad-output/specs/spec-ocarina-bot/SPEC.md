@@ -92,7 +92,7 @@ IDs in brackets map to `requirements.md` (verbatim FR/NFR, MoSCoW). Reference do
 - Controller profile P2 (wired Switch 1 Pro Controller); firmware profile-agnostic behind one interface (ADR-002). Users must enable "Pro Controller Wired Communication".
 - Timing is scheduled on the controller board from absolute-time events; the app never times notes itself (ADR-003).
 - Own firmware in C on pico-sdk + TinyUSB; P2 handshake clean-room; 2wiCC code never copied (ADR-004). Own code; dependencies permissive, or weak copyleft used unmodified (NFR-07, amended 2026-11-19).
-- App: language conditional per ADR-008 — Rust + egui/eframe if the `spikes/app-egui` spike passes, otherwise Python 3.12 + PySide6 (AD-18); pre-built for Windows/Linux/macOS, no toolchain for users (NFR-01, ADR-005); GUI only, no user CLI (FR-15).
+- App: Rust + egui/eframe (ADR-008, accepted 2026-11-20; AD-18), one native binary per OS; pre-built for Windows/Linux/macOS, no toolchain for users (NFR-01, ADR-005); GUI only, no user CLI (FR-15).
 - Architecture ADs (`ARCHITECTURE-SPINE.md`, AD-1…AD-21) bind all code; they and `firmware/common/proto/vectors/` take precedence over `docs/link-protocol.md` (AD-14).
 - Mapping and timing values live in a profile file per game version, never in code (FR-06, R14). Ocarina mechanics are unverified until M2 (`docs/ocarina-input-mechanics.md`).
 - Queue mode only emits ocarina inputs, never Home / Capture / + / − (C6); firmware refuses console firmware-update requests (C7).
@@ -120,7 +120,6 @@ Release 1.0 (M9): pre-built app for Windows, Linux and macOS plus both UF2s; a f
 
 ## Open Questions
 
-- **Q7 / ADR-008 (conditional):** Rust + egui/eframe if `spikes/app-egui` meets exit criteria (a)–(e) of the research report, else Python 3.12 + PySide6; spike verdict due before M5 starts.
 - Ocarina mechanics (unverified): button→pitch pairing, modifiers, fingering chart, unknowns U1–U11 — settled by spikes 1–2.
 - Does the game match official songs by buttons or by pitches (spike 1.8, R2)?
-- Unverified: Switch 2 polling rate with P2; game frame rate (30/60 fps); 460800 baud sufficiency; dock USB-A behaviour; UF2 mass-storage reliability on 3 OS; app library choices.
+- Unverified: Switch 2 polling rate with P2; game frame rate (30/60 fps); 460800 baud sufficiency; dock USB-A behaviour; UF2 mass-storage reliability on 3 OS; app GUI on Windows/Linux and 3-OS CI (spike ran its GUI on macOS only).

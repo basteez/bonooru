@@ -39,10 +39,10 @@ Verbatim from the requirements note. Priority: M = must, S = should, C = could (
 
 ## Open points on requirements
 
-- **Host UI** — decided: GUI only, like RiiDraw (FR-15, NFR-10). App stack conditional: ADR-008 (decided by the `spikes/app-egui` verdict before M5, Q7).
+- **Host UI** — decided: GUI only, like RiiDraw (FR-15, NFR-10). App stack: Rust + egui/eframe (ADR-008, accepted 2026-11-20 after the `spikes/app-egui` spike passed).
 - **NFR-04 depends on the game's frame rate and input sampling** — HYPOTHESIS (unverified). The 1-frame threshold is a target. Spike 2 measures the limits; M7 (tests T.1–T.5) checks the full chain and may revise the threshold. See risk R3 and the inconsistency list in `risk-register.md`.
 - **NFR-05 vs watchdog** — resolved 2026-11-19: two-level watchdog (bridge `HEARTBEAT` type `0x40` every 20 ms, link timeout ≤ 100 ms, default 80, AD-4/AD-5; app-level `app_timeout_ms`, default 1000 ms until W.1, DIRECT mode only). See `docs/link-protocol.md` (Watchdog) and tests W.1, W.2, A.3 in `docs/test-plan.md`.
-- **NFR-07 vs ADR-008** — resolved 2026-11-19 (Q2): NFR-07 amended to allow weak copyleft used unmodified; both stack options now fit.
+- **NFR-07 vs ADR-008** — resolved 2026-11-19 (Q2): NFR-07 amended to allow weak copyleft used unmodified; the chosen Rust stack fits (MPL-2.0 `serialport`; OFL/Ubuntu font licence texts shipped, R12).
 - **NFR-10 vs R5** — resolved 2026-11-19 (Q3): no code signing; this is a personal project, not distributed as a product. The README documents the first-run unblock (macOS: System Settings → Privacy & Security → Open Anyway; Windows SmartScreen: More info → Run anyway) with screenshots.
 
 ## Out of scope (verbatim)
