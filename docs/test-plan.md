@@ -17,8 +17,10 @@ Spikes first, all with **existing** firmware (no code of ours yet). Record for e
 
 | Item            | Value                                                                                                                           |
 |-----------------|---------------------------------------------------------------------------------------------------------------------------------|
-| Switch 2 system |                                                                                                                                 |
-| OoT version     |                                                                                                                                 |
+| Switch 2 system | 23.5.0 (Spike 1 by hand, 2026-11-20)                                                                                            |
+| OoT version     | 1.1.1                                                                                                                           |
+| Controller      | Joy-Con 2 pair (Spike 1 by hand; D-pad = Joy-Con 2 (L) direction buttons)                                                       |
+| Measurement     | Soundcorset tuner (iOS), A4 = 440 Hz; Switch 2 and phone hand-held (table caused resonances), mic ~2 cm from the right speaker  |
 | Host OS(es)     |                                                                                                                                 |
 | Cable(s)        |                                                                                                                                 |
 | Recording       | Switch 2 video capture (Capture button, 30 s) or capture card; T.2 (5 min) needs a capture card or a mic on the console speaker |
@@ -87,16 +89,125 @@ Uses spike 0 or 0b in real-time mode (terminal or GLaMS web UI). Rows 1.1–1.5,
 
 |  ID | Check (see [unknowns](ocarina-input-mechanics.md))                   | Method                                                                                                                                               | Result |
 |----:|----------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|--------|
-| 1.1 | 5 natural notes and their pitch        | press each, tuner app on the phone / record                                                                                                          |        |
-| 1.2 | all 19 fingerings of the chart         | modifier first, then button                                                                                                                          |        |
-| 1.3 | U1 sustain                             | hold 1 s, 3 s, 10 s                                                                                                                                  |        |
-| 1.4 | U3 new button while holding            | L held, then press R                                                                                                                                 |        |
-| 1.5 | U4 bend while sounding                 | hold A, then D-pad ↑                                                                                                                                 |        |
+| 1.1 | 5 natural notes and their pitch        | press each, tuner app on the phone / record                                                                                                          | pairing confirmed; sounds one octave above the chart (L = D5 … X = D6), see results below |
+| 1.2 | all 19 fingerings of the chart         | modifier first, then button                                                                                                                          | all 19 confirmed, one octave above the chart (B4–F6 sounding); modifiers ±1 / ±2 / ±3 confirmed |
+| 1.3 | U1 sustain                             | hold 1 s, 3 s, 10 s                                                                                                                                  | sustains while held; wavers from ~2 s; auto-stops at ~6 s |
+| 1.4 | U3 new button while holding            | L held, then press R                                                                                                                                 | new button cuts the held note (F5 starts, D5 stops); releasing R with L held brings D5 back |
+| 1.5 | U4 bend while sounding                 | hold A, then D-pad ↑                                                                                                                                 | D-pad: instant step to A♯5 (932 Hz); left stick: gradual glide (by ear) |
 | 1.6 | U6 stick threshold                     | ly = 0x40, 0x20, 0x00                                                                                                                                |        |
-| 1.7 | U8, U9 free play enter/exit and limits | play 100 notes in a row                                                                                                                              |        |
-| 1.8 | official song recognised in free play? | play a song's natural notes (e.g. Zelda's Lullaby) in free play; then the same with one note on an alternative fingering (e.g. D4 = R + D↓ + stick↓) |        |
+| 1.7 | U8, U9 free play enter/exit and limits | play 100 notes in a row                                                                                                                              | enter D-pad ← (input after ~2 s), exit B or D-pad ←; 100 notes and 1 min idle: no limit, no auto-exit |
+| 1.8 | official song recognised in free play? | play a song's natural notes (e.g. Zelda's Lullaby) in free play; then the same with one note on an alternative fingering (e.g. D4 = R + D↓ + stick↓) | yes; matched by pitch, not button: alternative fingerings (B, then D) still trigger it, even very slow |
 
 Done when: the mapping profile has no `HYPOTHESIS` markers left for pitches and modifiers.
+
+### Spike 1 results (by hand, 2026-11-20)
+
+Setup: see Test environment (Switch 2 23.5.0, OoT 1.1.1, Joy-Con 2 pair, Soundcorset on the Switch 2 speakers). Pitches are the sounding pitch read by the tuner (Hz shown to confirm the octave).
+
+#### 1.1 Natural notes
+
+| Button | Hypothesis | Measured     | Match            |
+|--------|------------|--------------|------------------|
+| L      | D4         | D5 (587 Hz)  | pitch class yes, one octave higher |
+| R      | F4         | F5 (698 Hz)  | pitch class yes, one octave higher |
+| A      | A4         | A5 (880 Hz)  | pitch class yes, one octave higher |
+| Y      | B4         | B5 (987 Hz)  | pitch class yes, one octave higher |
+| X      | D5         | D6 (1174 Hz) | pitch class yes, one octave higher |
+
+Result: the button → note pairing of the chart is right, but every natural note sounds **one octave higher** than written (D5 F5 A5 B5 D6). Same values in a first run with the console on a table (discarded for resonances).
+
+
+#### 1.2 Chart fingerings (modifier first, then button)
+
+Expected = chart pitch one octave up, as found in 1.1.
+
+| Chart pitch | Input            | Expected | Measured                 | Match |
+|-------------|------------------|----------|--------------------------|-------|
+| B3          | L + D↓ + stick↓  | B4       | B4 (493 Hz)              | yes   |
+| C4          | L + stick↓       | C5       | C5 (523 Hz)              | yes   |
+| C♯4         | L + D↓           | C♯5      | C♯5 (554 Hz)             | yes   |
+| D4          | L                | D5       | D5 (587 Hz), from 1.1    | yes   |
+| D♯4         | L + D↑           | D♯5      | D♯5 (622 Hz)             | yes   |
+| E4          | R + D↓           | E5       | E5 (659 Hz)              | yes   |
+| F4          | R                | F5       | F5 (698 Hz), from 1.1    | yes   |
+| F♯4         | R + D↑           | F♯5      | F♯5 (739 Hz)             | yes   |
+| G4          | R + stick↑       | G5       | G5 (783 Hz)              | yes   |
+| G♯4         | A + D↓           | G♯5      | G♯5 (830 Hz)             | yes   |
+| A4          | A                | A5       | A5 (880 Hz), from 1.1    | yes   |
+| A♯4         | A + D↑           | A♯5      | A♯5 (932 Hz)             | yes   |
+| B4          | Y                | B5       | B5 (987 Hz), from 1.1    | yes   |
+| C5          | Y + D↑           | C6       | C6 (1046 Hz)             | yes   |
+| C♯5         | X + D↓           | C♯6      | C♯6 (1108 Hz)            | yes   |
+| D5          | X                | D6       | D6 (1174 Hz), from 1.1   | yes   |
+| D♯5         | X + D↑           | D♯6      | D♯6 (1244 Hz)            | yes   |
+| E5          | X + stick↑       | E6       | E6 (1318 Hz)             | yes   |
+| F5          | X + D↑ + stick↑  | F6       | F6 (1396 Hz)             | yes   |
+
+Result: all 19 chart fingerings give the chart pitch one octave up; range B4–F6 sounding (B3–F5 written). Modifiers confirmed: D-pad ↑/↓ = ±1, left stick ↑/↓ = ±2, both together = ±3 semitones, held before the button.
+
+#### 1.3 U1 sustain (A held)
+
+| Hold     | Observed                                                                 |
+|----------|--------------------------------------------------------------------------|
+| 1 s      | sounds for the whole press, stops on release                             |
+| ~2 s on  | the tone starts to waver slightly (like running out of breath)           |
+| ≥ 6 s    | the note stops by itself at about 6 s even with the button still held    |
+
+Result: holding sustains the note, up to a maximum of about 6 s; audible wavering from about 2 s.
+
+#### 1.4 U3 new button while holding
+
+| Step                          | Observed                         |
+|-------------------------------|----------------------------------|
+| L held (D5), then R pressed   | F5 starts, D5 stops (cut)        |
+| R released, L still held      | D5 sounds again                  |
+
+Result: the last pressed button wins; releasing it falls back to the button still held (D5 again).
+
+#### 1.5 U4 modifier changed while a note sounds
+
+| Step                              | Observed                                            |
+|-----------------------------------|-----------------------------------------------------|
+| A held (A5, 880 Hz), then D-pad ↑ | pitch jumps at once to A♯5 (932 Hz), no glide       |
+| Note held, then left stick moved  | pitch changes gradually (glide), by ear; no tuner reading |
+
+A first reading of 311 Hz (D♯4) was the tuner locking on a subharmonic (932 / 3) during the change; the re-run held both for 2 s and read 932 Hz.
+
+Result: a D-pad change while the note sounds retunes it immediately (a step); a left-stick change glides gradually (a bend). The stick glide was observed by ear only.
+
+#### 1.7 U8, U9 free play enter/exit and limits
+
+| Check                     | Observed                                                              |
+|---------------------------|-----------------------------------------------------------------------|
+| Enter free play           | D-pad ←; the ocarina takes note input only after about 2 s            |
+| Exit free play            | B or D-pad ←                                                          |
+| D-pad ← binding           | fixed: always opens/closes the ocarina, not a user-assigned item slot |
+| 100 notes (L R A Y X × 20, ~1/s) | no note limit, no auto-exit: free play closes only when the player exits |
+| Idle 1 min, then A        | still open, A sounds at once: no idle timeout                         |
+
+Result: enter with D-pad ← (note input accepted after ~2 s), exit with B or D-pad ←; no note limit, no auto-exit, no idle timeout seen.
+
+#### 1.8 Official song in free play (Zelda's Lullaby: B D A B D A written)
+
+| Run                                   | Input                     | Observed                                  |
+|---------------------------------------|---------------------------|-------------------------------------------|
+| Natural notes                         | Y X A Y X A               | recognised, even at a very slow tempo     |
+| 1st B on an alternative fingering     | (A + stick↑) X A Y X A    | recognised                                |
+| 1st D on an alternative fingering     | Y (Y + D↑ + stick↑) A Y X A | recognised                              |
+
+Result: the game matches official songs by **pitch**, not by button: an alternative fingering of the same pitch still triggers the song. Recognition does not depend on tempo (very slow still works).
+
+#### U11 other buttons in free play (extra check, not a numbered row)
+
+| Input              | Observed                                                         |
+|--------------------|------------------------------------------------------------------|
+| ZL                 | opens the menu of known songs                                    |
+| ZL + ZR            | stays on that menu, nothing else happens                         |
+| ZL + A (in menu)   | plays a preview of the highlighted song                          |
+| ZR                 | nothing                                                          |
+| Right stick        | moves the camera                                                 |
+
+Result: no other button changes pitch or octave; the 19 chromatic pitches of the chart are the whole range. ZL (song menu, song preview with A) and the right stick (camera) act in free play but are not note inputs, so the AD-9 queue-mode allow-list (L, R, A, X, Y, hat, left stick) holds, and masking ZL and the right stick is desirable.
 
 ## Spike 2: timing limits
 
