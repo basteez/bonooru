@@ -262,7 +262,7 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
 - **Rule:**
   - **Producer.** Only the core pipeline produces a `Timeline`. Each event has `t_us` (u32 from START, strictly increasing, < 2^31) and a full canonical state snapped to the profile's frame grid. The last event is `NEUTRAL|END`.
   - **Annotations.** Events can carry annotations for the UI and the export (note index, pitch, fingering). These are never sent.
-  - **Outputs.** The pipeline also returns the range-fit report (FR-04) and official-song detection (R2), which picks an alternative fingering or else raises a warning.
+  - **Outputs.** The pipeline also returns the range-fit report (FR-04) and official-song detection (R2), which raises a warning; no fingering avoids a song because the game matches by pitch (Spike 1.8, 2026-11-20).
   - **Minimum durations.** Validation rejects a min press or min gap below `2 × max(report_period_us, frame time)`.
   - **Export.** A timeline exports to CSV (`t_us`, pitch, fingering), which is the M7 ground truth.
   - **Tempo and countdown.** Tempo scale means recompiling. Countdown means the UI plus `START lead_us`. The firmware has no notion of tempo.
