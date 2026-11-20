@@ -27,7 +27,7 @@ Common internal model: a list of `(midi_pitch, start_s, duration_s)`. Both input
 | Mono reduction | user picks track/channel; chords → highest note ("skyline"); overlaps → cut the earlier note                                                                                             |
 | Range fit      | try every shift in −24…+24 semitones, keep the one with fewest out-of-range notes (tie: smallest shift, then most natural notes); left-over notes → octave-fold or drop, always reported |
 | Fingering      | each pitch has 1+ input combos; choose the sequence with lowest total cost (Viterbi / DP)                                                                                                |
-| Timing rules   | snap to the frame grid; enforce min press, min gap on same button, modifier lead; steal time from the previous note, never shift onsets                                                  |
+| Timing rules   | snap to the frame grid; enforce min press, min gap on same button, modifier lead; steal time from the previous note, never shift onsets; at most one note button held (U3); notes longer than `max_sustain` are re-pressed (U1) and counted |
 | Timeline       | absolute µs events of full controller states (see [Link protocol](link-protocol.md))                                                                                                     |
 
 ### Fingering cost (first idea)
@@ -50,12 +50,12 @@ Weights live in the profile, tuned after [tests](test-plan.md).
 name = "OoT Switch 2 v1.0.0"
 frame_rate = 60            # U10, to measure
 
-[buttons]                  # natural pitches (MIDI numbers)
-L = 62  # D4
-R = 65  # F4
-A = 69  # A4
-Y = 71  # B4
-X = 74  # D5
+[buttons]                  # natural pitches, sounding (MIDI numbers, Story 1.1)
+L = 74  # D5
+R = 77  # F5
+A = 81  # A5
+Y = 83  # B5
+X = 86  # D6
 
 [modifiers]                # semitone offsets
 dpad_up = 1
@@ -69,10 +69,11 @@ min_press = 50
 min_gap_same_button = 34
 modifier_lead = 17
 start_lead = 500
+max_sustain = 5500         # U1: the game cuts a held note at ~6 s; placeholder margin, set in Story 1.5
 
-[range]
-low = 59    # B3
-high = 77   # F5
+[range]                    # sounding pitch: the game plays one octave above the community chart
+low = 71    # B4
+high = 89   # F6
 ```
 
 ## Text score format (draft)

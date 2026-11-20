@@ -133,6 +133,6 @@ Release 1.0 (M9): pre-built app for Windows, Linux and macOS plus both UF2s; a f
 
 ## Open Questions
 
-- Ocarina mechanics (unverified): button→pitch pairing, modifiers, fingering chart, unknowns U1–U11 — settled by spikes 1–2.
-- Does the game match official songs by buttons or by pitches (spike 1.8, R2)?
+- Ocarina mechanics: button→pitch pairing, modifiers, the 19 chart fingerings and U1, U3, U4, U8, U9, U11 settled by hand on 2026-11-20 (Story 1.1; the game sounds one octave above the community chart, so pitches are named B4–F6); alternative fingerings, U2, U5–U7, U10 still open (spikes 1–2).
+- ~~Does the game match official songs by buttons or by pitches (spike 1.8, R2)?~~ Resolved 2026-11-20: by pitch, at any tempo → R2 is warn only.
 - Unverified: Switch 2 polling rate with P2; game frame rate (30/60 fps); 460800 baud sufficiency; dock USB-A behaviour; UF2 mass-storage reliability on 3 OS; app GUI on Windows/Linux and 3-OS CI (spike ran its GUI on macOS only).

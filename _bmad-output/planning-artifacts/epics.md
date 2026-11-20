@@ -39,7 +39,7 @@ Priority in brackets (MoSCoW). FR-16…FR-25 come from the UX session; owner con
 - FR-01 [M]: Import a `.mid` file and choose its track/channel.
 - FR-02 [M]: Import a hand-written text score (custom format, `docs/score-format-and-mapping.md`); both formats produce the same `(pitch, start, duration)` note model.
 - FR-03 [M]: Reduce polyphony to one melodic line (chords → highest note "skyline"; overlaps cut the earlier note).
-- FR-04 [M]: Fit the melody into the playable range B3–F5 (auto transpose over −24…+24 with fewest out-of-range notes, tie-break smallest shift then most natural notes; manual override); octave-fold or drop left-over notes and always report what doesn't fit.
+- FR-04 [M]: Fit the melody into the playable range B4–F6, sounding pitch (Story 1.1) (auto transpose over −24…+24 with fewest out-of-range notes, tie-break smallest shift then most natural notes; manual override); octave-fold or drop left-over notes and always report what doesn't fit.
 - FR-05 [M]: Pick an input combination (button + modifiers) for every pitch with a min-cost fingering path (Viterbi/DP, profile weights).
 - FR-06 [M]: Mapping and timing parameters (pitches, modifiers, timing rules, range, cost weights) live in an editable TOML mapping profile, never in code.
 - FR-07 [M]: Playback: start (with countdown), stop, tempo scale; stop releases every input.
@@ -64,8 +64,8 @@ Priority in brackets (MoSCoW). FR-16…FR-25 come from the UX session; owner con
 
 Derived pipeline requirements (from CAP-3 / AD-15 / R2, stated in the spec but not numbered as FRs):
 
-- FR-05a: Timing rules: snap to the profile frame grid; enforce min press, min gap on same button, modifier lead; steal time from the previous note, never shift onsets; reject min press/gap below `2 × max(report_period_us, frame time)`.
-- FR-05b: Official-song detection (R2): detect sequences of the 12 official songs; pick an alternative fingering, else warn.
+- FR-05a: Timing rules: snap to the profile frame grid; enforce min press, min gap on same button, modifier lead; steal time from the previous note, never shift onsets; reject min press/gap below `2 × max(report_period_us, frame time)`; at most one note button pressed in any state (U3: releasing a later button brings back a still-held one); a note longer than the profile `max_sustain` is re-pressed (release for the min gap, press again) before the game cuts it (U1, ~6 s), and the count is reported.
+- FR-05b: Official-song detection (R2): detect pitch sequences of the 12 official songs and warn (the game matches by pitch, so no fingering avoids it; Spike 1.8).
 - FR-05c: Timeline export to CSV (`t_us`, pitch, fingering) as the M7 ground truth (not user-facing in v1).
 
 ### NonFunctional Requirements
@@ -122,7 +122,7 @@ Controller firmware
 App architecture
 - AD-18 / app-stack-options: Rust 1.100.0 pinned in `app/rust-toolchain.toml`; Cargo workspace `ocb-core` (lib, no egui/eframe dependency, no threads, no I/O) + `ocb-app` (bin) (+ optional `ocb-adapters`); pinned crates: eframe/egui 0.37.0, serialport 4.10.1, midly 0.5.3, rodio 0.23.0, sysinfo 0.40.4, crossbeam-channel 0.5.17, toml 1.2.1, serde 1.0.229, rfd 0.18.0, directories 6.0.0, proptest 1.12.0 (tests), midir 0.11.1 (M10), egui_extras image loaders (wiring photo).
 - Hexagonal: `ui` → `services` → `core` (score, pipeline, profile, protocol, link (sans-IO), device, flasher, preview); adapters (serial, drives+fs, audio, midi, config dir) implement core ports. Nothing depends on `ui`.
-- AD-15: only the core pipeline produces a `Timeline` (events with `t_us` u32 strictly increasing < 2^31, full canonical state snapped to frame grid, last `NEUTRAL|END`; annotations never sent); pipeline also returns range-fit report and official-song detection; tempo scale = recompile; countdown = UI + `START lead_us`; streamer prefills, STARTs, sends greedily on credit, never edits/drops/reorders; live MIDI uses SET_STATE (M10).
+- AD-15: only the core pipeline produces a `Timeline` (events with `t_us` u32 strictly increasing < 2^31, full canonical state snapped to frame grid, last `NEUTRAL|END`; annotations never sent); pipeline also returns range-fit report and official-song detection (warning only: songs match by pitch); tempo scale = recompile; countdown = UI + `START lead_us`; streamer prefills, STARTs, sends greedily on credit, never edits/drops/reorders; live MIDI uses SET_STATE (M10).
 - AD-16: one serial worker thread owns the port and link session; UI ↔ worker only via messages (commands in, events + immutable snapshots out); connect/disconnect/1200-baud touch/post-flash verification are worker commands; flasher worker never opens a serial port, snapshots volumes before touch/BOOT prompt, accepts exactly one new volume with `INFO_UF2.TXT`, checks RP2040 family, copies with a plain read/write loop (not `fs::copy`), waits for the volume to vanish; audio preview rendered in core, played by the adapter; UI thread never blocks on I/O.
 - AD-17: profile = TOML with integer `schema`; only core `profile` loads/validates/migrates; bundled read-only defaults per game version in `app/profiles/`; user copies (incl. calibration output) in the OS config dir override the same-name default; unmigratable user copy refused with a message; app settings in a separate file.
 - Time units: integer µs everywhere downstream of score import; float seconds only inside import. Core returns typed results; services turn them into user-facing events.
@@ -159,7 +159,7 @@ UX open questions to carry as spikes or explicit AC TODOs (not guesses)
 - OQ-8 Update flow key flow (required/recommended → wizard → reflash → Play re-enabled) — states-only coverage today.
 - OQ-9 Screen reader / AccessKit support level — must be decided before the shared widget helpers are built.
 - OQ-10 Text score file extension and save-as defaults; grammar details owned by `score`.
-- OQ-11 Final list of 3–5 bundled public-domain examples (Ode to Joy, Greensleeves, Frère Jacques, Twinkle Twinkle, B3–F5 scale).
+- OQ-11 Final list of 3–5 bundled public-domain examples (Ode to Joy, Greensleeves, Frère Jacques, Twinkle Twinkle, B4–F6 scale).
 - OQ-12 Wiring photo of the owner's assembly (not yet taken).
 - OQ-13 Draft microcopy approval pass over every "draft" string.
 - OQ-14 Fit proposal: explicit "Accept all" / "Reset to proposal" buttons, or Play-accepts only.
@@ -188,20 +188,20 @@ Status and connection
 Song panel
 - UX-DR14: Song panel: parchment "Song" panel tab, filename + "Open…" pill, "No song loaded" state, mapping-profile footer hint "Mapping profile: Default · Switch 2" at 75 %.
 - UX-DR15: Track picker (`.mid` only, hidden for text scores): auto-selects the likely melody track (most notes in range, least polyphony); rows "name · ch N · N notes · N % in range"; amber painted caret; change recompiles; 0 % in range track still loads with all ghost notes [ASSUMPTION].
-- UX-DR16: Transpose stepper: large value ("−5 st"), −12/−1/+1/+12/Auto (Auto = best fit −24..+24), `auto` chip while value equals the automatic result, active button amber with glow; live fit summary "212 in range · 2 folded · 0 dropped"; each change one undo step.
+- UX-DR16: Transpose stepper: large value ("−5 st"), −12/−1/+1/+12/Auto (Auto = best fit −24..+24), `auto` chip while value equals the automatic result, active button amber with glow; live fit summary "212 in range · 2 folded · 0 dropped", plus "N long notes re-pressed" when FR-05a re-presses any; each change one undo step.
 - UX-DR17: Tempo control: −5/+5 % stepper, Reset, range 50–150 %, linked BPM field (scales the whole tempo map); every change recompiles and is one undo step; "N notes too short" state turns the value `status-error` and disables Play.
 - UX-DR18: Official-song warning row in the song panel (ember wash, 3 px ember left border, ember-text): "1 official-song sequence: could end free play"; Play stays enabled.
 - UX-DR19: Song rail (collapsed song panel): icons Open, Track, Transpose, Tempo with current-value tooltips and focus ring; clicking expands the panel with that control focused.
 
 Note view
 - UX-DR20: Note-view card: parchment, `rounded.xl`, `card-inset` frame, corner brackets; header with Roll/Staff segmented toggle (only place it appears), preview transport ▶ ■, time "0:12 / 0:31" in digit cells, "Preview · PC only" at 75 %, Undo ↶ / Redo ↷ history buttons (26 px ink circles, disabled at 45 % when empty, tooltips with shortcut).
-- UX-DR21: Roll view: 19 lanes B3–F5 (21 px, min 18 px then vertical scroll with pinned ruler), accidental lanes in `-alt` fills, lane headers (96 px) with note name + fingering (once per lane), ruler corner label "note · input", ruler ticks every beat, labels every 2 s, ruler click sets the shared cursor; note bars with no text; selected = amber stroke + glow; resize affordance on last 6 px; 2 px ember playhead with convex pentagon handle; pan with wheel/trackpad (Shift = horizontal), middle-drag; Cmd/Ctrl+wheel zoom around pointer; follows playhead during preview and Play.
+- UX-DR21: Roll view: 19 lanes B4–F6, sounding pitch (21 px, min 18 px then vertical scroll with pinned ruler), accidental lanes in `-alt` fills, lane headers (96 px) with note name + fingering (once per lane), ruler corner label "note · input", ruler ticks every beat, labels every 2 s, ruler click sets the shared cursor; note bars with no text; selected = amber stroke + glow; resize affordance on last 6 px; 2 px ember playhead with convex pentagon handle; pan with wheel/trackpad (Shift = horizontal), middle-drag; Cmd/Ctrl+wheel zoom around pointer; follows playhead during preview and Play.
 - UX-DR22: Staff view: same lanes as staff rules (natural 1.2 px ink, accidental 0.5 px ink 45 %), lane headers kept, notes as 5 px bars starting with a 17 px staff glyph (button letter) followed by modifier tags (e.g. "D↑", "S↑"); same selection, editing, playhead; switching views keeps scroll, zoom, cursor, selection; view choice persists [ASSUMPTION].
-- UX-DR23: Out-of-range zones above F5 / below B3 (30 px, collapse to 6 px strip when empty), labelled in `out-of-range-ink`, dashed divider; ghost notes (dashed outline) with fold target outline in the target lane and dashed leader line; inline label "G5 · out of range — proposed: fold to G4"; ghost notes selectable.
-- UX-DR24: Official-song group: rounded ember-wash rectangle with 1.6 px dashed ember outline around the notes, notes filled ember, label tab "Triggers <Song>"; shown only when no alternative fingering resolves it.
+- UX-DR23: Out-of-range zones above F6 / below B4 (30 px, collapse to 6 px strip when empty), labelled in `out-of-range-ink`, dashed divider; ghost notes (dashed outline) with fold target outline in the target lane and dashed leader line; inline label "G6 · out of range — proposed: fold to G5"; ghost notes selectable.
+- UX-DR24: Official-song group: rounded ember-wash rectangle with 1.6 px dashed ember outline around the notes, notes filled ember, label tab "Triggers <Song>"; shown for every detected sequence (no fingering avoids it: songs match by pitch).
 - UX-DR25: Note selection model: click selects (replace), Shift+click toggles, drag on empty = marquee (amber-wash, dashed amber-ink) selecting touched notes, Shift+marquee adds, click empty clears; Esc never clears selection.
 - UX-DR26: Note editing: double-click empty = add note at pointer lane/time (frame-grid snap) with last-used duration (one beat initially [ASSUMPTION]); drag selection = move (lane + frame-grid snap); drag right edge = resize; Delete/Backspace deletes only while the note view has focus; each gesture one undo step; edits rewrite only the affected tokens in the text score and keep the editor caret.
-- UX-DR27: Note context menu (right-click, selects if needed; menu key / Shift+F10 [ASSUMPTION]): Move up an octave · Move down an octave · separator · Delete; out-of-range notes add "Reset to proposal" [ASSUMPTION]; items that would leave B3–F5 + zones disabled; styled per `context-menu`.
+- UX-DR27: Note context menu (right-click, selects if needed; menu key / Shift+F10 [ASSUMPTION]): Move up an octave · Move down an octave · separator · Delete; out-of-range notes add "Reset to proposal" [ASSUMPTION]; items that would leave B4–F6 + zones disabled; styled per `context-menu`.
 - UX-DR28: Text editor split (text scores only): editor on top (Well fill, Hack 13 px), draggable split divider (6 px, grip amber on hover/drag, initial 40/60 [ASSUMPTION], persisted, editor ≥ 4 lines, double-click reset [ASSUMPTION]); live parse updates the note view; inline straight `status-error` underline with hover message and fix line (e.g. "Unknown note length “q”." / "Use 1, 2, 4, 8 or 16, e.g. D5/4."); last valid parse stays drawn while invalid [ASSUMPTION]; egui's built-in TextEdit undoer disabled.
 - UX-DR29: App-level undo/redo history (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z everywhere incl. editor, plus header buttons): covers text, note-view, out-of-range, transpose, tempo edits; excludes track choice, view toggle, cursor, Settings; per song, cleared on loading another song [ASSUMPTION]; disabled during Play.
 - UX-DR30: `.mid` conversion: first note-view edit converts the `.mid` (selected track, transpose applied) to a text score, opens the split editor, shows "Converted to text score – save to keep changes"; original never modified; undo of that edit keeps the converted score [ASSUMPTION].
@@ -265,7 +265,7 @@ Interaction, accessibility, voice, platform
 | FR-04 | Epic 5 | Range fit, auto/manual transpose, fit report |
 | FR-05 | Epic 5 | Fingering DP (chart data verified in Epic 1) |
 | FR-05a | Epic 5 | Timing rules; values measured in Epic 1, margins tuned in Epic 7 |
-| FR-05b | Epic 5 | Official-song detection (game behaviour settled by Spike 1.8, Epic 1) |
+| FR-05b | Epic 5 | Official-song detection (Spike 1.8: songs match by pitch → warning only) |
 | FR-05c | Epic 7 | Timeline CSV export (M7 ground truth) |
 | FR-06 | Epic 1 (data), Epic 5 (profile module) | Measured TOML profile; `profile` load/validate/migrate (AD-17) |
 | FR-07 | Epic 6 | Start with countdown, STOP, tempo scale via recompile |
@@ -452,7 +452,7 @@ So that the app pipeline (Epic 5) starts from real data.
 
 **Given** the results of Stories 1.1, 1.3 and 1.4
 **When** the owner writes `app/profiles/` default profile for the game version tested, following the TOML shape in `docs/score-format-and-mapping.md`
-**Then** it has an integer `schema` field, `[profile]` (name, frame_rate), `[buttons]`, `[modifiers]` (including stick value), every alternative fingering, `[timing]` (measured value + a stated safety margin), `[range]` and the fingering cost weights
+**Then** it has an integer `schema` field, `[profile]` (name, frame_rate), `[buttons]` (sounding MIDI pitches), `[modifiers]` (including stick value), every alternative fingering, `[timing]` (measured value + a stated safety margin, including `max_sustain` from U1), `[range]` (B4–F6) and the fingering cost weights
 **And** every value has a comment pointing to the spike row it came from
 **And** roadmap M2 is marked DONE only when no HYPOTHESIS marker is left on pitches/modifiers and `[timing]` is filled
 
@@ -1088,7 +1088,7 @@ So that polyphonic or wide songs still become playable, with a clear report (FR-
 **When** mono reduction runs
 **Then** chords keep the highest note (skyline) and overlaps cut the earlier note
 
-**Given** the profile range (B3–F5)
+**Given** the profile range (B4–F6, sounding pitch)
 **When** auto transpose runs
 **Then** it tries every shift in −24…+24 and keeps the one with fewest out-of-range notes (tie: smallest shift, then most natural notes)
 **And** a manual transpose value overrides it
@@ -1110,6 +1110,7 @@ So that the app produces the exact timeline the controller will play (FR-05, FR-
 **When** the `pipeline` compiles it
 **Then** fingering picks the lowest-cost sequence over all profile fingerings (Viterbi/DP with the profile's cost weights)
 **And** timing rules snap to the profile frame grid, enforce min press, min gap on the same button and modifier lead, steal time from the previous note and never shift onsets
+**And** no state holds two note buttons (U3), and a note longer than the profile `max_sustain` is re-pressed after the min gap before the game cuts it (U1); the number of re-pressed notes is reported
 
 **Given** the compiled result
 **When** it is returned
@@ -1118,7 +1119,7 @@ So that the app produces the exact timeline the controller will play (FR-05, FR-
 
 **Given** property tests
 **When** they run
-**Then** they confirm: events sorted, onsets never shifted, min press/gap respected, END last, only allow-list inputs used
+**Then** they confirm: events sorted, onsets never shifted, min press/gap respected, END last, only allow-list inputs used, at most one note button per state, no press longer than `max_sustain`
 
 **Given** the reference piece (all 19 pitches)
 **When** it compiles
@@ -1132,10 +1133,10 @@ So that a piece doesn't accidentally trigger an in-game effect and end free play
 
 **Acceptance Criteria:**
 
-**Given** the official song sequences stored as profile data (from Story 1.1's finding on buttons vs pitches)
+**Given** the official song sequences stored as profile data, as pitch sequences (Story 1.1: the game matches by pitch, at any tempo)
 **When** the pipeline compiles a melody containing one
-**Then** it first tries an alternative fingering that breaks the match (if the game matches by buttons)
-**And** if none resolves it, it returns a warning with the song title and the affected notes
+**Then** it returns a warning with the song title and the affected notes
+**And** it does not try alternative fingerings, since they do not break the match
 
 **Given** the warning
 **When** it is reported
@@ -1176,7 +1177,7 @@ So that I understand what will be pressed before playing (FR-12, FR-21).
 
 **Given** a loaded song
 **When** the note-view card draws the Roll
-**Then** it shows the parchment card with corner brackets; the header with the Roll toggle segment (Staff disabled until Epic 9), transport placeholder, time in digit cells and "Preview · PC only"; 19 lanes B3–F5 with accidental lanes in `-alt` fills; lane headers (note name + fingering from the compiled timeline, ♯ and ↑ painted); ruler with ticks every beat and labels every 2 s; note bars with no text (UX-DR20, UX-DR21)
+**Then** it shows the parchment card with corner brackets; the header with the Roll toggle segment (Staff disabled until Epic 9), transport placeholder, time in digit cells and "Preview · PC only"; 19 lanes B4–F6 with accidental lanes in `-alt` fills; lane headers (note name + fingering from the compiled timeline, ♯ and ↑ painted); ruler with ticks every beat and labels every 2 s; note bars with no text (UX-DR20, UX-DR21)
 
 **Given** the Roll
 **When** the user clicks the ruler, scrolls, Shift+scrolls, middle-drags or Cmd/Ctrl+scrolls
@@ -1197,7 +1198,7 @@ So that I see exactly what the app changed or warns about.
 
 **Given** a song with out-of-range notes
 **When** the Roll is drawn
-**Then** two zones above F5 and below B3 (30 px, collapsing to a 6 px strip when empty) show ghost notes with dashed outlines, fold targets as dashed outlines in the target lane linked by a dashed leader, and labels like "G5 · out of range — proposed: fold to G4" (UX-DR23)
+**Then** two zones above F6 and below B4 (30 px, collapsing to a 6 px strip when empty) show ghost notes with dashed outlines, fold targets as dashed outlines in the target lane linked by a dashed leader, and labels like "G6 · out of range — proposed: fold to G5" (UX-DR23)
 
 **Given** an unresolved official-song warning
 **When** the Roll is drawn
@@ -1217,7 +1218,7 @@ So that I can make a song fit and stay playable.
 
 **Given** the song panel
 **When** the user uses the Transpose stepper (−12, −1, +1, +12, Auto)
-**Then** the large value updates, the `auto` chip shows while the value equals the automatic result, the song recompiles and the fit summary "N in range · N folded · N dropped" updates on every change (UX-DR16)
+**Then** the large value updates, the `auto` chip shows while the value equals the automatic result, the song recompiles and the fit summary "N in range · N folded · N dropped" (plus "N long notes re-pressed" when any) updates on every change (UX-DR16)
 
 **Given** the Tempo control (−5/+5 %, Reset, 50–150 %, linked BPM field that scales the whole tempo map)
 **When** the tempo changes
@@ -1819,7 +1820,7 @@ So that I decide note by note how the melody fits (FR-19).
 
 **Given** a right-click on a note (selected if not already) or on a selection, or the menu key / Shift+F10 on a selection
 **When** the context menu opens
-**Then** it lists Move up an octave · Move down an octave · separator · Delete, styled per `context-menu`; items that would leave B3–F5 plus the zones are disabled (UX-DR27)
+**Then** it lists Move up an octave · Move down an octave · separator · Delete, styled per `context-menu`; items that would leave B4–F6 plus the zones are disabled (UX-DR27)
 
 **Given** an out-of-range (ghost) note
 **When** the menu opens
