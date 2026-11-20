@@ -71,7 +71,7 @@ A receiver counts and drops empty frames and types outside its range. Receive-ch
 | 0x05 | STOP        | H→C | –                                         | clear queue, go neutral, → IDLE, clear abort latch |
 | 0x06 | PING        | H→C | –                                         | app keep-alive, DIRECT mode only            |
 | 0x40 | HEARTBEAT   | B→C | bridge_fw_ver[3], flags (bit 0 = DTR)     | link heartbeat, own rolling seq; body prefix frozen (AD-4) |
-| 0x83 | STATUS      | C→H | free:u16, now_us:u32, last_seq, mode, abort_count, last_event, link_ok (+ debug counters) | see "Controller → app reporting" |
+| 0x83 | STATUS      | C→H | free:u16, now_us:u32, last_seq, mode, abort_count, last_event, flags:u8 (bit0 link_ok, bit1 console_ready) (+ debug counters) | see "Controller → app reporting" |
 | 0x84 | ACK         | C→H | seq                                       | cumulative: all frames up to `seq` accepted |
 | 0x85 | NAK         | C→H | reason, expected, got                     | see "Reliability"                           |
 | 0x86 | EVENT       | C→H | code                                      | `PLAYBACK_DONE`, `LINK_LOST`, `LATE`, `UNDERRUN`, `USB_SUSPENDED`, … |
@@ -159,12 +159,17 @@ Core 1 owns the modes IDLE, DIRECT and PLAYING.
 - **End of piece.** The last event is `END = NEUTRAL|END` (state `NEUTRAL`, `flags` bit 0 set); any other state with END gets `NAK BAD_STATE`. Applying it sends `EVENT PLAYBACK_DONE`.
 - **Underrun** is judged at apply time: if a non-END event is applied and the queue is then empty, the controller publishes NEUTRAL in the same loop pass and sends `EVENT UNDERRUN`.
 - **LATE.** If the head event is overdue by more than one report period, the controller aborts with `EVENT LATE` and never fires a backlog.
-- **Not ready.** `START` and `SET_STATE` get `NAK NOT_READY` until the HID profile reports the console handshake complete.
+- **Not ready.** `START` and `SET_STATE` get `NAK NOT_READY` while the HID profile's `ready()` is false (console handshake not complete). The same predicate drives `STATUS.flags.console_ready`.
 - **Safety mask (AD-9).** In PLAYING every applied state is masked by a compile-time allow-list: L, R, A, X, Y, hat, left stick. Other buttons are cleared, the right stick is centred. DIRECT mode is not masked.
 
 ## Controller → app reporting (AD-19)
 
-- **STATUS body:** `free u16, now_us u32` (µs since t0; 0 when IDLE or during the lead), `last_seq` (= `expected−1`), `mode`, `abort_count`, `last_event`, `link_ok`. Debug builds add counters: max gap between app frames (W.1), watchdog trips, dropped bytes.
+- **STATUS body:** `free u16, now_us u32` (µs since t0; 0 when IDLE or during the lead), `last_seq` (= `expected−1`), `mode`, `abort_count`, `last_event`, `flags u8`. Debug builds add counters: max gap between app frames (W.1), watchdog trips, dropped bytes.
+- **STATUS flags.** bit0 `link_ok` (bridge↔controller link up), bit1 `console_ready`; bits 2–7 reserved: the controller writes 0, the app ignores them. A new status bit takes a reserved bit without a `PROTO_VERSION` bump.
+- **`console_ready`** is the profile's `ready()` when the STATUS is built ([usb-controller-emulation.md](usb-controller-emulation.md#profile-interface-ad-12)). `NAK NOT_READY` on `START` / `SET_STATE` is still sent; the flag lets the app show the console state without probing.
+  - 1 once the console handshake completes (P2: the `0x80` handshake; P1: `SET_CONFIGURATION` and the first IN poll).
+  - 0 on USB suspend (console asleep), unmount, bus reset, and when no IN report has been taken for > 100 ms (e.g. "Pro Controller Wired Communication" switched off without a bus event). The polling stall clears the flag only; it does not abort playback.
+  - Controller unplugged or unpowered (bridge alone): no STATUS arrives at all, so the app shows both bridge↔controller and controller↔Switch as down.
 - **Cadence.** STATUS every 50 ms, plus after ACKs, coalesced to at most one per 10 ms.
 - **Mode in the app** is derived from STATUS; EVENT is only a fast path.
 - **TX priority:** EVENT > NAK > ACK > STATUS. On overflow the lowest priority is dropped; TX never blocks.

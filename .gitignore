@@ -29,3 +29,6 @@ venv/
 dist/
 .coverage
 htmlcov/
+
+# UX references: copyrighted game screenshots, never commit
+_bmad-output/planning-artifacts/ux-designs/*/imports/

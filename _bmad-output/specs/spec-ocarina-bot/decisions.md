@@ -13,7 +13,7 @@ Written 2026-11-18. ADR-001…006 **accepted** 2026-11-18; ADR-007 **accepted** 
 
 - **Decision:** **P2, wired Switch 1 Pro Controller** (057E:2009) — only profile proven on the owner's console, both USB-C ports. Firmware profile-agnostic: link protocol sends a neutral 8-byte state; a profile module turns it into USB reports. P1 (HORI Pokkén HID) off the critical path, possible later simplification; P3 (Switch 2 Pro Controller) only if Nintendo drops P2.
 - **Consequences:**
-  - Users must enable "Pro Controller Wired Communication" (System Settings → Controllers & Accessories); the GUI setup wizard shows this step with a screenshot (FR-15, NFR-10).
+  - Users must enable "Pro Controller Wired Communication" (System Settings → Controllers & Accessories); the GUI setup wizard shows this step with an original illustration plus the exact menu path (System Settings → Controllers & Accessories → Pro Controller Wired Communication → On); no console or game screenshots (copyright) (FR-15, NFR-10).
   - P2 handshake (USB `0x80` commands, subcommands, `0x30` input reports) written clean-room from public reverse-engineering docs (e.g. dekuNukem's Nintendo_Switch_Reverse_Engineering); 2wiCC read for behaviour only, no code copied (NFR-07, ADR-004).
   - Plausible answers to console subcommands: device info, SPI flash reads (stick calibration), player lights, IMU enable (IMU data = zeros).
   - Firmware refuses controller firmware-update requests (risk C7).

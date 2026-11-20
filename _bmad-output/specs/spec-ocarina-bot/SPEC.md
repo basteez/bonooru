@@ -9,6 +9,8 @@ companions:
   - risk-register.md
   - ../../planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/ARCHITECTURE-SPINE.md
   - ../../planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/app-stack-options.md
+  - ../../planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/DESIGN.md
+  - ../../planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/EXPERIENCE.md
   - ../../../docs/link-protocol.md
   - ../../../docs/usb-controller-emulation.md
   - ../../../docs/ocarina-input-mechanics.md
@@ -45,14 +47,14 @@ A vision to realize, for fun: play arbitrary melodies (MIDI or hand-written scor
 
 ## Capabilities
 
-IDs in brackets map to `requirements.md` (verbatim FR/NFR, MoSCoW). Reference docs (protocol, USB emulation, ocarina mechanics, score format, test plan) live in `docs/` and are adopted companions.
+IDs in brackets map to `requirements.md` (verbatim FR/NFR, MoSCoW). Reference docs (protocol, USB emulation, ocarina mechanics, score format, test plan) live in `docs/` and are adopted companions; UI behaviour and look live in the UX spines `EXPERIENCE.md` and `DESIGN.md` (adopted).
 
 - **CAP-1** [FR-01 M, FR-02 M]
   - **intent:** User can import a `.mid` file (choosing track/channel) or a hand-written text score into one note model.
   - **success:** Both formats open from the GUI and yield the same `(pitch, start, duration)` list for the same melody; track/channel is selectable (M6).
-- **CAP-2** [FR-03 M, FR-04 M]
+- **CAP-2** [FR-03 M, FR-04 M, FR-19 S]
   - **intent:** The app reduces the score to one melodic line and fits it into the playable range, with auto transpose and manual override.
-  - **success:** Chords become one note; the chosen transposition minimises out-of-range notes; every note that still doesn't fit is reported to the user.
+  - **success:** Chords become one note; the chosen transposition minimises out-of-range notes; every note that still doesn't fit is shown per note, and the user can move it by an octave, delete it, or keep the proposal.
 - **CAP-3** [FR-05 M, FR-06 M]
   - **intent:** The app picks an input combination (button + modifiers) for every pitch and applies timing rules, all driven by an editable mapping profile.
   - **success:** Changing a mapping or timing value in the profile file changes the compiled timeline with no code change; the reference piece (all 19 pitches) compiles with a fingering for every note.
@@ -68,12 +70,12 @@ IDs in brackets map to `requirements.md` (verbatim FR/NFR, MoSCoW). Reference do
 - **CAP-7** [FR-09 M, NFR-09 S]
   - **intent:** User can flash and later upgrade both boards (bridge and controller roles) from the app with only the BOOT button.
   - **success:** A.4 — a fresh Zero is flashed in both roles from a guided GUI wizard on each OS, no other tool installed (M8).
-- **CAP-8** [FR-11 S]
-  - **intent:** User can drive the console manually from an on-screen gamepad to reach ocarina free play.
+- **CAP-8** [FR-11 S, FR-22 S]
+  - **intent:** User can drive the console manually from an on-screen gamepad (full Pro Controller set, keyboard-mapped while focused) to reach ocarina free play.
   - **success:** Mouse + keyboard input on the on-screen gamepad moves through the game into free play (M5).
-- **CAP-9** [FR-12 S]
-  - **intent:** User can dry-run a piece: see the input timeline and hear a local audio preview on the PC.
-  - **success:** The timeline with fingerings and an audio preview are shown before playing (M6).
+- **CAP-9** [FR-12 S, FR-21 S]
+  - **intent:** User can dry-run a piece: see it in Roll and Staff views and hear a local audio preview on the PC (Listen).
+  - **success:** Roll and Staff views with fingerings and a Listen preview from the cursor work before playing, with nothing sent to the Switch (M6).
 - **CAP-10** [FR-15 M, NFR-10 M]
   - **intent:** Every user function (setup/flash, song import, preview, play, gamepad) is reachable from a graphical UI with on-screen steps; no command line.
   - **success:** A.5 — a first-time user (not the developer) unblocks the unsigned app using the README, then flashes both boards and plays a song with the GUI only, no other help.
@@ -83,6 +85,15 @@ IDs in brackets map to `requirements.md` (verbatim FR/NFR, MoSCoW). Reference do
 - **CAP-12** [FR-14 C]
   - **intent:** User can run guided tests that measure the timing parameters on their own console.
   - **success:** The calibration wizard writes measured timing values into the user's profile (M10).
+- **CAP-13** [FR-16 S, FR-17 S, FR-18 S, FR-20 S]
+  - **intent:** User can write and edit a score in the app: text editor with live note view, and note drawing (add/move/resize/delete) in Roll and Staff; the text score is the source of truth, kept in two-way sync with the note view.
+  - **success:** Typing updates the note view live with inline errors; a drawn note appears in the text; the first edit of a `.mid` converts it to a text score and leaves the original file unchanged; one undo/redo history covers text, note, out-of-range, transpose and tempo edits.
+- **CAP-14** [FR-23 M, FR-24 M]
+  - **intent:** User always sees whether bridge, controller and Switch are ready, and can only start Play when all are.
+  - **success:** Three live LEDs (PC↔bridge, bridge↔controller, controller↔Switch via STATUS `console_ready`) reflect plug/unplug and the console setting; both Play actions stay disabled until all three are ok, and every Play passes a readiness confirm (unless "Don't ask again").
+- **CAP-15** [FR-25 S]
+  - **intent:** The app resumes where the user left off and never loses unsaved work.
+  - **success:** Relaunch reopens the last song with its track, transpose, tempo and cursor; reopened files restore their settings; Recent lists the last 5; after a crash the autosaved draft can be restored.
 
 ## Constraints
 
@@ -95,6 +106,7 @@ IDs in brackets map to `requirements.md` (verbatim FR/NFR, MoSCoW). Reference do
 - App: Rust + egui/eframe (ADR-008, accepted 2026-11-20; AD-18), one native binary per OS; pre-built for Windows/Linux/macOS, no toolchain for users (NFR-01, ADR-005); GUI only, no user CLI (FR-15).
 - Architecture ADs (`ARCHITECTURE-SPINE.md`, AD-1…AD-21) bind all code; they and `firmware/common/proto/vectors/` take precedence over `docs/link-protocol.md` (AD-14).
 - Mapping and timing values live in a profile file per game version, never in code (FR-06, R14). Ocarina mechanics are unverified until M2 (`docs/ocarina-input-mechanics.md`).
+- Evoke, don't copy: nothing from Nintendo ships in the app, mocks or repo — no logos, character/item art, ripped UI, console screenshots; the wizard shows console settings as an original illustration + exact menu path (`DESIGN.md` Brand & Style).
 - Queue mode only emits ocarina inputs, never Home / Capture / + / − (C6); firmware refuses console firmware-update requests (C7).
 - One repo version `vX.Y.Z`; firmware and app from the same tag agree on the protocol version. Repo layout fixed: `firmware/` (CMake, targets `bridge`, `controller`, shared `common/`), `app/`, `spikes/`, `docs/`.
 
@@ -116,6 +128,7 @@ Release 1.0 (M9): pre-built app for Windows, Linux and macOS plus both UF2s; a f
 
 - "App" (`app/`) = "host" in the notes.
 - NFR-09 and NFR-10 are in the requirements note and kept verbatim, although the caller listed NFR-01…08.
+- FR-16…FR-25 come from the UX session (2026-11-20), not the requirements note; their MoSCoW priorities were assigned at spec update (M for LEDs/Play gating as console safety, S otherwise) — owner to confirm.
 - Spec status at derive time: M0 and M1 DONE; M2–M10 TODO; no code yet.
 
 ## Open Questions

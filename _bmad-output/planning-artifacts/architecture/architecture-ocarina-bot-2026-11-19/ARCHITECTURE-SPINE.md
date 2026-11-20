@@ -13,6 +13,7 @@ sources:
   - _bmad-output/specs/spec-ocarina-bot/SPEC.md (+ companions, docs/*)
   - _bmad-output/planning-artifacts/research/app-stack-evaluation.md
   - spikes/app-egui/SPIKE-REPORT.md
+  - _bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/ (DESIGN.md, EXPERIENCE.md)
 companions:
   - app-stack-options.md
 ---
@@ -172,7 +173,7 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
   - **End of piece.** The last event is `NEUTRAL` with `flags` bit0 = END; any other state carrying END gets `NAK BAD_STATE`. Applying it sends `EVENT PLAYBACK_DONE`. The other `flags` bits are reserved and must be 0.
   - **Underrun** is judged when an event is applied. If a non-END event is applied and the queue is then empty, the controller publishes NEUTRAL in the same loop pass and sends `EVENT UNDERRUN`.
   - **Late head event.** If the head event is overdue by more than one report period, the controller aborts with `EVENT LATE` and never fires a backlog.
-  - **Not ready.** `START` and `SET_STATE` get `NAK NOT_READY` until the profile reports that the console handshake is complete.
+  - **Not ready.** `START` and `SET_STATE` get `NAK NOT_READY` while the profile's `ready()` is false. The same predicate drives `STATUS.flags.console_ready` (AD-19).
 
 ### AD-9 — Queue-mode input allow-list (C6) [ADOPTED: risk register C6]
 
@@ -304,16 +305,24 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
   - **Serial ports on macOS.** Each device appears as `/dev/cu.*` and `/dev/tty.*`; discovery shows and opens only `cu.*`.
   - **Audio output.** Opening the output device can fail transiently (e.g. Bluetooth profile switch). The UI shows a clear error with a Retry action, and the audio adapter re-opens the output when the default device changes; it never silently falls back to no sound.
   - **NFR-07 amended 2026-11-19 (Q2 resolved):** `serialport` is MPL-2.0, used unmodified. egui's default fonts are OFL-1.1 / Ubuntu-font-1.0; their licence texts ship with the app (AD-21), or the fonts are replaced.
+  - **Linux build.** The Linux app ships on X11/XWayland: eframe is built without the `wayland` feature, because winit 0.30 does not deliver file drops on Wayland. File › Open… is always available, so drag-and-drop is never the only way to load a file.
+  - **UI-internal state.** App-level undo/redo and the two-way sync between the text score and the note view live in the app (ui + core score editing) and have no protocol impact. The UI contract is the UX spines `DESIGN.md` and `EXPERIENCE.md` (`_bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/`).
   - **Rejected alternative:** Python 3.12 + PySide6 (bundle ~113 MB vs ~11 MB Rust binary; LGPL Qt + FFmpeg obligations; PyInstaller antivirus false positives).
 
 ### AD-19 — STATUS and controller→app reporting
 
-- **Binds:** controller, app link, CAP-4, W.1, W.2
+- **Binds:** controller, app link and its link-status indicators, CAP-4, W.1, W.2
 - **Prevents:**
   - the app's view of the mode drifting from the controller's when an EVENT is lost;
-  - controller TX blocking or flooding.
+  - controller TX blocking or flooding;
+  - the app learning the console state only by probing with `START`/`SET_STATE`, or inventing its own readiness rule.
 - **Rule:**
-  - **STATUS body:** `free u16, now_us u32` (µs since t0, 0 when IDLE or during the lead), `last_seq` (= `expected−1`), `mode`, `abort_count`, `last_event`, `link_ok`. Debug builds add counters: the maximum gap between app frames (W.1), watchdog trips and dropped bytes.
+  - **STATUS body:** `free u16, now_us u32` (µs since t0, 0 when IDLE or during the lead), `last_seq` (= `expected−1`), `mode`, `abort_count`, `last_event`, `flags u8`. Debug builds add counters: the maximum gap between app frames (W.1), watchdog trips and dropped bytes.
+  - **STATUS flags.** bit0 `link_ok`, bit1 `console_ready`; bits 2–7 are reserved, written as 0 and ignored by the app. A new status bit takes a reserved bit and needs no `PROTO_VERSION` bump (AD-7).
+  - **`console_ready`** is the profile's `ready()` when the STATUS is built, the same predicate that gates `NAK NOT_READY` (AD-8), which is still sent.
+    - It becomes 1 when the console handshake completes (P2: the `0x80` handshake; P1: `SET_CONFIGURATION` and the first IN poll).
+    - It returns to 0 on USB suspend, unmount or bus reset, and when no IN report has been taken for more than 100 ms (this covers "Pro Controller Wired Communication" being switched off without a bus event). The polling stall clears the flag only; it is not an abort cause.
+    - Unplugging the controller ends STATUS altogether. With the bridge alone the app receives no STATUS, so it treats both the bridge↔controller and the controller↔Switch states as down.
   - **Timing.** STATUS goes out every 50 ms, plus after ACKs, coalesced to at most one per 10 ms.
   - **Mode in the app.** The app derives the mode from STATUS. EVENT is only a fast path.
   - **Controller TX.** Priority is EVENT > NAK > ACK > STATUS. On overflow the lowest priority is dropped; TX never blocks.
@@ -348,7 +357,7 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
 | Errors | the core returns typed results and never touches UI; services turn them into user-facing events; firmware reports through `NAK`/`EVENT` only and never blocks |
 | Logging | the app keeps a rotating log in the OS log dir and logs every `EVENT`/`NAK`; a hidden "advanced" panel shows live frames; the controller has no USB stdio, and its debug output goes out as EVENT |
 | Config | build constants live in `ocb_proto`; the app learns runtime values from INFO |
-| UI safety content | the setup wizard shows wiring rules 1–4 (risk register), the "Pro Controller Wired Communication" step and a wiring photo; the play screen says "don't dock mid-song"; Linux `dialout` and udisks problems are detected by adapters and explained, never fixed by escalating privileges |
+| UI safety content | the setup wizard shows wiring rules 1–4 (risk register), the "Pro Controller Wired Communication" step as an original illustration plus the exact menu path (System Settings › Controllers & Accessories › Pro Controller Wired Communication › On), no console or game screenshots (copyright), and a wiring photo; the play screen says "don't dock mid-song"; Linux `dialout` and udisks problems are detected by adapters and explained, never fixed by escalating privileges |
 | Environments | dev: local toolchain per AD-1; CI: GitHub Actions; HIL bench: the test-plan environment table (console, game version, port, cable) recorded per run |
 
 ## Stack

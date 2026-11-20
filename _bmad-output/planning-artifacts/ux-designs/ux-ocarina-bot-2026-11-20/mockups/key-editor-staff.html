@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ocarina Bot Editor Split</title>
+<!-- Original CSS/SVG only. No game screenshots, logos, marks, fonts or textures are embedded or linked; nothing from imports/ is used.
+     Fonts: Cormorant Garamond + Nunito Sans (SIL OFL 1.1) via Google Fonts, the one network exception; bundled as TTF in the real app. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Nunito+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+/*
+Governing spine sections:
+ DESIGN.md      - Layout & Spacing > Text-score split, Vertical fit; Components > Note-view card (text editor),
+                  Staff view, Dimmed out-of-range zone (ghost note, fold target), Song panel, Virtual gamepad,
+                  Bottom bar, Tooltips, Focus ring; Typography > Code (Hack assumption)
+ EXPERIENCE.md  - IA > Main screen (note view with text score); Component Patterns > Text editor, Split divider,
+                  Note view (Staff), Out-of-range notes, Fit proposal, Undo / redo, Play gating, Track picker
+                  (hidden for text scores); State Patterns > Text score invalid, Unsaved draft, Out-of-range notes;
+                  Key Flows > Flow 3 (Composing)
+*/
+
+:root{--frame:#16110c;--panel:#1c150f;--panel-raised:#221a13;--well:#2a1e13;--control:#56402a;--rule:#3a2a1b;--rule-strong:#4a3826;--rim:#a37a3e;--rim-soft:#a37a3e66;--text:#f3e3bd;--muted:#c4a676;
+--parch:#ecdcb2;--parch-alt:#e4d2a5;--parch-h:#e2cf9f;--parch-h-alt:#d9c491;--parch-ruler:#dcc794;--parch-rule:#d8c595;--parch-grid:#b59a63;--ink:#2b2015;--ink-soft:#6e5132;--ink-ruler:#4a3520;--bracket:#7a5a33;--note:#5b3d22;
+--amber:#f0b43c;--amber-glow:#f0b43c66;--amber-wash:#f0b43c22;--amber-ink:#8a5a12;--ember:#b8432f;--ember-wash:#b8432f2e;--ember-text:#f2a58f;--on-ember:#fff4e0;--stop-fill:#3a1712;--stop-text:#e3a597;
+--oor-zone:#cfc6b4;--oor-ink:#55504a;--oor-note:#b9b0a0;--ok:#8fd16f;--warn:#f08a4b;--err:#ef6a55;--unk:#9a8a72;--banner-fill:#1c1610e0;--banner-border:#e9dcbc66;--veil:#16110ccc;--scrim:#0b0806b3}
+*{box-sizing:border-box}
+body{margin:0;background:#0c0906;color:var(--text);font:400 14px/1.5 'Nunito Sans',system-ui,sans-serif}
+.page{max-width:1340px;margin:0 auto;padding:28px 30px 60px}
+.page h1{font:700 30px 'Cormorant Garamond',serif;color:var(--parch);margin:0 0 4px}
+.page h2{font:700 22px 'Cormorant Garamond',serif;color:var(--parch);margin:40px 0 4px}
+.page p.cap{margin:2px 0 14px;color:var(--muted);max-width:1100px;font-size:13.5px}
+.page .note-ann{font-size:12.5px;color:var(--muted);margin:8px 0 0;max-width:1280px}
+.page .note-ann b{color:var(--text)}
+.row{display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap}
+/* window */
+.win{position:relative;width:1280px;height:800px;overflow:hidden;border-radius:10px;background:var(--frame);color:var(--text);font:400 13.5px/1.45 'Nunito Sans',sans-serif;box-shadow:0 18px 50px #000a,0 0 0 1px #000}
+.tb{height:28px;display:flex;align-items:center;gap:7px;padding:0 12px;font:12px system-ui,sans-serif;background:#0e0a07;color:var(--muted)}
+.tb i{width:12px;height:12px;border-radius:50%;background:#ff5f57}.tb i:nth-child(2){background:#febc2e}.tb i:nth-child(3){background:#28c840}
+.tb span{flex:1;text-align:center;margin-right:50px}
+.status{position:absolute;top:28px;left:0;right:0;height:44px;display:flex;align-items:center;padding:0 16px;gap:28px;background:var(--panel-raised);border-bottom:1px solid var(--rim-soft);z-index:3}
+.brand{font:700 23px 'Cormorant Garamond',serif;color:var(--parch);white-space:nowrap}
+.leds{display:flex;gap:20px}
+.led{position:relative;display:flex;align-items:center;gap:7px;font-weight:600;padding:2px 4px;border-radius:4px}
+.led em{font-style:normal;font-weight:400;color:var(--muted)}
+.led .s{width:11px;height:11px;flex:none;display:block}
+.led .dot{border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.st-right{margin-left:auto;display:flex;gap:16px;align-items:center;font-size:13px;color:var(--muted)}
+.gear{display:flex;color:var(--muted)}
+.focus{outline:2px solid var(--amber);outline-offset:2px}
+.focus-p{outline:2px solid var(--amber-ink);outline-offset:2px}
+/* tooltip */
+.tip{position:absolute;z-index:20;background:var(--panel-raised);border:1px solid var(--rim-soft);border-radius:6px;padding:8px 11px;color:var(--text);font:400 13.5px/1.45 'Nunito Sans',sans-serif;box-shadow:0 6px 18px #0008;white-space:nowrap}
+.tip .fix{display:block;margin-top:2px}
+/* panels */
+.left{position:absolute;top:72px;left:0;width:260px;bottom:88px;padding:12px 14px;background:var(--panel);border-right:1px solid var(--rule)}
+.center{position:absolute;top:72px;left:260px;width:720px;bottom:88px}
+.right{position:absolute;top:72px;right:0;width:300px;bottom:88px;padding:10px;background:var(--panel);border-left:1px solid var(--rule)}
+.ph{display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1px solid var(--rim);margin-bottom:4px}
+.ph span.tab{background:var(--parch);color:var(--ink);font:700 16px 'Cormorant Garamond',serif;padding:2px 14px 0;border-radius:4px 4px 0 0}
+.ph em{font-style:normal;font-size:11.5px;font-weight:700;padding:1px 8px;border-radius:10px;margin-bottom:3px}
+.lbl{display:block;color:var(--muted);text-transform:uppercase;font-weight:700;font-size:11.5px;letter-spacing:.06em;margin:12px 0 4px}
+.file{display:flex;align-items:center;justify-content:space-between;margin-top:8px;gap:8px}
+.fname{font-weight:600;font-size:15px;color:var(--parch);display:flex;align-items:center;gap:6px}
+.fname.none{color:var(--muted);font-weight:400;font-size:13.5px}
+.pill{display:inline-flex;align-items:center;justify-content:center;padding:3px 11px;font-size:12.5px;font-weight:600;border:1px solid var(--rim);color:var(--amber);border-radius:12px;white-space:nowrap}
+.select{min-height:34px;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 10px;font-size:12.5px;line-height:1.3;background:var(--well);border:1px solid var(--rim);border-radius:6px}
+.stepper{display:flex;align-items:baseline;gap:8px}
+.stepper .val{font-size:24px;font-weight:700}
+.auto{font-size:11.5px;padding:1px 7px;border-radius:8px;background:var(--amber-wash);color:var(--amber);font-weight:700}
+.steps{display:flex;gap:4px;margin-top:6px}
+.steps span{flex:1;text-align:center;height:28px;line-height:28px;font-size:13px;font-weight:600;background:var(--well);border:1px solid var(--rule-strong);border-radius:6px}
+.steps span.on{background:var(--amber);color:var(--ink);border-color:var(--amber);box-shadow:0 0 10px var(--amber-glow)}
+.fit{font-size:12.5px;margin-top:8px;line-height:1.45;color:#e2d0a8}
+.tempo{display:flex;align-items:center;gap:6px}
+.tempo .val{font-size:17px;font-weight:700;min-width:48px;text-align:center}
+.sbtn{width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:700;background:var(--well);border:1px solid var(--rule-strong);border-radius:6px}
+.bpm{margin-left:auto;font-size:12.5px;color:var(--muted)}
+.bpm u{text-decoration:none;display:inline-block;width:44px;padding:3px 6px;margin-left:4px;font-weight:700;font-size:14px;background:var(--well);border:1px solid var(--rim);border-radius:4px;color:var(--text)}
+.phint{position:absolute;bottom:12px;left:14px;font-size:12px;opacity:.75;color:var(--muted)}
+.sub{font-size:12.5px;color:var(--muted);margin:4px 0}
+.padwrap{display:flex;justify-content:center;margin:6px 0 6px}
+.legend{list-style:none;margin:0;padding:0;font-size:12.5px}
+.legend li{display:flex;justify-content:space-between;padding:3px 4px;border-bottom:1px solid var(--well)}
+.legend b{color:var(--parch);font-weight:600}
+.ihint{font-size:12.5px;color:var(--muted);margin-top:8px;display:flex;gap:8px;align-items:center}
+.right.gfocus{box-shadow:inset 0 0 0 2px var(--amber),inset 0 0 22px #f0b43c40}
+.kbd-on{background:var(--amber);color:var(--ink)}
+/* parchment card */
+.card{position:absolute;inset:6px;background:var(--parch);border-radius:12px;color:var(--ink);overflow:hidden}
+.ch{height:40px;display:flex;align-items:center;gap:14px;padding:0 30px;background:var(--parch-h);border-bottom:1px solid var(--parch-grid)}
+.seg{display:flex}.seg span{padding:3px 14px;font-size:13px;font-weight:600;border:1px solid var(--ink)}
+.seg span.on{background:var(--ink);color:var(--parch)}
+.seg span:first-child{border-radius:12px 0 0 12px}.seg span:last-child{border-radius:0 12px 12px 0;border-left:0}
+.transport{display:flex;align-items:center;gap:6px}
+.tbtn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border:1px solid var(--ink);border-radius:50%}
+.time{font-size:13px;font-variant-numeric:tabular-nums;margin-left:4px;font-weight:600}
+.pv{margin-left:auto;font-size:12px;opacity:.75}
+.dim{opacity:.45}
+.corner{position:absolute;width:22px;height:22px;pointer-events:none;z-index:4}
+.corner.tl{top:4px;left:4px}.corner.tr{top:4px;right:4px;transform:scaleX(-1)}
+.corner.bl{bottom:4px;left:4px;transform:scaleY(-1)}.corner.br{bottom:4px;right:4px;transform:scale(-1,-1)}
+svg text{font-family:'Nunito Sans',sans-serif}
+.rt{font-size:10.5px}.ln{font-size:12px;font-weight:700}.lf{font-size:10.5px}
+.gl{font-size:10.5px;font-weight:700}.gt{font-size:9.5px;font-weight:700}
+.pb{font-size:10px;font-weight:700}.pa{font-size:8px}.pt{font-size:10px;font-weight:600}
+.cap2{font-size:11px}.lbl2{font-size:11px;font-weight:600}.lblb{font-size:11.5px;font-weight:700}
+/* bottom bar */
+.bottom{position:absolute;left:0;right:0;bottom:0;height:88px;display:flex;align-items:center;gap:14px;padding:0 16px;background:var(--panel-raised);border-top:1px solid var(--rim-soft)}
+.big{position:relative;display:flex;align-items:center;gap:12px;height:60px;padding:0 22px;min-width:190px;border-radius:12px}
+.big b{display:block;font-size:17px;line-height:1.1}
+.big small{display:block;font-size:12.5px;opacity:.85}
+.big.primary{background:var(--amber);color:var(--ink);box-shadow:0 0 16px var(--amber-glow)}
+.big.secondary{background:var(--well);border:1px solid var(--rim);color:var(--text)}
+.big.stop{background:var(--stop-fill);border:1px solid var(--ember);color:var(--stop-text);opacity:.75}
+.big.stop.live{background:var(--ember);color:var(--on-ember);box-shadow:0 0 18px var(--ember);opacity:1;border:0}
+.big.off{opacity:.45;box-shadow:none}
+.big .orb{flex:none}
+.hist{display:flex;gap:6px;padding-left:12px;border-left:1px solid var(--parch-grid)}
+.bottom .safety{flex:1;font-size:13px;line-height:1.35;text-align:right;padding-right:6px;color:var(--muted)}
+.bottom .safety span{opacity:.7}
+/* overlays */
+.scrim{position:absolute;inset:0;background:var(--scrim);z-index:10}
+.modal{position:absolute;z-index:11;left:50%;top:50%;transform:translate(-50%,-50%);width:460px;background:var(--panel-raised);border:1px solid var(--rim);border-radius:8px;padding:20px 26px 20px;box-shadow:0 18px 50px #000c}
+.modal h3{margin:0;text-align:center;font:700 21px/1.2 'Cormorant Garamond',serif;color:var(--parch)}
+.flourish{display:block;margin:6px auto 10px}
+.checklist{list-style:none;margin:6px 0 14px;padding:0}
+.checklist li{display:flex;align-items:center;gap:12px;padding:7px 0;font-size:14.5px;border-bottom:1px solid var(--rule)}
+.checklist li:last-child{border-bottom:0}
+.diamond{width:9px;height:9px;flex:none;background:var(--amber);transform:rotate(45deg)}
+.mrow{display:flex;align-items:center;gap:10px}
+.cbox{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13.5px}
+.cbox i{width:14px;height:14px;background:var(--well);border:1px solid var(--rim);border-radius:2px;display:block}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:34px;padding:0 18px;font-size:14px;font-weight:700;border-radius:8px;white-space:nowrap}
+.btn.primary{background:var(--amber);color:var(--ink);box-shadow:0 0 12px var(--amber-glow)}
+.btn.ghost{border:1px solid var(--rim);color:var(--text);background:var(--well)}
+.btn.off{opacity:.45;box-shadow:none}
+.mtext{font-size:14.5px;line-height:1.5;margin:0 0 16px;text-align:center}
+/* dialogue banner */
+.banner{position:absolute;left:24px;right:24px;bottom:18px;z-index:6;background:var(--banner-fill);color:var(--text);border:1px solid var(--banner-border);border-radius:6px;padding:20px 20px 18px;text-align:center;font:400 15px/1.4 'Nunito Sans',sans-serif}
+.banner .who{position:absolute;top:-13px;left:16px;background:var(--panel-raised);border:1px solid var(--rim);color:var(--parch);font:700 16px 'Cormorant Garamond',serif;padding:0 12px;border-radius:3px}
+.banner p{margin:2px 0 12px}
+.b-actions{display:flex;gap:10px;justify-content:center;align-items:center;position:relative}
+.bb{display:inline-flex;align-items:center;height:32px;padding:0 16px;border-radius:6px;font-size:14px;font-weight:700}
+.bb.p{background:var(--parch);color:var(--ink)}
+.bb.g{border:1px solid #f3e3bd80;color:var(--text)}
+.b-actions .details{position:absolute;right:0;font-size:13px;color:var(--muted);text-decoration:underline;text-underline-offset:3px}
+.chev{position:absolute;bottom:-1px;left:50%;transform:translateX(-50%)}
+
+
+.editor{position:absolute;top:6px;left:6px;right:6px;height:150px;background:var(--well);border-radius:6px;padding:8px 12px;font:13px/18px Hack,'DejaVu Sans Mono',Menlo,Consolas,monospace;color:var(--text);white-space:pre;overflow:visible;z-index:5}
+.editor .cm{color:var(--muted)}
+.editor .err{border-bottom:2px solid var(--err)}
+.caret{display:inline-block;width:2px;height:15px;background:var(--text);vertical-align:-3px;margin-left:1px}
+.split{position:absolute;top:156px;left:6px;right:6px;height:6px;background:var(--frame);display:flex;justify-content:center;align-items:center;gap:4px;cursor:row-resize}
+.split i{width:3px;height:3px;border-radius:50%;background:var(--rim-soft)}
+.card.lower{top:162px}
+.tip.edtip{top:146px;left:254px;font-size:13px}
+
+</style></head>
+<body><div class="page">
+<h1>Key screen · Text score: editor + Staff view</h1><p class="cap">A text score is loaded, so the centre splits: text editor on top (Well fill, monospace), a draggable split divider, and the note view below in Staff mode (button glyph circles with modifier tags). One inline error is underlined in the editor with its hover message; the last valid parse stays drawn. An out-of-range G5 sits dimmed in the “above F5” zone with its proposed fold to G4. The window title carries the unsaved-changes dot.</p><div class="win"><div class="tb"><i></i><i></i><i></i><span>Ocarina Bot — Evening melody.txt •</span></div><div class="status"><div class="brand">Ocarina Bot</div><div class="leds"><span class="led"><i class="s dot"></i>Bridge <em>v0.3</em></span><span class="led"><i class="s dot"></i>Controller <em>v0.3</em></span><span class="led"><i class="s dot"></i>Switch <em>– ready</em></span></div><div class="st-right"><span>Set up / Reflash…</span><span class="gear"><svg width="20" height="20" viewBox="0 0 24 24" aria-label="Settings"><path fill="currentColor" d="M12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 0 0 0-7zm9 4.6v-2.2l-2.4-.5a6.9 6.9 0 0 0-.7-1.6l1.4-2-1.6-1.6-2 1.4a6.9 6.9 0 0 0-1.6-.7L13.6 3h-2.2l-.5 2.4a6.9 6.9 0 0 0-1.6.7l-2-1.4-1.6 1.6 1.4 2a6.9 6.9 0 0 0-.7 1.6L3 10.9v2.2l2.4.5c.2.6.4 1.1.7 1.6l-1.4 2 1.6 1.6 2-1.4c.5.3 1 .5 1.6.7l.5 2.4h2.2l.5-2.4c.6-.2 1.1-.4 1.6-.7l2 1.4 1.6-1.6-1.4-2c.3-.5.5-1 .7-1.6z"/></svg></span></div></div><div class="left"><div class="ph"><span class="tab">Song</span></div><div class="file"><span class="fname"><svg width="12" height="14" viewBox="0 0 12 14"><path d="M4 2 L11 0.5 L11 3 L5.5 4.2 L5.5 11" fill="none" stroke="#ecdcb2" stroke-width="1.6"/><ellipse cx="3.6" cy="11.3" rx="2.6" ry="2" fill="#ecdcb2"/><path d="M11 3 L11 9.5" stroke="#ecdcb2" stroke-width="1.6"/><ellipse cx="9.1" cy="9.8" rx="2.4" ry="1.9" fill="#ecdcb2"/></svg> Evening melody.txt</span><span class="pill">Open…</span></div><span class="lbl">Transpose</span><div class="stepper"><span class="val">0 st</span><span class="auto">auto</span></div><div class="steps"><span>−12</span><span>−1</span><span>+1</span><span>+12</span><span class="on">Auto</span></div><div class="fit"><b>23</b> in range · <b>1</b> folded · <b>0</b> dropped</div><span class="lbl">Tempo</span><div class="tempo"><span class="sbtn">−</span><span class="val">100 %</span><span class="sbtn">+</span><span class="bpm">BPM <u>96</u></span></div><div class="phint">Mapping profile: Default · Switch 2</div></div><div class="center"><div class="editor focus"><span class="cm"># title: Evening melody</span>
+tempo 96
+transpose 0
+A4/4 C5/4 B4/8 A4/8 G4/4 | E4/2 r/4 G5/4
+F4/4 A4/4 C5/4 B4/4 | A4/2. r/4
+D5/4 C5/8 B4/8 A4/4 G#4/4 | A4/1
+E4/4 F4/4 G4/4 A4/4 | B4/4 C5/4 <span class="err">D5/q</span><span class="caret"></span></div><div class="tip edtip">Unknown note length “q”.<span class="fix">Use 1, 2, 4, 8 or 16, e.g. D5/4.</span></div><div class="split" title="Drag to resize"><i></i><i></i><i></i><i></i><i></i></div><div class="card lower"><div class="ch"><div class="seg"><span>Roll</span><span class="on">Staff</span></div><div class="transport"><span class="tbtn"><svg width="10" height="11" viewBox="0 0 10 11"><path d="M1.5 0.5 L9.5 5.5 L1.5 10.5 Z" fill="#2b2015"/></svg></span><span class="tbtn"><svg width="9" height="9" viewBox="0 0 9 9"><rect width="9" height="9" rx="1" fill="#2b2015"/></svg></span><span class="time">0:00 / 0:20</span></div><div class="pv">Preview · PC only</div><div class="hist"><span class="tbtn" title="Undo (Cmd/Ctrl+Z)"><svg width="13" height="12" viewBox="0 0 13 12"><path d="M4.2 2.2 L1.4 5 L4.2 7.8" fill="none" stroke="#2b2015" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M1.8 5 L8 5 Q11.6 5 11.6 7.8 Q11.6 10.6 8.4 10.6 L5.6 10.6" fill="none" stroke="#2b2015" stroke-width="1.6" stroke-linecap="round"/></svg></span><span class="tbtn dim" title="Redo (Cmd/Ctrl+Shift+Z)"><svg width="13" height="12" viewBox="0 0 13 12" style="transform:scaleX(-1)"><path d="M4.2 2.2 L1.4 5 L4.2 7.8" fill="none" stroke="#2b2015" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M1.8 5 L8 5 Q11.6 5 11.6 7.8 Q11.6 10.6 8.4 10.6 L5.6 10.6" fill="none" stroke="#2b2015" stroke-width="1.6" stroke-linecap="round"/></svg></span></div></div><svg width="708" height="419" viewBox="0 0 708 419" style="display:block">
+<defs><clipPath id="clipT1"><rect x="96" y="0" width="612" height="419"/></clipPath></defs>
+<rect width="708" height="419" fill="#ecdcb2"/>
+<rect x="0" y="0" width="96" height="22" fill="#e2cf9f"/>
+<text x="10" y="15" class="lf" fill="#6e5132">note · input</text>
+<rect x="96" y="0" width="612" height="22" fill="#dcc794"/>
+<line x1="96.0" y1="14" x2="96.0" y2="22" stroke="#4a3520" stroke-width="1"/>
+<line x1="96.0" y1="52" x2="96.0" y2="413" stroke="#b59a63" stroke-width="1" opacity=".35"/>
+<line x1="130.0" y1="18" x2="130.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="164.0" y1="18" x2="164.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="198.0" y1="18" x2="198.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="232.0" y1="18" x2="232.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="266.0" y1="18" x2="266.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="300.0" y1="18" x2="300.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="334.0" y1="18" x2="334.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="368.0" y1="18" x2="368.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="402.0" y1="18" x2="402.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="436.0" y1="18" x2="436.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="470.0" y1="18" x2="470.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="504.0" y1="18" x2="504.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="538.0" y1="18" x2="538.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="572.0" y1="18" x2="572.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="606.0" y1="18" x2="606.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="640.0" y1="14" x2="640.0" y2="22" stroke="#4a3520" stroke-width="1"/>
+<line x1="640.0" y1="52" x2="640.0" y2="413" stroke="#b59a63" stroke-width="1" opacity=".35"/>
+<line x1="674.0" y1="18" x2="674.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="708.0" y1="18" x2="708.0" y2="22" stroke="#4a3520" stroke-width="1" opacity=".6"/>
+<line x1="96.0" y1="14" x2="96.0" y2="22" stroke="#4a3520"/>
+<text x="99.0" y="13" class="rt" fill="#4a3520">0:00</text>
+<line x1="204.8" y1="14" x2="204.8" y2="22" stroke="#4a3520"/>
+<text x="207.8" y="13" class="rt" fill="#4a3520">0:02</text>
+<line x1="313.6" y1="14" x2="313.6" y2="22" stroke="#4a3520"/>
+<text x="316.6" y="13" class="rt" fill="#4a3520">0:04</text>
+<line x1="422.4" y1="14" x2="422.4" y2="22" stroke="#4a3520"/>
+<text x="425.4" y="13" class="rt" fill="#4a3520">0:06</text>
+<line x1="531.2" y1="14" x2="531.2" y2="22" stroke="#4a3520"/>
+<text x="534.2" y="13" class="rt" fill="#4a3520">0:08</text>
+<line x1="640.0" y1="14" x2="640.0" y2="22" stroke="#4a3520"/>
+<text x="643.0" y="13" class="rt" fill="#4a3520">0:10</text>
+<rect x="0" y="22" width="708" height="30" fill="#cfc6b4"/>
+<text x="8" y="41" class="lf" fill="#55504a">above F5</text>
+<line x1="0" y1="52" x2="708" y2="52" stroke="#b59a63" stroke-dasharray="3 3"/>
+<rect x="0" y="413" width="708" height="6" fill="#cfc6b4"/>
+<line x1="0" y1="413" x2="708" y2="413" stroke="#b59a63" stroke-dasharray="3 3"/>
+<rect x="0" y="52" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="65.5" class="ln" fill="#2b2015">F5</text>
+<text x="90" y="65.5" class="lf" text-anchor="end" fill="#6e5132">X+D↑+S↑</text>
+<line x1="96" y1="61.5" x2="708" y2="61.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="71" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="84.5" class="ln" fill="#2b2015">E5</text>
+<text x="90" y="84.5" class="lf" text-anchor="end" fill="#6e5132">X+S↑</text>
+<line x1="96" y1="80.5" x2="708" y2="80.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="90" width="96" height="19" fill="#d9c491"/>
+<text x="8" y="103.5" class="ln" fill="#2b2015">D♯5</text>
+<text x="90" y="103.5" class="lf" text-anchor="end" fill="#6e5132">X+D↑</text>
+<line x1="96" y1="99.5" x2="708" y2="99.5" stroke="#2b2015" stroke-width="1" opacity=".3"/>
+<rect x="0" y="109" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="122.5" class="ln" fill="#2b2015">D5</text>
+<text x="90" y="122.5" class="lf" text-anchor="end" fill="#6e5132">X</text>
+<line x1="96" y1="118.5" x2="708" y2="118.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="128" width="96" height="19" fill="#d9c491"/>
+<text x="8" y="141.5" class="ln" fill="#2b2015">C♯5</text>
+<text x="90" y="141.5" class="lf" text-anchor="end" fill="#6e5132">X+D↓</text>
+<line x1="96" y1="137.5" x2="708" y2="137.5" stroke="#2b2015" stroke-width="1" opacity=".3"/>
+<rect x="0" y="147" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="160.5" class="ln" fill="#2b2015">C5</text>
+<text x="90" y="160.5" class="lf" text-anchor="end" fill="#6e5132">Y+D↑</text>
+<line x1="96" y1="156.5" x2="708" y2="156.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="166" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="179.5" class="ln" fill="#2b2015">B4</text>
+<text x="90" y="179.5" class="lf" text-anchor="end" fill="#6e5132">Y</text>
+<line x1="96" y1="175.5" x2="708" y2="175.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="185" width="96" height="19" fill="#d9c491"/>
+<text x="8" y="198.5" class="ln" fill="#2b2015">A♯4</text>
+<text x="90" y="198.5" class="lf" text-anchor="end" fill="#6e5132">A+D↑</text>
+<line x1="96" y1="194.5" x2="708" y2="194.5" stroke="#2b2015" stroke-width="1" opacity=".3"/>
+<rect x="0" y="204" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="217.5" class="ln" fill="#2b2015">A4</text>
+<text x="90" y="217.5" class="lf" text-anchor="end" fill="#6e5132">A</text>
+<line x1="96" y1="213.5" x2="708" y2="213.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="223" width="96" height="19" fill="#d9c491"/>
+<text x="8" y="236.5" class="ln" fill="#2b2015">G♯4</text>
+<text x="90" y="236.5" class="lf" text-anchor="end" fill="#6e5132">A+D↓</text>
+<line x1="96" y1="232.5" x2="708" y2="232.5" stroke="#2b2015" stroke-width="1" opacity=".3"/>
+<rect x="0" y="242" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="255.5" class="ln" fill="#2b2015">G4</text>
+<text x="90" y="255.5" class="lf" text-anchor="end" fill="#6e5132">R+S↑</text>
+<line x1="96" y1="251.5" x2="708" y2="251.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="261" width="96" height="19" fill="#d9c491"/>
+<text x="8" y="274.5" class="ln" fill="#2b2015">F♯4</text>
+<text x="90" y="274.5" class="lf" text-anchor="end" fill="#6e5132">R+D↑</text>
+<line x1="96" y1="270.5" x2="708" y2="270.5" stroke="#2b2015" stroke-width="1" opacity=".3"/>
+<rect x="0" y="280" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="293.5" class="ln" fill="#2b2015">F4</text>
+<text x="90" y="293.5" class="lf" text-anchor="end" fill="#6e5132">R</text>
+<line x1="96" y1="289.5" x2="708" y2="289.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="299" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="312.5" class="ln" fill="#2b2015">E4</text>
+<text x="90" y="312.5" class="lf" text-anchor="end" fill="#6e5132">R+D↓</text>
+<line x1="96" y1="308.5" x2="708" y2="308.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="318" width="96" height="19" fill="#d9c491"/>
+<text x="8" y="331.5" class="ln" fill="#2b2015">D♯4</text>
+<text x="90" y="331.5" class="lf" text-anchor="end" fill="#6e5132">L+D↑</text>
+<line x1="96" y1="327.5" x2="708" y2="327.5" stroke="#2b2015" stroke-width="1" opacity=".3"/>
+<rect x="0" y="337" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="350.5" class="ln" fill="#2b2015">D4</text>
+<text x="90" y="350.5" class="lf" text-anchor="end" fill="#6e5132">L</text>
+<line x1="96" y1="346.5" x2="708" y2="346.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="356" width="96" height="19" fill="#d9c491"/>
+<text x="8" y="369.5" class="ln" fill="#2b2015">C♯4</text>
+<text x="90" y="369.5" class="lf" text-anchor="end" fill="#6e5132">L+D↓</text>
+<line x1="96" y1="365.5" x2="708" y2="365.5" stroke="#2b2015" stroke-width="1" opacity=".3"/>
+<rect x="0" y="375" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="388.5" class="ln" fill="#2b2015">C4</text>
+<text x="90" y="388.5" class="lf" text-anchor="end" fill="#6e5132">L+S↓</text>
+<line x1="96" y1="384.5" x2="708" y2="384.5" stroke="#2b2015" stroke-width="1.2"/>
+<rect x="0" y="394" width="96" height="19" fill="#e2cf9f"/>
+<text x="8" y="407.5" class="ln" fill="#2b2015">B3</text>
+<text x="90" y="407.5" class="lf" text-anchor="end" fill="#6e5132">L+D↓+S↓</text>
+<line x1="96" y1="403.5" x2="708" y2="403.5" stroke="#2b2015" stroke-width="1.2"/>
+<line x1="96" y1="52" x2="96" y2="413" stroke="#b59a63" stroke-width="1.5"/>
+<g clip-path="url(#clipT1)">
+<rect x="334.0" y="29.0" width="32.0" height="16" rx="4" fill="#b9b0a0" stroke="#55504a" stroke-dasharray="2 2"/>
+<text x="372.0" y="41.0" class="lbl2" fill="#55504a">G5 · out of range — proposed: fold to G4</text>
+<rect x="334.0" y="244.0" width="32.0" height="15" rx="4" fill="none" stroke="#55504a" stroke-dasharray="3 2"/>
+<line x1="350.0" y1="45.0" x2="350.0" y2="243.0" stroke="#55504a" stroke-dasharray="2 3" opacity=".7"/>
+<rect x="97.0" y="211.0" width="32.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="105.5" cy="213.5" r="8.5" fill="#2b2015"/>
+<text x="105.5" y="217.3" class="gl" text-anchor="middle" fill="#ecdcb2">A</text>
+<rect x="131.0" y="154.0" width="32.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="139.5" cy="156.5" r="8.5" fill="#2b2015"/>
+<text x="139.5" y="160.3" class="gl" text-anchor="middle" fill="#ecdcb2">Y</text>
+<rect x="149.5" y="150.5" width="19" height="12" rx="3" fill="#2b2015"/>
+<text x="159.0" y="159.8" class="gt" text-anchor="middle" fill="#ecdcb2">D↑</text>
+<rect x="165.0" y="173.0" width="15.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="173.5" cy="175.5" r="8.5" fill="#2b2015"/>
+<text x="173.5" y="179.3" class="gl" text-anchor="middle" fill="#ecdcb2">Y</text>
+<rect x="182.0" y="211.0" width="15.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="190.5" cy="213.5" r="8.5" fill="#2b2015"/>
+<text x="190.5" y="217.3" class="gl" text-anchor="middle" fill="#ecdcb2">A</text>
+<rect x="199.0" y="249.0" width="32.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="207.5" cy="251.5" r="8.5" fill="#2b2015"/>
+<text x="207.5" y="255.3" class="gl" text-anchor="middle" fill="#ecdcb2">R</text>
+<rect x="217.5" y="245.5" width="19" height="12" rx="3" fill="#2b2015"/>
+<text x="227.0" y="254.8" class="gt" text-anchor="middle" fill="#ecdcb2">S↑</text>
+<rect x="233.0" y="306.0" width="66.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="241.5" cy="308.5" r="8.5" fill="#2b2015"/>
+<text x="241.5" y="312.3" class="gl" text-anchor="middle" fill="#ecdcb2">R</text>
+<rect x="251.5" y="302.5" width="19" height="12" rx="3" fill="#2b2015"/>
+<text x="261.0" y="311.8" class="gt" text-anchor="middle" fill="#ecdcb2">D↓</text>
+<rect x="369.0" y="287.0" width="32.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="377.5" cy="289.5" r="8.5" fill="#2b2015"/>
+<text x="377.5" y="293.3" class="gl" text-anchor="middle" fill="#ecdcb2">R</text>
+<rect x="403.0" y="211.0" width="32.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="411.5" cy="213.5" r="8.5" fill="#2b2015"/>
+<text x="411.5" y="217.3" class="gl" text-anchor="middle" fill="#ecdcb2">A</text>
+<rect x="437.0" y="154.0" width="32.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="445.5" cy="156.5" r="8.5" fill="#2b2015"/>
+<text x="445.5" y="160.3" class="gl" text-anchor="middle" fill="#ecdcb2">Y</text>
+<rect x="455.5" y="150.5" width="19" height="12" rx="3" fill="#2b2015"/>
+<text x="465.0" y="159.8" class="gt" text-anchor="middle" fill="#ecdcb2">D↑</text>
+<rect x="471.0" y="173.0" width="32.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="479.5" cy="175.5" r="8.5" fill="#2b2015"/>
+<text x="479.5" y="179.3" class="gl" text-anchor="middle" fill="#ecdcb2">Y</text>
+<rect x="505.0" y="211.0" width="100.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="513.5" cy="213.5" r="8.5" fill="#2b2015"/>
+<text x="513.5" y="217.3" class="gl" text-anchor="middle" fill="#ecdcb2">A</text>
+<rect x="641.0" y="116.0" width="32.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="649.5" cy="118.5" r="8.5" fill="#2b2015"/>
+<text x="649.5" y="122.3" class="gl" text-anchor="middle" fill="#ecdcb2">X</text>
+<rect x="675.0" y="154.0" width="15.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="683.5" cy="156.5" r="8.5" fill="#2b2015"/>
+<text x="683.5" y="160.3" class="gl" text-anchor="middle" fill="#ecdcb2">Y</text>
+<rect x="693.5" y="150.5" width="19" height="12" rx="3" fill="#2b2015"/>
+<text x="703.0" y="159.8" class="gt" text-anchor="middle" fill="#ecdcb2">D↑</text>
+<rect x="692.0" y="173.0" width="15.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="700.5" cy="175.5" r="8.5" fill="#2b2015"/>
+<text x="700.5" y="179.3" class="gl" text-anchor="middle" fill="#ecdcb2">Y</text>
+<rect x="709.0" y="211.0" width="32.0" height="5" rx="2.5" fill="#2b2015" fill-opacity=".8"/>
+<circle cx="717.5" cy="213.5" r="8.5" fill="#2b2015"/>
+<text x="717.5" y="217.3" class="gl" text-anchor="middle" fill="#ecdcb2">A</text>
+</g>
+</svg><svg class="corner tl" width="22" height="22" viewBox="0 0 22 22"><path d="M2,20 L2,6 Q2,2 6,2 L20,2" fill="none" stroke="#7a5a33" stroke-width="2"/><path d="M7,14 Q7,7 14,7" fill="none" stroke="#7a5a33" stroke-width="1.2"/><circle cx="7" cy="7" r="1.6" fill="#7a5a33"/></svg><svg class="corner tr" width="22" height="22" viewBox="0 0 22 22"><path d="M2,20 L2,6 Q2,2 6,2 L20,2" fill="none" stroke="#7a5a33" stroke-width="2"/><path d="M7,14 Q7,7 14,7" fill="none" stroke="#7a5a33" stroke-width="1.2"/><circle cx="7" cy="7" r="1.6" fill="#7a5a33"/></svg><svg class="corner bl" width="22" height="22" viewBox="0 0 22 22"><path d="M2,20 L2,6 Q2,2 6,2 L20,2" fill="none" stroke="#7a5a33" stroke-width="2"/><path d="M7,14 Q7,7 14,7" fill="none" stroke="#7a5a33" stroke-width="1.2"/><circle cx="7" cy="7" r="1.6" fill="#7a5a33"/></svg><svg class="corner br" width="22" height="22" viewBox="0 0 22 22"><path d="M2,20 L2,6 Q2,2 6,2 L20,2" fill="none" stroke="#7a5a33" stroke-width="2"/><path d="M7,14 Q7,7 14,7" fill="none" stroke="#7a5a33" stroke-width="1.2"/><circle cx="7" cy="7" r="1.6" fill="#7a5a33"/></svg></div></div><div class="right"><div class="ph"><span class="tab">Gamepad</span></div><div class="sub">Use it to reach ocarina free play.</div><div class="padwrap"><svg class="pad" width="280" height="200" viewBox="0 0 280 200"><defs><filter id="pglow-d1" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><rect x="30" y="8" width="54" height="15" rx="6" fill="#2e2116" stroke="#8a6a3c" stroke-width="1"/><text x="57.0" y="19.5" class="pb" text-anchor="middle" fill="#e8d6ab">ZL</text><rect x="42" y="28" width="54" height="13" rx="6" fill="#2e2116" stroke="#8a6a3c" stroke-width="1"/><text x="69.0" y="37.5" class="pb" text-anchor="middle" fill="#e8d6ab">L</text><rect x="184" y="28" width="54" height="13" rx="6" fill="#2e2116" stroke="#8a6a3c" stroke-width="1"/><text x="211.0" y="37.5" class="pb" text-anchor="middle" fill="#e8d6ab">R</text><rect x="196" y="8" width="54" height="15" rx="6" fill="#2e2116" stroke="#8a6a3c" stroke-width="1"/><text x="223.0" y="19.5" class="pb" text-anchor="middle" fill="#e8d6ab">ZR</text><path d="M52,46 Q140,36 228,46 Q262,52 270,96 L278,162 Q281,192 256,194 Q236,196 222,174 L204,156 Q140,148 76,156 L58,174 Q44,196 24,194 Q-1,192 2,162 L10,96 Q18,52 52,46 Z" fill="#120c07" stroke="#8a6a3c" stroke-width="1.5"/><circle cx="70" cy="88" r="17" fill="#0b0704" stroke="#8a6a3c"/><circle cx="70" cy="88" r="11" fill="#2e2116" stroke="#8a6a3c"/><circle cx="176" cy="122" r="17" fill="#0b0704" stroke="#8a6a3c"/><circle cx="176" cy="122" r="11" fill="#2e2116" stroke="#8a6a3c"/><circle cx="104" cy="122" r="22" fill="#0b0704"/><rect x="97" y="103" width="14" height="14" rx="2" fill="#2e2116"/><rect x="97" y="127" width="14" height="14" rx="2" fill="#2e2116"/><rect x="85" y="115" width="14" height="14" rx="2" fill="#2e2116"/><rect x="109" y="115" width="14" height="14" rx="2" fill="#2e2116"/><rect x="97" y="115" width="14" height="14" fill="#2e2116"/><text x="104" y="114" class="pa" text-anchor="middle" fill="#e8d6ab">▲</text><text x="104" y="138" class="pa" text-anchor="middle" fill="#e8d6ab">▼</text><text x="92" y="126" class="pa" text-anchor="middle" fill="#e8d6ab">◀</text><text x="116" y="126" class="pa" text-anchor="middle" fill="#e8d6ab">▶</text><circle cx="212" cy="88" r="31" fill="#0b0704"/><circle cx="212" cy="70" r="10" fill="#2e2116" stroke="#8a6a3c"/><text x="212" y="74" class="pb" text-anchor="middle" fill="#e8d6ab">X</text><circle cx="194" cy="88" r="10" fill="#2e2116" stroke="#8a6a3c"/><text x="194" y="92" class="pb" text-anchor="middle" fill="#e8d6ab">Y</text><circle cx="230" cy="88" r="10" fill="#2e2116" stroke="#8a6a3c"/><text x="230" y="92" class="pb" text-anchor="middle" fill="#e8d6ab">A</text><circle cx="212" cy="106" r="10" fill="#2e2116" stroke="#8a6a3c"/><text x="212" y="110" class="pb" text-anchor="middle" fill="#e8d6ab">B</text><circle cx="112" cy="64" r="7" fill="#2e2116"/><text x="112" y="68" class="pb" text-anchor="middle" fill="#e8d6ab">−</text><circle cx="168" cy="64" r="7" fill="#2e2116"/><text x="168" y="68" class="pb" text-anchor="middle" fill="#e8d6ab">+</text><rect x="114" y="84" width="11" height="11" rx="2" fill="#2e2116"/><circle cx="119.5" cy="89.5" r="2.6" fill="#e8d6ab"/><circle cx="160" cy="89.5" r="6.5" fill="#2e2116"/><path d="M156.5,90.5 L160,87 L163.5,90.5 L163.5,93 L156.5,93 Z" fill="#e8d6ab"/><rect x="11.5" y="9" width="13" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="18" y="19" class="pt" text-anchor="middle" fill="#f2e6c9">Z</text><rect x="23.5" y="29" width="13" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="30" y="39" class="pt" text-anchor="middle" fill="#f2e6c9">Q</text><rect x="243.5" y="29" width="13" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="250" y="39" class="pt" text-anchor="middle" fill="#f2e6c9">E</text><rect x="255.5" y="9" width="13" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="262" y="19" class="pt" text-anchor="middle" fill="#f2e6c9">C</text><rect x="205.5" y="45" width="13" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="212" y="55" class="pt" text-anchor="middle" fill="#f2e6c9">K</text><rect x="170.5" y="83" width="13" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="177" y="93" class="pt" text-anchor="middle" fill="#f2e6c9">H</text><rect x="240.5" y="83" width="13" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="247" y="93" class="pt" text-anchor="middle" fill="#f2e6c9">L</text><rect x="205.5" y="117" width="13" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="212" y="127" class="pt" text-anchor="middle" fill="#f2e6c9">J</text><rect x="90.5" y="47" width="15" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="98" y="57" class="pt" text-anchor="middle" fill="#f2e6c9">⌫</text><rect x="175.5" y="47" width="15" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="183" y="57" class="pt" text-anchor="middle" fill="#f2e6c9">↵</text><rect x="66.0" y="151" width="76" height="13" rx="3" fill="#3a2918" stroke="#8a6a3c" stroke-width=".8"/><text x="104" y="161" class="pt" text-anchor="middle" fill="#f2e6c9">WASD · arrows</text><text x="70" y="118" class="pt" text-anchor="middle" fill="#b49b74">mouse</text><text x="176" y="152" class="pt" text-anchor="middle" fill="#b49b74">mouse</text></svg></div><ul class="legend"><li><b>D-pad</b><span>W A S D or arrows</span></li><li><b>Y B X A</b><span>H J K L</span></li><li><b>L · R</b><span>Q · E</span></li><li><b>ZL · ZR</b><span>Z · C</span></li><li><b>+ · −</b><span>Enter · Backspace</span></li><li><b>Sticks, Home, Capture</b><span>mouse</span></li></ul></div><div class="bottom"><div class="big primary off"><svg width="16" height="18" viewBox="0 0 16 18"><path d="M2 1 L15 9 L2 17 Z" fill="currentColor"/></svg><span><b>Play from cursor</b><small>0:00</small></span></div><div class="big secondary off"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="1" y="2" width="3" height="14" fill="currentColor"/><path d="M17 2 L5 9 L17 16 Z" fill="currentColor"/></svg><span><b>Play from start</b><small>0:00</small></span></div><div class="big secondary listen"><svg class="orb" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><defs><filter id="orbglow3" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.2"/></filter></defs><circle cx="11" cy="12" r="5.5" fill="#f0b43c" fill-opacity=".75" filter="url(#orbglow3)"/><ellipse cx="6.6" cy="7.4" rx="4.6" ry="2.5" transform="rotate(-35 6.6 7.4)" fill="#f3e3bd" fill-opacity=".22" stroke="#f3e3bd" stroke-opacity=".85" stroke-width="1"/><ellipse cx="15.4" cy="7.4" rx="4.6" ry="2.5" transform="rotate(35 15.4 7.4)" fill="#f3e3bd" fill-opacity=".22" stroke="#f3e3bd" stroke-opacity=".85" stroke-width="1"/><circle cx="11" cy="12" r="3.4" fill="#fff4e0"/><circle cx="5.2" cy="17.2" r="1" fill="#f0b43c"/><circle cx="2.8" cy="19.6" r=".7" fill="#f0b43c" fill-opacity=".7"/></svg><span><b>Listen</b><small>on this PC</small></span></div><div class="safety">Don’t dock the Switch mid-song.<br><span>Esc stops at any time.</span></div><div class="big stop"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="2" fill="currentColor"/></svg><span><b>STOP</b><small>Esc</small></span></div></div></div><p class="note-ann"><b>Undo / Redo:</b> the Undo and Redo buttons (curved-arrow icons) at the right of the note-card header mirror Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z. The history holds the last edits (typing in the editor, one note dragged in the Staff view), so Undo is enabled and Redo is dimmed (nothing undone yet). <b>Listen</b> stays enabled: the preview plays the last valid parse on this PC even while Play is off. <b>Play</b> is disabled while the score is invalid. <b>Split divider:</b> grip dots in rim-soft, amber on hover/drag, row-resize cursor; position persisted. Staff lanes at 19 px (between the 21 px default and the 18 px floor); the empty “below B3” zone is collapsed to a 6 px strip.</p>
+</div></body></html>
