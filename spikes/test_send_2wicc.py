@@ -522,3 +522,107 @@ def test_frame_rate_must_be_finite_positive(tmp_path, capsys, rate):
     f.write_text("0 A\n")
     assert s.main(["--dry-run", f"--frame-rate={rate}", str(f)]) == 1
     assert "--frame-rate" in capsys.readouterr().err
+
+
+# -------------------------------------------------------- labels / --announce (Story 1.3)
+
+
+def test_label_extracted_from_comment():
+    rows = s.parse_lines([
+        "# header only, no row",
+        "0 - - -",
+        "500 A - 80:40   #  A ly=0x40 up try 3/5 ",
+        "1000 - - -  # x=0x40 # second hash kept",
+        "1500 L",
+    ])
+    assert [r.label for r in rows] == ["", "A ly=0x40 up try 3/5", "x=0x40 # second hash kept", ""]
+    # the states are what they were without labels
+    assert rows[1].state == s.State(s.CANON_BUTTONS["A"], s.HAT_NEUTRAL, s.Stick(0x80, 0x40))
+    assert rows[3].state == s.State(s.CANON_BUTTONS["L"])
+
+
+def test_announcements_skip_unlabelled_rows_and_use_first_frame():
+    rows = s.parse_lines(["0 - # start", "500 A", "1000 - # release"])
+    assert s.announcements(rows, 60) == [(0, "start"), (60, "release")]
+
+
+def _labelled_commands():
+    rows = s.parse_lines(["0 - # start", "500 A # press A", "1000 - # release", "1500 R", "2000 - # end"])
+    frames, _ = s.schedule(rows, 60)
+    return [s.encode(f) for f in frames], s.announcements(rows, 60)
+
+
+def test_announce_prints_when_played_in_order():
+    commands, ann = _labelled_commands()
+    clock = FakeClock()
+    printed = []
+
+    def emit(text):
+        printed.append((clock(), text))
+
+    p = s.Pacer(lambda d: None, clock, clock.sleep, 60, 30, ann, emit)
+    p.run(commands)
+    assert [t for _, t in printed] == ["t=0.0s  start", "t=0.5s  press A", "t=1.0s  release", "t=2.0s  end"]
+    for (when, _), (frame, _) in zip(printed, ann):
+        # printed once the frame is played (not when queued), and within one frame of it
+        assert frame / 60 <= when + 1e-9 < frame / 60 + 1 / 60 + 1e-9
+
+
+def test_announce_does_not_change_bytes():
+    commands, ann = _labelled_commands()
+    runs = []
+    for a in ((), ann):
+        clock = FakeClock()
+        rec = Recorder(clock)
+        assert s.play(commands, rec, clock, clock.sleep, 60, 30, None, a, lambda t: None) == 0
+        runs.append(rec.lines)
+    assert runs[0] == runs[1]
+
+
+def test_no_announce_prints_nothing(capsys):
+    commands, _ = _labelled_commands()
+    clock = FakeClock()
+    s.play(commands, Recorder(), clock, clock.sleep, 60, 30)
+    assert capsys.readouterr().out == ""
+
+
+def test_dry_run_announce_shows_labels_and_plain_output_unchanged(tmp_path, capsys):
+    f = tmp_path / "in.txt"
+    f.write_text("0 -  # lead-in\n500 A  # PRESS A ly=0x40\n1000 -\n")
+    assert s.main(["--dry-run", str(f)]) == 0
+    plain = capsys.readouterr().out.splitlines()
+    assert not any("#" in line for line in plain)
+    assert s.main(["--dry-run", "--announce", str(f)]) == 0
+    ann = capsys.readouterr().out.splitlines()
+    assert len(ann) == len(plain)
+    assert ann[1] == plain[1] + "  # lead-in"
+    assert ann[31] == plain[31] + "  # PRESS A ly=0x40"
+    assert [a for a, b in zip(ann, plain) if a != b] == [ann[1], ann[31]]
+
+
+def test_main_announce_flag_bytes_identical(tmp_path, monkeypatch):
+    f = tmp_path / "in.txt"
+    f.write_text("0 - # a\n100 A # b\n200 -\n")
+    sent = {}
+
+    class FakeSerial:
+        def __init__(self):
+            self.data = b""
+
+        def write(self, d):
+            self.data += d
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    clock = FakeClock()
+    monkeypatch.setattr(s, "time", type("T", (), {"monotonic": clock, "sleep": clock.sleep}))
+    for flag in ([], ["--announce"]):
+        ser = FakeSerial()
+        monkeypatch.setattr(s, "open_serial", lambda port, baud, ser=ser: ser)
+        assert s.main(["--port", "fake", *flag, str(f)]) == 0
+        sent[bool(flag)] = ser.data
+    assert sent[False] == sent[True] and b"+QD 080000" in sent[True]

@@ -30,6 +30,9 @@ dist/
 .coverage
 htmlcov/
 
+# Spike mic recordings and their reports: game audio, never commit
+spikes/recordings/
+
 # UX references: copyrighted game screenshots, never commit
 _bmad-output/planning-artifacts/ux-designs/*/imports/
 
