@@ -37,7 +37,7 @@ story_location: _bmad-output/implementation-artifacts
 development_status:
   epic-1: in-progress
   1-1-verify-note-buttons-and-modifiers-by-hand: done
-  1-2-spike-sender-for-the-2wicc-queue: backlog
+  1-2-spike-sender-for-the-2wicc-queue: done
   1-3-stick-threshold-and-alternative-fingerings: backlog
   1-4-timing-limits: backlog
   1-5-measured-default-mapping-profile: backlog

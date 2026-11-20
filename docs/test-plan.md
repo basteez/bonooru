@@ -10,6 +10,7 @@ Spikes first, all with **existing** firmware (no code of ours yet). Record for e
 
 - Wiring = RiiDraw's (ADR-001 (author's notes)): only GP0, GP1, GND; nothing on 5V or 3V3
 - Rewire only with both USB cables unplugged
+- Before powering anything, check GND↔GND continuity between the two boards with a multimeter (Ω, 200 range, expect ~0 Ω). On a breadboard the top and bottom power rails are **not** connected unless bridged (Story 1.2: unbridged rails gave corrupted replies and inconsistent probes)
 - Switch on dock or stand, short cable on the Switch side, slack on the PC side
 - Details: Risk register (author's notes)
 
@@ -17,12 +18,13 @@ Spikes first, all with **existing** firmware (no code of ours yet). Record for e
 
 | Item            | Value                                                                                                                           |
 |-----------------|---------------------------------------------------------------------------------------------------------------------------------|
-| Switch 2 system | 23.5.0 (Spike 1 by hand, 2026-11-20)                                                                                            |
+| Switch 2 system | 23.5.0 (Spike 1 by hand and Story 1.2 sender, 2026-11-20)                                                                       |
 | OoT version     | 1.1.1                                                                                                                           |
 | Controller      | Joy-Con 2 pair (Spike 1 by hand; D-pad = Joy-Con 2 (L) direction buttons)                                                       |
 | Measurement     | Soundcorset tuner (iOS), A4 = 440 Hz; Switch 2 and phone hand-held (table caused resonances), mic ~2 cm from the right speaker  |
-| Host OS(es)     |                                                                                                                                 |
-| Cable(s)        |                                                                                                                                 |
+| Host OS(es)     | macOS (Darwin 27.2), Story 1.2 sender; bridge port `/dev/cu.usbmodem101`, product "2wiCC COM", VID:PID 2E8A:000A                |
+| Cable(s)        | Apple USB-C ↔ USB-C (Story 1.2), console bottom USB-C port                                                                      |
+| Firmware        | 2wiCC v2.2 (`2wiCC_RP2040.uf2`, controller Zero), 2wiCC_Comms v1.1 (`2wiCC_Comms.uf2`, bridge Zero); official GitHub releases, kept outside the repo (Story 1.2, 2026-11-20). Previously RiiDraw firmware |
 | Recording       | Switch 2 video capture (Capture button, 30 s) or capture card; T.2 (5 min) needs a capture card or a mic on the console speaker |
 
 ## Spike 0 (optional): the Switch 2 sees an RP2040-Zero and presses A
@@ -82,6 +84,10 @@ Goal: validate wiring + bridge + profile P2 (what RiiDraw uses).
 - Label the Apple cable and keep it for the project: it is the reference cable
 - No separate OoT check: with P2 the system handles the controller, games get normalised input; spike 1 runs inside OoT anyway
 - Also measure here: P2 polling interval on Switch 2 (see ADR-002)
+- 2026-11-20 (Story 1.2): first direct terminal test of the bare commands, official 2wiCC v2.2 + 2wiCC_Comms v1.1, macOS, Apple USB-C cable, console bottom port, Wired Comm. ON, Switch 2 system 23.5.0, OoT 1.1.1
+  - First session: the two GND pins were on breadboard power rails that were not bridged (no common ground). PC→controller commands mostly worked, but replies were corrupted (e.g. `+2wicc��`, `+GQS<<48<�`, `+GQR<>3Fe`) and the stop/queue probes were inconsistent. Fix: rails bridged, GND↔GND measured 0.1 Ω. Those earlier probe results are discarded; everything below is after the fix
+  - `+QD 080000`, 1 s, `+QD 000000` on "Test input devices → buttons": A registered. **Pass**
+  - Note: that screen exits when A is held for about 1 s or less, and it keeps showing the last pressed button (also with a Joy-Con), so it shows presses, not releases
 
 ## Spike 1: ocarina mapping
 
@@ -223,6 +229,25 @@ Needs a scripted sender (any tiny script over the serial port is fine for a spik
 
 Done when: the `[timing]` section of the profile is filled with measured values + safety margin.
 
+### Spike sender check (Story 1.2)
+
+2026-11-20. Sender: [`spikes/send_2wicc.py`](../spikes/README.md). Environment: macOS (Darwin 27.2), `/dev/cu.usbmodem101`, Apple USB-C cable, console bottom port, 2wiCC v2.2 + 2wiCC_Comms v1.1, GND bridged (0.1 Ω). Switch 2 system 23.5.0, OoT 1.1.1.
+
+| Check | Command / input | Result |
+|---|---|---|
+| Probes | `+ID `, `+VER `, `+GQS `, `+GQR `, `+GCS ` | `+2wiCC`, `+VER 2.2`, `+GQS 0400`, `+GQR 03FE` (idle in RT: one slot held by the current state, so 1022 free), `+GCS 1`; replies end with `\r\n` |
+| Held queue, no stop | `+SPM BUF` + 120 × `+QD 080000` (2 s) | A held continuously (test screen exits) |
+| Stop | same queue, then `+SPM RT` + `+QD 000000` after ~0.3 s | A released at once (screen stays open); `+GQR ` right after → `+GQR 03FE` (backlog discarded). Immediate stop confirmed |
+| Stick Y | RT, `+QF 0000000008E0000880` (left X 0x800, Y 0xE00) | stick **up** on the stick test screen; Y 0x200 not tested |
+| Minimal file | `uv run spikes/send_2wicc.py --port /dev/cu.usbmodem101 spikes/samples/a-press.txt` | A pressed and released, screen stayed open; `summary: 3 rows, 61 frames, 1.017 s, port /dev/cu.usbmodem101, exit 0` |
+| L R A Y X scale, free play | `spikes/samples/scale-lrayx.txt` | 1st run: game showed a "connect controller" prompt, nothing played. 2nd run: all 5 notes L R A Y X in the right order; pitches checked with a tuner: D5 F5 A5 B5 D6, as expected; `summary: 11 rows, 301 frames, 5.017 s, ..., exit 0` |
+| Ctrl+C, free play | file holding A from 0.5 s to 6 s, real Ctrl+C from the owner's terminal while the note sounded | note stopped at once; `^Cinterrupted: sending neutral`, `summary: 3 rows, 361 frames, 6.017 s, port /dev/cu.usbmodem101, exit 130` |
+
+Observations:
+
+- After the controller sits idle, the Switch may show "press A when the controller is ready"; one short A press (`+SPM RT`, `+QD 080000`, 0.15 s, `+QD 000000`) dismisses it. Relevant for future navigation macros. The sender does **not** press A automatically (it would play a note in free play)
+- SIGINT sent to a background `uv run` from a non-interactive shell does not reach the script (uv does not forward it, and background jobs start with SIGINT ignored); a real Ctrl+C from a terminal works
+
 ## Spike 3 (optional): single board with Pico-PIO-USB
 
 - Example `usb_device` of Pico-PIO-USB on a Zero, D+/D− on two GPIOs, 1.5 kΩ pull-up on D+
@@ -299,3 +324,4 @@ Goal: prove the **whole** chain (host → bridge → controller → Switch 2 →
 
 - Ocarina Bot: Roadmap (author's notes)
 - Ocarina Bot: Requirements (author's notes)
+- Scripted sender for Spike 0b and Spike 2: [`spikes/README.md`](../spikes/README.md)
