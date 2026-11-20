@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UX Design Validation: ocarina-bot</title>
+<style>
+  :root {
+    --bg: #fafaf9;
+    --surface: #ffffff;
+    --border: #e7e5e4;
+    --text: #1c1917;
+    --muted: #78716c;
+
+    --verdict-strong: #16a34a;
+    --verdict-adequate: #65a30d;
+    --verdict-thin: #d97706;
+    --verdict-broken: #dc2626;
+
+    --sev-low: #64748b;
+    --sev-medium: #ca8a04;
+    --sev-high: #ea580c;
+    --sev-critical: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+
+  header.report-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  .title h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .title .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  .synthesis {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin-bottom: 24px;
+    font-size: 15.5px;
+  }
+  .synthesis p { margin: 0 0 10px; }
+  .synthesis p:last-child { margin-bottom: 0; }
+
+  .dimension-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .dim-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .dim-card .dim-name { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .dim-card .dim-verdict { font-size: 14px; font-weight: 600; }
+
+  section.dimension, section.reviewer-section { margin-bottom: 14px; }
+  section.dimension details, section.reviewer-section details {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  section summary {
+    padding: 14px 20px;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  section summary::-webkit-details-marker { display: none; }
+  section summary::before {
+    content: "▸";
+    display: inline-block;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+  section details[open] summary::before { transform: rotate(90deg); }
+  section summary h2 {
+    display: inline;
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    flex: 1;
+  }
+  .verdict-pill {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: white;
+  }
+  .verdict-strong { background: var(--verdict-strong); }
+  .verdict-adequate { background: var(--verdict-adequate); }
+  .verdict-thin { background: var(--verdict-thin); }
+  .verdict-broken { background: var(--verdict-broken); }
+
+  .dim-body { padding: 4px 20px 18px; }
+  .dim-judgment { color: var(--text); font-size: 14.5px; }
+  .dim-judgment p { margin: 0 0 10px; }
+
+  .findings-list { padding: 0 20px 4px; }
+  article.finding {
+    padding: 14px 0;
+    border-top: 1px solid var(--border);
+  }
+  article.finding:first-child { border-top: none; }
+  article.finding header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .badge {
+    font-size: 10.5px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+  }
+  .badge-sev-low { background: rgba(100, 116, 139, 0.12); color: var(--sev-low); }
+  .badge-sev-medium { background: rgba(202, 138, 4, 0.14); color: var(--sev-medium); }
+  .badge-sev-high { background: rgba(234, 88, 12, 0.14); color: var(--sev-high); }
+  .badge-sev-critical { background: rgba(220, 38, 38, 0.14); color: var(--sev-critical); }
+  .finding-title { margin: 0; font-size: 15px; font-weight: 500; flex: 1; min-width: 200px; }
+  .finding-location { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--muted); }
+  .finding-note, .finding-fix { margin-top: 6px; font-size: 14px; }
+  .finding-fix strong { color: var(--muted); font-weight: 500; }
+
+  .reviewer-source {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  .mechanical {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-top: 24px;
+    font-size: 14px;
+  }
+  .mechanical h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .mechanical ul { margin: 0; padding-left: 20px; }
+  .mechanical li { margin-bottom: 4px; color: var(--text); }
+
+  footer.report-footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  footer .meta { display: flex; gap: 24px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <header class="report-header">
+      <div class="title">
+        <h1>ocarina-bot — UX Design Validation Report</h1>
+        <div class="subtitle">_bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/DESIGN.md · _bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/EXPERIENCE.md</div>
+      </div>
+    </header>
+    <div class="synthesis">
+      <p>Adequate. A downstream architect or story developer can source-extract the pair cleanly: every token reference resolves, every source path resolves, memlog overrides are reflected, and the Hardware &amp; Protocol Coupling table is a strong bridge to the firmware contract. The rubric found no critical findings and four high ones (A.5 flow, import failures, Windows wizard step 1, countdown contrast).</p>
+      <p>The egui feasibility review (egui/epaint 0.37, winit 0.30) found nothing that forces leaving egui: 40 of 52 elements are feasible, 11 costly, 1 infeasible by arithmetic (split-view height). Its five high items were all spine wording or interaction-model gaps.</p>
+      <p>After this update (memlog entries 77–82 applied, including Flow 4, Play gating, app-level undo, the draggable split and the 12 approved review-fix defaults), all high findings from both reviews are fixed. What remains is owner input: status hexes, staleness timeout, Windows bridge-alone, selection model confirmation, update flow, AccessKit, draft copy, key-screen mocks and the ocarina auto-open question.</p>
+    </div>
+    <div class="dimension-summary">
+      <div class="dim-card">
+        <div class="dim-name">Flow coverage</div>
+        <div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Token completeness</div>
+        <div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Component coverage</div>
+        <div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">State coverage</div>
+        <div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Visual reference coverage</div>
+        <div class="dim-verdict" style="color: var(--verdict-thin)">thin</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Bloat & overspecification</div>
+        <div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Inheritance discipline</div>
+        <div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Shape fit</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">strong</div>
+      </div>
+    </div>
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Flow coverage</h2>
+          <span class="verdict-pill verdict-adequate">adequate</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Checked CAP-1…CAP-12 against the Key Flows. After this update four flows exist (Flow 4 covers A.5 / CAP-10 on Windows); CAP-6 update offers remain states-only pending a decision.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">No flow for CAP-10 / A.5 (first-time non-developer)</h3>
+              <span class="finding-location">EXPERIENCE › Key Flows</span>
+            </header>
+            <div class="finding-note">All three flows used the owner; the spec&#x27;s release signal had no flow.</div>
+            <div class="finding-fix"><strong>Fix:</strong> Add Flow 4 with a non-developer protagonist on Windows.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Flow 4 &quot;Giulia&quot; added: Windows, SmartScreen via README, wizard, wrong wiring and Wired Communication off as failure beats, climax &quot;You played Ode to Joy!&quot;.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">No flow for CAP-6 update offers</h3>
+              <span class="finding-location">EXPERIENCE › State Patterns (Required / Recommended update)</span>
+            </header>
+            <div class="finding-note">Path from &quot;Update now&quot; back to playing is defined only by table rows.</div>
+            <div class="finding-fix"><strong>Fix:</strong> Add a short update flow.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#d97706">open-question</span> Open Question 8: add a Key Flow or accept states-only coverage.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">CAP-3 profile editing and AD-15 CSV export have no flow</h3>
+              <span class="finding-location">EXPERIENCE › Settings modal</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Accept as states only; resolve CSV.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> States-only accepted for CAP-3; CSV export is not user-facing in v1 (memlog default 11).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Flow 2 step 3 relies on an assumed &quot;accept&quot; action</h3>
+              <span class="finding-location">EXPERIENCE › Flow 2</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Reword to &quot;leaves the other as proposed&quot;.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Reworded; delete done via the context menu.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Token completeness</h2>
+          <span class="verdict-pill verdict-adequate">adequate</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>All colour tokens are valid hex; every {…} reference in both spines resolves (re-verified by script after the update). Contrast is stated for load-bearing pairs; the countdown and out-of-range label now pass AA. Status hexes, amber-ink, scrim and the editor font await approval.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Countdown overlay contrast fails (amber 2.75:1, cream sub-line 4.02:1)</h3>
+              <span class="finding-location">DESIGN › Components › Countdown</span>
+            </header>
+            <div class="finding-note">Veil at 55 % over parchment composites to ~#776d57.</div>
+            <div class="finding-fix"><strong>Fix:</strong> Raise the veil or switch numeral colour; state the ratio.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Veil 80 % (#16110ccc, composite ~#413a2d); numerals cream with 2 px frame outline and amber halo; cream 8.85:1 for numeral and sub-line.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Six tokens still [ASSUMPTION] (status-warning/error/unknown, amber-ink, scrim, typography.code)</h3>
+              <span class="finding-location">DESIGN frontmatter</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Approve or replace.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#d97706">open-question</span> Open Question 7. The error red itself is decided (memlog default 8); the hexes still need approval.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Out-of-range label has two candidate values (3.3:1 vs 4.7:1)</h3>
+              <span class="finding-location">DESIGN › Colors, Do&#x27;s and Don&#x27;ts</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Commit one value.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> out-of-range-ink = #55504a, 4.71:1 on the zone (memlog default 5).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">button-stop-live foreground is a literal #ffffff</h3>
+              <span class="finding-location">DESIGN frontmatter</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Reuse on-ember.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Now {colors.on-ember}, 4.96:1.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Component dimensions live only in prose</h3>
+              <span class="finding-location">DESIGN › Components</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Tokenise or declare prose the spec.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Key-chip size tokenised; Components intro states prose dimensions are the spec.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Load-bearing pairs without stated ratio (ghost fill, playhead, on-ember)</h3>
+              <span class="finding-location">DESIGN › Colors</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Add one line to Colors.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Ghost fill 1.27:1 (border carries it, 4.71:1), playhead 3.98:1, on-ember 4.96:1, focus rings and error red ratios added.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Component coverage</h2>
+          <span class="verdict-pill verdict-adequate">adequate</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Core components had both visual and behavioural rows. The update adds visual specs for focus ring, progress bar, checkbox, context menu, log view, settings fields, port pick list, inline hint, song rail, marquee and split divider, and a selection model ([ASSUMPTION]).</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">No visual spec for the generic focus ring</h3>
+              <span class="finding-location">DESIGN › Components</span>
+            </header>
+            <div class="finding-note">Accessibility Floor requires a ring on every focusable control.</div>
+            <div class="finding-fix"><strong>Fix:</strong> Add a focus-ring component and parchment variant.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> focus-ring (2 px amber, 2 px offset) and focus-ring-on-parchment (amber-ink) as one shared helper.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Components used in EXPERIENCE with no DESIGN row</h3>
+              <span class="finding-location">DESIGN › Components</span>
+            </header>
+            <div class="finding-note">Progress bar, checkbox, context menu, log view, Advanced fields, port pick list, inline hint, song rail.</div>
+            <div class="finding-fix"><strong>Fix:</strong> Add short visual rows.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> All added as tokens + prose (memlog default 12).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Note selection model unspecified</h3>
+              <span class="finding-location">EXPERIENCE › Note editing</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Add a selection row.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Selection model added as [ASSUMPTION]: click, Shift+click, marquee, drag-move with lane/frame-grid snap, edge resize, Delete/Backspace when note view focused, context menu. Confirmation: Open Question 6.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Gamepad visualizer &quot;mirrors what the controller sends&quot;, but the protocol echoes no input</h3>
+              <span class="finding-location">EXPERIENCE › Virtual gamepad</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Derive from the compiled timeline at now_us.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Stated in Component Patterns and Hardware coupling.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Song-rail collapse behaviour undefined</h3>
+              <span class="finding-location">EXPERIENCE › Responsive</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Add a behaviour row.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Song rail row added ([ASSUMPTION]: user toggle, never automatic).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Tooltip behaviour undefined; LED fixes only on hover</h3>
+              <span class="finding-location">EXPERIENCE › Status LED</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Show tooltips on focus too.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Tooltips on hover and keyboard focus ([ASSUMPTION]); hover-only actions banned.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>State coverage</h2>
+          <span class="verdict-pill verdict-adequate">adequate</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Broad table; the update adds import failures, Windows step-1 completion, countdown drop, unmigratable profile, gamepad in link-lost, drop/Open during Play. Staleness timeout and Windows bridge-alone presentation stay open.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Song import failures missing</h3>
+              <span class="finding-location">EXPERIENCE › State Patterns</span>
+            </header>
+            <div class="finding-note">Corrupt/unsupported file, .mid with no notes, 0 % in range, missing last song / Recent.</div>
+            <div class="finding-fix"><strong>Fix:</strong> Add rows with copy and fallback.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Rows added per memlog default 6; banner &quot;Couldn&#x27;t open &lt;file&gt;: &lt;reason&gt;&quot;, current song kept, missing Recent removed.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Wizard step 1 cannot complete on Windows</h3>
+              <span class="finding-location">EXPERIENCE › IA › Setup wizard</span>
+            </header>
+            <div class="finding-note">No product string on Windows; INFO needs the controller.</div>
+            <div class="finding-fix"><strong>Fix:</strong> Complete on drive-vanish + new port.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Step 1 done when RPI-RP2 vanishes and a new 2E8A:000A port appears; product string checked where supplied (memlog default 4).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">No state for a link or console drop during the countdown</h3>
+              <span class="finding-location">EXPERIENCE › State Patterns</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Abort the countdown with the interruption banner.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Countdown cancelled, no START, interruption banner (memlog default 7).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">STATUS staleness timeout and Windows bridge-alone presentation undecided</h3>
+              <span class="finding-location">EXPERIENCE › Hardware coupling</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Decide.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#d97706">open-question</span> Open Questions 3 and 4 (candidate 150 ms recorded).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">No state for unmigratable profile, gamepad in Link lost (idle), drop/Open during Play</h3>
+              <span class="finding-location">EXPERIENCE › State Patterns</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> One row each.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Rows added (AD-17 message; clicks ignored with hint and drop/Open ignored, both [ASSUMPTION]).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">About 14 operational strings are draft</h3>
+              <span class="finding-location">EXPERIENCE › Voice and Tone</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Run one approval pass.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#d97706">open-question</span> Open Question 13.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+    <section class="dimension">
+      <details open>
+        <summary>
+          <h2>Visual reference coverage</h2>
+          <span class="verdict-pill verdict-thin">thin</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Mocks exist only for the main screen (layout + Hybrid skin). Per-section reference lines were added; promotion to mockups/ and key-screen mocks for wizard, Settings, confirm and empty state remain open. imports/ screenshots are git-ignored and deliberately never linked.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Mocks live in .working/ and are not linked at the sections they illustrate</h3>
+              <span class="finding-location">both spines</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Promote to mockups/ and add per-section reference lines.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#64748b">deferred</span> Per-section &quot;→ Reference&quot; lines added (IA, Layout, Roll, out-of-range, official song, gamepad, banner, countdown). Promotion to mockups/ deferred to Finalize (Open Question 15).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">No Hybrid mocks for wizard, confirm, Settings, empty state, end card, compact gamepad, 1024 px</h3>
+              <span class="finding-location">DESIGN › Components</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Render key-screen mocks before story writing.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#d97706">open-question</span> Open Question 15.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Staff view cites &quot;mock&quot; without file or direction</h3>
+              <span class="finding-location">DESIGN › Staff view</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Cite direction 2.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Cites direction 2 &quot;Parchment&quot; of the directions file.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Bloat & overspecification</h2>
+          <span class="verdict-pill verdict-adequate">adequate</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Mostly tables; operational prose. Inline token numbers and the mood paragraph were trimmed.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Layout table and prose repeat token values inline</h3>
+              <span class="finding-location">DESIGN › Layout &amp; Spacing</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Drop inline numbers.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Prose now names tokens only.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Mood-reference paragraph describes seven screenshots</h3>
+              <span class="finding-location">DESIGN › Brand &amp; Style</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Trim to lifted traits.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Trimmed to the five lifted traits.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Inheritance discipline</h2>
+          <span class="verdict-pill verdict-adequate">adequate</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Sources resolve; memlog overrides applied. Glossary (mapping profile), red usage, component names and the ADR-002 screenshot conflict are settled in the spines; upstream source edits are listed, not applied.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Glossary drift: &quot;timing profile&quot; vs spec &quot;mapping profile&quot;</h3>
+              <span class="finding-location">EXPERIENCE › IA, Settings; DESIGN › Song panel</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Use &quot;mapping profile&quot; everywhere.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Glossary added; all copy uses &quot;mapping profile&quot; (memlog default 9).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">DESIGN contradicts itself on red</h3>
+              <span class="finding-location">DESIGN › Colors › Avoid</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Scope the ban to ember / note view; name status-error.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> status-error named as the one error red; ember reserved; no red for generic errors inside the note view (memlog default 8).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">ADR-002 &quot;screenshot&quot; conflicts with no-screenshots constraint</h3>
+              <span class="finding-location">decisions.md ADR-002</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Text path + original diagram; log ADR amendment.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Spines use the original illustration + menu path; ADR-002 / ARCHITECTURE-SPINE edit listed in EXPERIENCE › Upstream edits required (not applied here).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Component names drift between files</h3>
+              <span class="finding-location">both spines</span>
+            </header>
+            <div class="finding-note">Track picker/select, banners, readiness confirm, fit proposal, preview/dry run.</div>
+            <div class="finding-fix"><strong>Fix:</strong> Align names.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Names aligned; canonical list in EXPERIENCE › Foundation.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">&quot;No Nintendo names&quot; contradicted by necessary strings</h3>
+              <span class="finding-location">EXPERIENCE › Voice and Tone</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Scope to franchise/game/character/logo names.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Rule rescoped; platform and settings names allowed.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">&quot;rescan every 1 s&quot; and &quot;Esc stops&quot; credited to unsourced convention</h3>
+              <span class="finding-location">EXPERIENCE › Coupling, Voice</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> Tag or cite.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Rescan interval tagged [ASSUMPTION]; safety note cites ARCHITECTURE-SPINE + memlog.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Shape fit</h2>
+          <span class="verdict-pill verdict-strong">strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>DESIGN sections in canonical order; EXPERIENCE has every required default plus Inspiration, Responsive and invented sections that earn their place (Hardware coupling, Scope deltas, Upstream edits required, Open Questions). No findings.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+        </div>
+      </details>
+    </section>
+    <section class="reviewer-section">
+      <details>
+        <summary>
+          <h2>egui feasibility review</h2>
+          <span class="reviewer-source">review-egui-feasibility.md</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Adversarial check of both spines and the Hybrid mock against the stack pinned by the spike (eframe/egui/epaint 0.37.0, winit 0.30.13, wgpu), verified in crate sources. 52 elements: 40 feasible, 11 costly, 1 infeasible (split-view height, by arithmetic). Nothing forces leaving egui; the costly items are glow on text, concave fills, missing tnum, symbol coverage, focus rendering, gamepad focus, Space activation, undo with external rewrites, Wayland drop, tab order and AccessKit.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Split view cannot fit 19 lanes + zones at 1024 × 680 (#39, infeasible by arithmetic)</h3>
+              <span class="finding-location">DESIGN › Layout; EXPERIENCE › Responsive</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Draggable divider (persisted), editor min 4 lines, lane area scrolls vertically, empty zones collapse to a thin strip.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Gamepad keyboard focus model (#23)</h3>
+              <span class="finding-location">EXPERIENCE › Interaction Primitives</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Panel-level egui focus, focus-lock filter for arrows/Tab, children not focusable, keys by physical position (memlog default 2).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Space activates a focused button (#27)</h3>
+              <span class="finding-location">EXPERIENCE › Context shortcuts</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Space consumed at frame start for preview everywhere except the editor; buttons activate with Enter (memlog default 1).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Undo and roll-to-text rewrite (#29)</h3>
+              <span class="finding-location">EXPERIENCE › Undo / redo</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> One app-level history; TextEdit undoer not used; roll edits rewrite only affected tokens, caret kept.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">high</span>
+              <h3 class="finding-title">Linux file drop missing on Wayland (#42/#45)</h3>
+              <span class="finding-location">EXPERIENCE › Responsive &amp; Platform</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Build without eframe wayland feature (X11/XWayland); Open… always available; architecture note in Upstream edits required (memlog default 3).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Concave silhouette fill (#8)</h3>
+              <span class="finding-location">DESIGN › Virtual gamepad</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Union of convex shapes + one stroked outline.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Glyph coverage ⌫ ↵ ↑ ♯ ♪ (#5)</h3>
+              <span class="finding-location">DESIGN › Typography</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Painted as Painter shapes unless TTF coverage is verified.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Focus ring spec (#24)</h3>
+              <span class="finding-location">DESIGN › Components; EXPERIENCE › Accessibility</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Shared helper, 2 px amber / amber-ink on parchment; shows after mouse use (accepted).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Playhead steps at 20 Hz during Play (#33)</h3>
+              <span class="finding-location">EXPERIENCE › Hardware coupling</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Interpolate from last now_us + elapsed; visualizer uses the same time.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">medium</span>
+              <h3 class="finding-title">Glow technique (#9, #10)</h3>
+              <span class="finding-location">DESIGN › Elevation</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Shadow / blur_width on rounded rects and circles only; text gets a halo; inset glow = stacked strokes.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Tabular figures (#4)</h3>
+              <span class="finding-location">DESIGN › Typography</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> No tnum in egui shaper; fixed-width digit cells.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Weights (#2)</h3>
+              <span class="finding-location">DESIGN › Typography</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> wght axis or per-weight families; .strong() is not bold; 800 dropped.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Tab order vs CentralPanel (#46)</h3>
+              <span class="finding-location">DESIGN › Layout; EXPERIENCE › Context shortcuts</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Manual region rects with scope_builder in reading order.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Sub-pixel hairlines (#32)</h3>
+              <span class="finding-location">DESIGN › Shapes</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Strokes floored at 1 physical px.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Minimum size in logical points (#38)</h3>
+              <span class="finding-location">EXPERIENCE › Responsive</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Stated; 1366×768 at 125 % needs 100 % scaling (accepted).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Native pieces: rfd, Wayland decorations (#45)</h3>
+              <span class="finding-location">EXPERIENCE › Foundation</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> rfd named; X11 build keeps system decorations.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">AccessKit widget_info (#52)</h3>
+              <span class="finding-location">EXPERIENCE › Accessibility</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#d97706">open-question</span> Still undecided; note that helpers must emit widget_info if adopted.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">low</span>
+              <h3 class="finding-title">Gesture split drag-empty vs drag-note (#30)</h3>
+              <span class="finding-location">EXPERIENCE › Note editing</span>
+            </header>
+            <div class="finding-fix"><strong>Fix:</strong> See review-egui-feasibility.md.</div>
+            <div class="finding-note"><span class="badge" style="background:rgba(0,0,0,0.05);color:#16a34a">fixed</span> Drag on empty = marquee; pan by wheel / Shift+wheel / middle-drag ([ASSUMPTION], Open Question 6).</div>
+          </article>
+        </div>
+      </details>
+    </section>
+    <div class="mechanical">
+      <h3>Mechanical notes</h3>
+      <ul>
+        <li>Cross-refs re-verified after the update: every {…} reference in DESIGN.md and EXPERIENCE.md resolves to a frontmatter token; all 11 sources resolve; no link points into imports/.</li>
+        <li>The literal {path.to.token} syntax example was removed from EXPERIENCE › Foundation; colors.ink-ruler is now referenced as a token.</li>
+        <li>No Mermaid in either spine.</li>
+        <li>Both spines remain status: draft.</li>
+        <li>Known mock drift (layouts mock: &quot;Switch linked&quot;, &quot;?&quot; on Home/Capture/+/−, spike keys J K I U) still superseded by the spines.</li>
+        <li>Fingerings everywhere remain unverified (Open Question 2); release copy waits for M2.</li>
+      </ul>
+    </div>
+    <footer class="report-footer">
+      <div class="meta">
+        <span>Rubric: _bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/review-rubric.md</span>
+        <span>Extra: _bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/review-egui-feasibility.md</span>
+        <span>Generated: 2026-11-20T14:36+01:00</span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

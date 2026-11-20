@@ -43,7 +43,8 @@ Choice: **P2** (ADR-002 (author's notes), accepted 2026-11-18). Every input the 
 
 - Exactly one profile is linked per build (`OCB_PROFILE`, default `P2`); `INFO.hid_profile` carries its id (one id per profile: P1, P2, P3; numeric values set in `ocb_proto`).
 - Interface: descriptors, a control/OUT-report handler (the handshake), `build_report(const ocb_state*)`, `tick()` and `ready()`.
-- `ready()` is true once the console handshake is complete; until then `START` and `SET_STATE` get `NAK NOT_READY` (AD-8).
+- `ready()` is true once the console handshake is complete (P1: `SET_CONFIGURATION` and the first IN poll); until then `START` and `SET_STATE` get `NAK NOT_READY` (AD-8). It is also reported passively as `STATUS.flags.console_ready` (AD-19).
+- `ready()` returns to false on USB suspend, unmount or bus reset, and when no IN report has been taken for more than 100 ms (covers "Wired Communication" switched off without a bus event; flag only, not an abort cause).
 - A profile reads only the published state; it never reaches into the scheduler.
 - P2 refuses firmware-update subcommands (C7) and restarts its handshake after a bus reset. Debug builds only: subcommands are logged through the SPSC ring.
 - `INFO.report_period_us` is the median IN interval measured on the device (0 if unknown, AD-7). It answers the polling-rate hypothesis below without a sniffer.

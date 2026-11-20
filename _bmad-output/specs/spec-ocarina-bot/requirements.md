@@ -1,6 +1,6 @@
 # Requirements
 
-Verbatim from the requirements note. Priority: M = must, S = should, C = could (MoSCoW). "Host" in the notes = the desktop **app** (`app/`).
+FR-01…FR-15 and NFRs verbatim from the requirements note; FR-16…FR-25 added from the UX session 2026-11-20 (`EXPERIENCE.md`, Scope deltas; priorities assigned at spec update, owner to confirm). Priority: M = must, S = should, C = could (MoSCoW). "Host" in the notes = the desktop **app** (`app/`).
 
 ## Functional
 
@@ -21,6 +21,16 @@ Verbatim from the requirements note. Priority: M = must, S = should, C = could (
 | FR-13 | Live play from a MIDI keyboard (to analyse, see ADR-007)                                                 | C    | CAP-11 |
 | FR-14 | Calibration: guided tests that measure the timing parameters on the user's console                       | C    | CAP-12 |
 | FR-15 | Graphical UI for every user function (setup/flash, song import, preview, play, gamepad); no command line | M    | CAP-10 |
+| FR-16 | In-app text-score editor with live note view and inline errors                                           | S    | CAP-13 |
+| FR-17 | Draw notes in the note view (add/move/resize/delete); text score is the source of truth, two-way sync     | S    | CAP-13 |
+| FR-18 | First edit of a `.mid` converts it to a text score; the original file is never modified                  | S    | CAP-13 |
+| FR-19 | Per-note actions on out-of-range notes of the fit proposal: move by octave, delete, keep                 | S    | CAP-2  |
+| FR-20 | One app-level undo/redo for text, note, out-of-range, transpose and tempo edits                          | S    | CAP-13 |
+| FR-21 | Roll and Staff views of the song; Listen = PC audio preview from the cursor, nothing sent to the Switch   | S    | CAP-9  |
+| FR-22 | Virtual gamepad has the full Pro Controller set; keyboard mapping only while it has focus                | S    | CAP-8  |
+| FR-23 | Three live status LEDs: PC↔bridge, bridge↔controller, controller↔Switch (STATUS `console_ready`)         | M    | CAP-14 |
+| FR-24 | Play only when all three LEDs are ok, after a readiness confirm ("Don't ask again" resettable)          | M    | CAP-14 |
+| FR-25 | Persistence: last song + per-song track/transpose/tempo/cursor, Recent (last 5), draft autosave/restore    | S    | CAP-15 |
 
 ## Non-functional
 

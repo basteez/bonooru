@@ -164,6 +164,7 @@ Goal: prove the **whole** chain (host → bridge → controller → Switch 2 →
 | F.7 | Heartbeat gap during a 512-frame burst (bridge, fake clock)                                       | every gap ≤ 27 ms                                      | AD-4    |
 | F.8 | Bridge framer: whole frames only, one in flight + one queued, overlong run dropped, partial frame discarded on DTR fall | matches AD-4                    | AD-4    |
 | F.9 | Shared vectors (`firmware/common/proto/vectors/`)                                                 | all pass; `PROTO_VERSION` = vector header              | AD-14   |
+| F.10 | `console_ready` with a fake profile: STATUS `flags` bit1 follows `ready()`; 0 before handshake, 1 after, 0 on suspend / unmount / bus reset and after > 100 ms without an IN report; reserved bits 2–7 always 0; NOT_READY gating uses the same predicate | matches AD-19, AD-8 | AD-19, AD-12 |
 
 ## Hardware-in-the-loop checks (M3/M4)
 
@@ -171,6 +172,7 @@ Goal: prove the **whole** chain (host → bridge → controller → Switch 2 →
 |-----|--------------------------------------------------------------------------------------------------------|--------------------------------------------------|--------|
 | H.1 | Bridge unpowered, controller on the Switch: measure the voltage at the bridge's GP1                    | ≈ 0 V: the controller has released TX (no back-powering) | |
 | H.2 | Core stall (debug build: hang core 0, then core 1)                                                     | watchdog reboot, USB detach, no input left pressed | |
+| H.3 | `console_ready` on the Switch 2 (P2): plug in with Wired Communication ON, then put the console to sleep and wake it, then switch Wired Communication OFF and ON | flag 0 until the handshake, 1 after; back to 0 within 150 ms on sleep and on Wired Communication OFF; 1 again after wake / ON; `START` gets `NAK NOT_READY` whenever the flag is 0 | |
 
 ## Later: acceptance tests
 
