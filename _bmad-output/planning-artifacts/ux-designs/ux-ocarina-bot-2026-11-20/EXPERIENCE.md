@@ -454,7 +454,7 @@ Resolved and folded into the spines: note selection and editing model (incl. dou
 
 All remaining questions are **non-blocking**, to resolve during build or hardware testing:
 
-1. **Ocarina auto-open:** should the app take the ocarina out itself (D-pad left in game) before Play, or leave it to the user? Ties to U9. Design works either way.
+1. **Ocarina auto-open — RESOLVED 2026-11-20: left to the user.** The app does not take the ocarina out before Play. Reason (U9, Story 1.1): D-pad ← is a fixed toggle that both opens and closes the ocarina, and the app cannot see the game, so an automatic press would close an ocarina the user already opened; the game also takes note input only ~2 s after opening, and Link must be somewhere he can play. The readiness confirm keeps asking the user to have the ocarina open in free play.
 2. **Fingering chart unverified:** all fingerings (lane headers, staff glyphs, gamepad visualizer captions, mocks) come from a community hypothesis (`docs/ocarina-input-mechanics.md`). Verify in game before release copy/screenshots.
 3. **STATUS staleness timeout** for dropping LEDs when STATUS stops (candidate: 3 × the STATUS period = 150 ms → LEDs `unknown`).
 4. **Windows, bridge alone, main screen:** with no product string and no INFO, how is the bridge shown (unconfirmed)?

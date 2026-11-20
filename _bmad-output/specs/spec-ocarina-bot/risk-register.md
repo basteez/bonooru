@@ -43,7 +43,7 @@ Software cannot brick the console: HID (P1) and wired Pro Controller (P2) involv
 | ID  | Risk | P | I | Score | Mitigation / action |
 |-----|------|---|---|-------|---------------------|
 | R1  | Ocarina mechanics differ from the community chart (no sustain, min note length, cooldown, free play limits) | 2 | 3 | 6 | spike 1 by hand with a real controller first, no hardware needed |
-| R2  | A melody accidentally contains one of the 12 official songs → in-game effect, free play ends mid-piece | 2 | 3 | 6 | spike 1.8; compiler detects song sequences; if the game matches buttons (not pitches), use an alternative fingering, else warn |
+| R2  | A melody accidentally contains one of the 12 official songs → in-game effect, free play ends mid-piece | 2 | 3 | 6 | **warn only** (spike 1.8, 2026-11-20: the game matches songs by pitch, not by button, at any tempo, so an alternative fingering does not avoid the song); the compiler detects official song pitch sequences and warns |
 | R3  | NFR-04 (≤ 1 frame) unreachable as written: frame sampling (0–16.7 ms) + USB polling (0–8 ms) not synced to our clock; aubio ±5–10 ms | 3 | 2 | 6 | measure polling interval (GPIO toggle per IN); restate NFR-04 on inter-onset error (p95 ≤ 1 frame, max ≤ 1.5, drift < 1) |
 | R4  | Scope too large for a fun project: first song only at M6 → motivation loss | 2 | 3 | 6 | walking skeleton after M2 (spike-2 script plays a whole melody through the 2wiCC queue); 3-OS hardware tests as smoke tests on 2 of 3 OS |
 | R5  | Unsigned app bundle blocked by Gatekeeper / SmartScreen, antivirus false positives → breaks NFR-10, A.5 | 3 | 2 | 6 | accepted 2026-11-19 (Q3): no signing; README documents the first-run unblock per OS with screenshots ("right-click → Open" no longer works on macOS 15+, so the docs use Open Anyway) |
@@ -64,7 +64,7 @@ Software cannot brick the console: HID (P1) and wired Pro Controller (P2) involv
 
 ## Next actions (from notes)
 
-1. [ ] Spike 1 by hand with a real controller + row 1.8 (R1, R2)
+1. [x] Spike 1 by hand with a real controller + row 1.8 (R1, R2): done 2026-11-20, results in `docs/test-plan.md`
 2. [ ] Measure the USB polling interval (R3, R6)
 3. [ ] Walking skeleton after M2 (R4)
 4. [ ] Fix the two inconsistencies above in link protocol and requirements
