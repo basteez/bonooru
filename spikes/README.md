@@ -15,7 +15,13 @@ Throwaway experiments, mainly for milestone M2 (ocarina mechanics and timing on 
 | `samples/story-1-3/` | Generated Story 1.3 trial files (committed; regenerate, do not edit by hand) |
 | `listen_trial.py` | Plays a trial file with `send_2wicc.py` while recording the Mac microphone, then reports the pitch of every note (Story 1.3 Part B helper) |
 | `test_listen_trial.py` | Tests for `listen_trial.py` with synthetic audio, no microphone or port |
-| `recordings/` | Git-ignored output of `listen_trial.py` (WAV, CSV, Markdown); game audio, never committed |
+| `gen_trials_1_4.py` | Generates the Story 1.4 trial files (timing limits: U7, U2, U5, row 2.4 jitter) into `samples/story-1-4/` |
+| `test_gen_trials_1_4.py` | Tests for `gen_trials_1_4.py` and the committed Story 1.4 files, no hardware needed |
+| `samples/story-1-4/` | Generated Story 1.4 trial files (committed; regenerate, do not edit by hand) |
+| `samples/story-1-4-ext/` | Generated inputs of extra Story 1.4 trials (committed, checked against their generator command) |
+| `count_frames.py` | Counts distinct images per second in a screen video (Story 1.4, U10) |
+| `test_count_frames.py` | Tests for `count_frames.py` with synthetic frames (one optional ffmpeg test) |
+| `recordings/` | Git-ignored output of `listen_trial.py` and the U10 videos (WAV, CSV, Markdown, video); never committed |
 
 ## `send_2wicc.py`: 2wiCC queue sender
 
@@ -157,7 +163,7 @@ Answered from the upstream sources on 2026-11-20, then checked on hardware the s
 |---|---|---|---|
 | OQ-1 | Button masks | Table above (2wiCC README bit order = Pro Controller report). A proven in Spike 0b; L R A Y X played in order in free play with the expected pitches D5 F5 A5 B5 D6 (tuner) | Confirmed on hardware (scale test, tuner). Other buttons (B, ZL, ZR, +, ...) and D-pad bits: source only `[UNVERIFIED]` |
 | OQ-2 | Stick encoding | 12-bit, centre 0x800, +-0x600, 3-byte packing as above. `+QF 0000000008E0000880` (left Y 0xE00) moved the stick **up**: higher Y = up, `HIGHER_Y_IS_UP = True` | Confirmed on hardware (Story 1.3, 2026-11-20): Y up; down works with canonical `ly 0xFF` = wire Y 0x20C (full −2 semitones), and the linear 8-bit scaling is confirmed by `u6-ly-down.txt` and `u6-sweep.txt` (pitch about linear in cents across the 0x10 steps, mirrored up and down). Raw Y 0x200 itself was not sent (`u6-raw-ly.txt` not needed) |
-| OQ-3 | Frame period | Internal 60 Hz timer, 16666 us; VSYNC off by default | Source (measured in Story 1.4) |
+| OQ-3 | Frame period | Internal 60 Hz timer, 16666 us; VSYNC off by default. Measured (Story 1.4, test plan 2.4 and 2.5): over 30 s of 7/8-frame notes the heard onsets follow the queued frame counts with no measurable drift (at most 0.22 ms per s); the game's frame period is 16.67 ms when the picture changes (sustained 60 images per second not shown) and the per-note latency falls into two clusters one frame apart, because the 2wiCC timer is not phase-locked to the game | Measured on hardware (2026-11-21) |
 | OQ-4 | Queue size | 1024 slots, 1023 usable; `+GQS 0400`; idle in RT `+GQR 03FE` (one slot holds the current state). 64-command serial buffer | Confirmed on hardware (GQS/GQR) |
 | OQ-5 | Replies | None for `QD`/`QF`; `+2wiCC`, `+VER 2.2`, `+GQS 0400`, `+GQR 03FE`, `+GCS 1`, all ending `\r\n`; malformed commands ignored; unsolicited lines exist | Replies confirmed on hardware; unsolicited lines: source only |
 | OQ-6 | Queue full | New state dropped silently | Source (avoided by design, not probed) |
@@ -231,3 +237,60 @@ uv run --with pytest --with pyserial --with numpy pytest spikes/
 ```
 
 Without `--with numpy` the `listen_trial.py` tests are skipped and the others still run.
+
+## Story 1.4 trials (`gen_trials_1_4.py`)
+
+Input files for Spike 2 rows 2.1 (U7 min press), 2.2 (U2 min gap on the same button), 2.3 (U5 modifier lead) and 2.4 (onset jitter). Throwaway spike code, MIT, standard library only; it reuses the 1.3 allow-list guard (`check_allowed`) by import. All times are frames of the sender's 60 Hz grid (`130f`), so the ms-to-frame rounding cannot blur a 1-frame step. Every attempt is: 30 neutral frames (the analyser's quiet window), the press (and modifier), 90 neutral frames. Scored attempts are the `TRY` rows (machine-readable fields such as `press=3f`, `gap=5f`, `mod=dup lead=2f`); every file starts with one `WARMUP` attempt that is not scored (after a Joy-Con connect or disconnect the first injected input is ignored).
+
+**Rounds, not blocks.** Each round holds every step once in a seeded shuffled order, so every step sees the same mix of sub-frame phases between the 2wiCC timer and the game clock; 20 rounds = 20 tries per step, split 5 rounds per file. Run all parts of one row in one session.
+
+| Files | Row | Each round | Duration per file |
+|---|---|---|---:|
+| `u7-minpress-part1..4.txt` | 2.1 | A pressed 1 to 10 frames, plus one blank (no press, must stay silent) | 117 s |
+| `u2-gap-part1..4.txt` | 2.2 | A 12 frames, release 1 to 10 frames, A 12 frames; controls gap 0 (one 24-frame press) and gap 30 | 153 s |
+| `u5-lead-{dup,ddown,sup,sdown}-part1..4.txt` | 2.3 | modifier (D-up, D-down, stick `80:00`, stick `80:FF`) set 0 to 5 frames before A, note 36 frames, modifier kept 6 frames after the release | 84 s |
+
+Totals: U7 about 8 min, U2 about 10 min, U5 about 22 min (5.6 min per modifier).
+
+`samples/story-1-4-ext/` holds the inputs of extra recorded trials, committed for traceability: `confirm-u2-R-5f.txt` and `confirm-u2-R-4f.txt` from `uv run spikes/gen_trials_1_4.py --set confirm --u2 5 --buttons R --out-dir spikes/samples/story-1-4-ext` (the tests regenerate them and compare).
+
+Generated later, from the round 1 results (then committed in the same folder):
+
+```sh
+uv run spikes/gen_trials_1_4.py --key                                       # (re)write round 1, print the key
+uv run spikes/gen_trials_1_4.py --leads 0-5,6,8,10,12,15,20,30 --mods sup --out-dir spikes/samples/story-1-4-u5ext   # U5 extension (not needed: U5 = 0f)
+uv run spikes/gen_trials_1_4.py --set confirm --u7 N --u2 N --u5 dup=N,ddown=N,sup=N,sdown=N   # L R Y X, threshold and one below
+uv run spikes/gen_trials_1_4.py --set jitter --press-frames 3 --min-press 2 --min-gap 4        # row 2.4 (the measured U7/U2)
+```
+
+The extension writes the whole round 1 set with the new leads into its own folder (only the `u5-lead-*` files there are needed); never write a changed set over `samples/story-1-4/`, the tests compare it byte for byte. `--set confirm` writes one file per button and value (`confirm-u7-L-3f.txt`, ...), 20 tries each, with the blanks or gap controls of that row. `--set jitter` writes `jitter-120bpm-16ths.txt`: 240 notes of 120 BPM sixteenths (7.5 frames, so the sender grid alternates 7 and 8 frames, a known quantisation), cycling L R A Y X Y A R, press `--press-frames` frames, the rest of each slot released, 2 s lead-in; it refuses a press or gap below `--min-press` / `--min-gap`. Other options: `--pre`, `--post`, `--rounds`, `--rounds-per-file`, `--button`, `--press-frames`, `--hold-frames`, `--gap-frames`, `--leads`, `--mods`, `--note-frames`, `--tail`, `--buttons`, `--out-dir`. Unsafe values (press under 1 or over 120 frames, gap under 1, B/ZL/ZR or any other button, a left or diagonal D-pad, notes near the 6 s auto-stop) exit 1 before any file is written.
+
+Run order, free-play entry and the forbidden inputs are the same as for Story 1.3 (above): hardware safety first, open free play with D-pad left on the real controller, dismiss prompts by hand, wait 2 s, stop with Ctrl+C in a real terminal, never edit a file to add a forbidden input.
+
+### `listen_trial.py` timing modes and the lossless capture (Story 1.4)
+
+Expected pitches include the game's tuning (+27 cents, Story 1.3). The first live run (2026-11-21) showed that broadband levels and short-window YIN are not enough for X (D6 is about 10 dB above the room noise in 250 to 4000 Hz, so blanks "sounded" and notes did not, and YIN read f/2 or f/3); the modes below measure at the expected pitch instead.
+
+- `--mode detect` (row 2.1): sound = power within +-3 % of the expected pitch in press + 0.02 s to press + 0.30 s at least `--band-snr-db` (8) above the same band before the press; pitch = strongest spectral peak between 0.75 and 1.33 x the expected pitch (no octave errors); a strong peak at another pitch is a FAIL pitch; blanks must stay silent. Onset and audible length (above peak - 20 dB) come from the level at the expected pitch (10 ms window) and are informative only.
+- `--mode retrigger` (row 2.2): onsets per attempt from the 2 ms envelope (6 ms smoothing) of the note's fundamental (0.8 to 1.25 x the expected pitch). A retrigger is a dip of at least `--dip-db` below the level before it followed by a rise of at least `--rise-db`. Defaults from the controls of the same file: the deepest valley of the `gap 0` controls plus 6 dB, at most half way to the shallowest valley of the `gap 30` controls. The dip depth grows smoothly with the gap (the note decays while released), so the threshold is a definition; pool the controls of all files of one button with `--combine ... --pool-controls`, which re-scores every attempt with one threshold and prints the deepest held-note dips (one outlier raises the threshold).
+- `--mode lead` (row 2.3): the onset is the -6 dB crossing of the level of the whole search band, 0.8 to 1.25 x the expected pitch (`band_onset`), so a start at a wrong pitch (a missing modifier is up to 2 semitones away) is not skipped; the steady pitch is the strongest spectral peak in the last half of the note, the start pitch the median of the peaks of the 9 overlapping 30 ms windows (hop 5 ms) that start in the first 40 ms, all searched in that band (wide enough for a missing modifier, too narrow for an octave error); pass within `--lead-cents` (50). The first window's error is reported too (the stick bend glides at the start). A wrong pitch shorter than about 35 ms (2 frames) cannot be seen (synthetic notes: 33 ms passes, 36 ms fails).
+- `--mode jitter` (row 2.4): one level envelope per button pitch (20 ms window, enough to separate A5 and B5, 110 Hz apart); one latency for the whole run (the shift at which every scheduled note's own button is loudest); each onset is the -6 dB crossing of its button's envelope near the expected time, kept only if that button is at least 3 dB louder than the others. Reports the inter-onset-interval error against the sender's frame schedule (mean, sigma, p95, max in ms and frames), the latency and its per-note spread with a histogram (two clusters one frame apart = the game's frame quantisation), the drift and, separately, the schedule's own 7/8-frame quantisation.
+- Every mode writes a CSV and a Markdown report next to the WAV; with `--analyse`, `--report-tag NAME` writes `<wav>-NAME.csv/.md` instead, so the reports of the live run are kept. The step table shows passes per step, the rounds of the failures, and the smallest step for which it and every larger step passed every try. `--combine A.csv B.csv ...` merges the parts of one row into one table; it refuses two reports of the same recording (for example the live report and its `-rescored` re-analysis), and notes repeat runs of the same trial file.
+- `--backend sounddevice` records through PortAudio (callback into a lock-free queue, a writer thread writes the WAV). Any input overflow flag is counted and printed; a run with an overflow is marked invalid. ffmpeg (`--backend ffmpeg`, the default) loses about 11 % of the samples in 1024-sample packets (ffmpeg trac #11398): acceptable for yes/no per attempt, not for jitter. `sounddevice` comes with the PEP 723 header of `listen_trial.py`; the tests do not need it.
+- `--selftest-tone` (no trial, no port): records `--seconds` (60) of a steady `--tone-hz` (1000) tone played by another device near the microphone and counts phase jumps larger than 0.2 ms plus the delivered-sample ratio. Pass: 0 jumps, ratio within 0.1 %, no overflow. Run it once per session before the trials.
+
+```sh
+uv run spikes/listen_trial.py --selftest-tone --backend sounddevice --seconds 60
+uv run spikes/listen_trial.py --port <port> --backend sounddevice --mode detect spikes/samples/story-1-4/u7-minpress-part1.txt
+uv run spikes/listen_trial.py --combine spikes/recordings/u7-minpress-part*-??????.csv          # live reports only
+uv run spikes/listen_trial.py --combine spikes/recordings/u2-gap-part*-rescored.csv --pool-controls
+uv run spikes/listen_trial.py --analyse REC.wav TRIAL.txt --offset 0.354 --scale 1.0 --mode detect --report-tag rescored
+```
+
+### `count_frames.py`: frame rate from a video (U10)
+
+Counts the distinct images per second in a video of the screen recorded with more frames per second than the game (phone slow motion at 240 or 120 fps, or a 60 fps capture card). ffmpeg decodes every stored frame (grey, 160 px wide, no frame duplication or drop); a change is a mean absolute difference, over the moving part of the picture, above a threshold derived from the noise of the static parts (both printed). Output: capture fps (an assumption from the file, `--fps` to override), changes, distinct images per 1 s window (min, median, max), the run-length histogram of identical frames (60 fps game in a 240 fps video: runs of 4; 30 fps: 8; 20 fps: 12) and the game frame period from the median run. Videos stay in `spikes/recordings/` (git-ignored); never commit them or screenshots of the game.
+
+```sh
+uv run spikes/count_frames.py spikes/recordings/<clip>.mov
+```
