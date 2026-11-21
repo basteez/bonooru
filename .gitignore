@@ -41,3 +41,6 @@ _bmad-output/planning-artifacts/ux-designs/*/imports/
 _bmad/
 .claude/skills/bmad-*/
 .claude/skills/gds-*/
+
+# Firmware tools installed by firmware/tools/install-tools.sh
+firmware/.tools/

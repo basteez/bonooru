@@ -765,6 +765,7 @@ Goal: prove the **whole** chain (host → bridge → controller → Switch 2 →
 
 | ID  | Test                                                                                              | Pass criterion                                         | Related |
 |-----|---------------------------------------------------------------------------------------------------|--------------------------------------------------------|---------|
+| F.0 | Skeleton smoke (Story 2.1): `pins.h` allow-list (release and debug pin sets), version macros agree with the version string, pin grep self-test (every bad fixture flagged, good fixtures and the real tree pass) | `ctest --no-tests=error` green | AD-1, AD-14, AD-20 |
 | F.1 | Go-back-N: in-order accept, stale seq → cumulative ACK, duplicate of `expected−1` → cached response, wrap | matches AD-6                                     | AD-6    |
 | F.2 | NAK matrix: each transport (`CRC`, `SEQ`, `FULL`) and semantic reason; transport never advances `expected`, at most one per `expected` | matches AD-6 | AD-6 |
 | F.3 | Mode table: every frame × IDLE / DIRECT / PLAYING; abort latch set by every non-requested cause, cleared only by STOP / HELLO | matches AD-8 | AD-8 |
@@ -780,6 +781,7 @@ Goal: prove the **whole** chain (host → bridge → controller → Switch 2 →
 
 | ID  | Test                                                                                                   | Pass criterion                                   | Result |
 |-----|--------------------------------------------------------------------------------------------------------|--------------------------------------------------|--------|
+| H.0 | Skeleton LED check (Story 2.1): flash `bridge.uf2`, then `controller.uf2`, on a Zero each        | bridge: blue, 1 Hz; controller: amber, 2 Hz; the two are told apart at a glance; LED not dazzling at arm's length; nothing else on the board changes (no other pin) | PASS 2026-11-21 (UF2s from CI run 44946942547, commit 25aa066; flashed via BOOTSEL, boards off the breadboard). Bridge: blue, ~1 Hz. Controller: amber, ~2 Hz (20 flashes in 10 s); looks whitish head-on, clearly yellow-orange off-axis or through paper. |
 | H.1 | Bridge unpowered, controller on the Switch: measure the voltage at the bridge's GP1                    | ≈ 0 V: the controller has released TX (no back-powering) | |
 | H.2 | Core stall (debug build: hang core 0, then core 1)                                                     | watchdog reboot, USB detach, no input left pressed | |
 | H.3 | `console_ready` on the Switch 2 (P2): plug in with Wired Communication ON, then put the console to sleep and wake it, then switch Wired Communication OFF and ON | flag 0 until the handshake, 1 after; back to 0 within 150 ms on sleep and on Wired Communication OFF; 1 again after wake / ON; `START` gets `NAK NOT_READY` whenever the flag is 0 | |
