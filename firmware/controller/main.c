@@ -12,8 +12,8 @@
 #include "ocb_hw/led.h"
 #include "pico/stdlib.h"
 
-/* Colour and rhythm, tuned at the bench (Story 2.1 Task 10). About 6 % of full
- * scale: comfortable at arm's length and a few mA of LED current. */
+/* Colour and rhythm, to be tuned at the bench (Story 2.1 Task 10). About 6 %
+ * of full scale: comfortable at arm's length and a few mA of LED current. */
 #define BLINK_R 16u
 #define BLINK_G 6u
 #define BLINK_B 0u

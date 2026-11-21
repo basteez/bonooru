@@ -315,6 +315,12 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story, 2026-11-21.
 - **THIRD_PARTY_NOTICES.md** also carries the TinyUSB MIT text now (copyright line as in its LICENSE: `Copyright (c) 2018, hathach (tinyusb.org)`), so Story 2.3 has nothing to add when it links TinyUSB.
 - Local tools: `ninja` and `actionlint` installed with Homebrew (Homebrew `picotool` 2.3.1 also installed to verify the README alternative). The pinned Arm toolchain and picotool were installed by `install-tools.sh` into `firmware/.tools/` (git-ignored).
 
+### Review follow-ups (code review, 2026-11-21)
+
+- [x] [Low] `firmware.yml` concurrency: the group was `firmware-${{ github.ref }}` with cancel-in-progress, so a standalone push run could cancel a caller's `workflow_call` run on the same ref. Now `firmware-${{ github.workflow == 'firmware' && github.ref || github.run_id }}`: standalone runs still share a group per ref; a called run (github.workflow is the caller's name) gets the caller's unique run_id. actionlint clean.
+- [x] [Low] `bridge/main.c`, `controller/main.c`: comment reworded to "to be tuned at the bench (Story 2.1 Task 10)", since Task 10 is still open.
+- Re-run after the fixes: `fw-release` build ok, `ctest --preset host-tests` 4/4, `check-pins.sh` ok, actionlint ok.
+
 ### Completion Notes List
 
 - Tasks 1 to 9 done and verified locally on macOS arm64 (CMake 4.4.5, Ninja, pinned Arm GNU Toolchain 15.2.Rel1, picotool 2.3.1): `fw-release` and `fw-debug` build both targets warning-free with `-Wall -Wextra -Werror` on our sources; `bridge.uf2` and `controller.uf2` land in `firmware/build/fw-release/{bridge,controller}/`; `ctest --preset host-tests` 4/4 passed (`noTestsAction: error`); `firmware/tools/check-pins.sh` ok; `shellcheck` clean on all scripts; `actionlint` clean on `firmware.yml`.
@@ -349,3 +355,4 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story, 2026-11-21.
 
 - 2026-11-21: story created (ready-for-dev). Decisions D1 to D9 recorded; versions, URLs and checksums verified against upstream (all pinned versions exist). Task 10 (manual board check) reserved for the owner.
 - 2026-11-21: Tasks 1 to 9 implemented (dev agent); local builds, host tests and pin grep green; CI unverified until pushed; D4 (GP15) confirmed against the NuttX board pad table; status → review. Task 10 (owner, bench) open.
+- 2026-11-21: Addressed code review findings - 2 items resolved (concurrency group under workflow_call; bench-tuning comment wording).

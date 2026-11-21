@@ -13,9 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  # Literal prefix: under workflow_call, github.workflow is the caller's name,
-  # and sharing the caller's group would deadlock it.
-  group: firmware-${{ github.ref }}
+  # Standalone runs (push, pull_request, dispatch) share one group per ref and
+  # cancel each other. Under workflow_call, github.workflow is the caller's name,
+  # so a called run gets its own group (the caller's run_id): a standalone push
+  # run on the same ref can then never cancel the caller's `needs:` job.
+  group: firmware-${{ github.workflow == 'firmware' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
