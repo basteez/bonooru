@@ -27,7 +27,7 @@ Common internal model: a list of `(midi_pitch, start_s, duration_s)`. Both input
 | Mono reduction | user picks track/channel; chords → highest note ("skyline"); overlaps → cut the earlier note                                                                                             |
 | Range fit      | try every shift in −24…+24 semitones, keep the one with fewest out-of-range notes (tie: smallest shift, then most natural notes); left-over notes → octave-fold or drop, always reported |
 | Fingering      | each pitch has 1+ input combos; choose the sequence with lowest total cost (Viterbi / DP)                                                                                                |
-| Timing rules   | snap to the frame grid; enforce min press, min gap on same button, modifier lead; steal time from the previous note, never shift onsets; at most one note button held (U3); notes longer than `max_sustain` are re-pressed (U1) and counted |
+| Timing rules   | snap to the frame grid; enforce min press, min gap on same button, modifier lead; steal time from the previous note, never shift onsets; at most one note button held (U3); notes longer than `max_sustain_ms` are re-pressed (U1) and counted |
 | Timeline       | absolute µs events of full controller states (see [Link protocol](link-protocol.md))                                                                                                     |
 
 ### Fingering cost (first idea)
@@ -41,40 +41,63 @@ Common internal model: a list of `(midi_pitch, start_s, duration_s)`. Both input
 | same button retriggered           | +1 (needs a release gap) |
 | non-natural fingering             |        0.1 (tie breaker) |
 
-Weights live in the profile, tuned after [tests](test-plan.md).
+Weights live in the profile's `[cost]` table (keys `dpad_change`, `stick_change`, `stick_through_centre`, `same_button_retrigger`, `non_natural`; "no modifier change" is 0 and has no key). They are a **design default, not measured**: the data supports only the order no change < D-pad change < stick change (the D-pad steps at once, the stick glides: U4, test plan rows 1.5 and 2.3), not the numbers. Tuned after [tests](test-plan.md) (Story 1.6 listening, Story 5.5, Epic 7).
 
 ## Mapping profile (TOML, one per game version)
 
-```toml
-[profile]
-name = "OoT Switch 2 v1.0.0"
-frame_rate = 60            # U10, to measure
+Source of truth: [`app/profiles/oot-switch2-1.1.1.toml`](../app/profiles/oot-switch2-1.1.1.toml) (bundled default for OoT 1.1.1, Story 1.5). Every value there has a comment with its test plan row and a tag (`MEASURED`, `MARGIN`, `OWNER CHOICE`, `ESTIMATE`, `DESIGN DEFAULT`). Shape (abridged; Story 5.1 owns loading, validation and the schema):
 
-[buttons]                  # natural pitches, sounding (MIDI numbers, Story 1.1)
+```toml
+schema = 1                 # integer (AD-17)
+
+[profile]
+name = "OoT Switch 2"      # (name, game_version) = what a user copy overrides (AD-17)
+game_version = "1.1.1"
+frame_rate = 60            # U10: frame period 16.67 ms when the picture changes (test plan 2.5)
+
+[buttons]                  # natural pitches, sounding (MIDI numbers, test plan 1.1 / 1.9)
 L = 74  # D5
 R = 77  # F5
 A = 81  # A5
 Y = 83  # B5
 X = 86  # D6
 
-[modifiers]                # semitone offsets
+[modifiers]                # semitone offsets, then the stick as canonical state bytes (AD-10)
 dpad_up = 1
 dpad_down = -1
-stick_up = 2               # ly = 0x00
-stick_down = -2            # ly = 0xFF
-stick_value = 0x00         # deflection used, U6
-
-[timing]                   # all in ms, to measure (U5, U7, U2)
-min_press = 50
-min_gap_same_button = 34
-modifier_lead = 17
-start_lead = 500
-max_sustain = 5500         # U1: the game cuts a held note at ~6 s; placeholder margin, set in Story 1.5
+stick_up = 2               # only at full travel (U6)
+stick_down = -2
+stick_up_ly = 0x00         # wire Y 0xE00
+stick_down_ly = 0xFF       # wire Y 0x20C
+stick_lx = 0x80            # centred: any X component reduces the bend
 
 [range]                    # sounding pitch: the game plays one octave above the community chart
 low = 71    # B4
 high = 89   # F6
+
+[timing]                   # *_frames = integer frames on the frame grid (ms in the comments); *_ms = ms
+min_press_frames = 3            # 50 ms: measured 2 frames (U7, test plan 2.1) + 1 frame margin
+min_gap_same_button_frames = 5  # 83.3 ms: owner choice, not a measured limit (U2, test plan 2.2)
+modifier_lead_frames = 1        # 16.7 ms: measured 0 frames (U5, test plan 2.3) + 1 frame margin
+max_sustain_ms = 5000           # estimate: U1 hand-timed ~6 s, no tool; short U1 test deferred to Story 1.6
+start_lead_ms = 500             # design default, not measured
+
+[cost]                     # fingering cost weights, design default (not measured), see above
+dpad_change = 1
+stick_change = 2
+stick_through_centre = 1
+same_button_retrigger = 1
+non_natural = 0.1
+
+[[fingerings]]             # 45 rows: every button x D-pad x stick combination (test plan 1.9)
+button = "L"
+dpad = "down"              # none / up / down
+stick = "down"             # none / up / down
+pitch = 71                 # measured sounding pitch = button + D-pad offset + stick offset
+chart = true               # true for the 19 chart fingerings
 ```
+
+Why these units: the three grid values are integer frames because every measurement is in frames and the pipeline snaps to the frame grid (2 or 5 frames in ms are not integers, so ms would risk off-by-one rounding at the snap). `max_sustain_ms` and `start_lead_ms` are not on the frame grid.
 
 ## Text score format (draft)
 
