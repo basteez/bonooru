@@ -13,12 +13,17 @@ Throwaway experiments, mainly for milestone M2 (ocarina mechanics and timing on 
 | `gen_trials_1_3.py` | Generates the Story 1.3 trial files (stick threshold U6, the 45 fingerings) into `samples/story-1-3/` |
 | `test_gen_trials_1_3.py` | Tests for `gen_trials_1_3.py` and the committed trial files, no hardware needed |
 | `samples/story-1-3/` | Generated Story 1.3 trial files (committed; regenerate, do not edit by hand) |
-| `listen_trial.py` | Plays a trial file with `send_2wicc.py` while recording the Mac microphone, then reports the pitch of every note (Story 1.3 Part B helper) |
+| `listen_trial.py` | Plays a trial file with `send_2wicc.py` while recording the Mac microphone, then reports the pitch of every note (Story 1.3 Part B helper); timing modes for Story 1.4; `--mode melody` and `--mode sustain` for Story 1.6 |
 | `test_listen_trial.py` | Tests for `listen_trial.py` with synthetic audio, no microphone or port |
 | `gen_trials_1_4.py` | Generates the Story 1.4 trial files (timing limits: U7, U2, U5, row 2.4 jitter) into `samples/story-1-4/` |
 | `test_gen_trials_1_4.py` | Tests for `gen_trials_1_4.py` and the committed Story 1.4 files, no hardware needed |
 | `samples/story-1-4/` | Generated Story 1.4 trial files (committed; regenerate, do not edit by hand) |
 | `samples/story-1-4-ext/` | Generated inputs of extra Story 1.4 trials (committed, checked against their generator command) |
+| `gen_trials_1_6.py` | Generates the Story 1.6 trial files (walking skeleton melody from a note list and the profile TOML; U1 sustain trial) into `samples/story-1-6/`. Python 3.11+: `uv run --python 3.12 spikes/gen_trials_1_6.py` |
+| `test_gen_trials_1_6.py` | Tests for `gen_trials_1_6.py` and the committed Story 1.6 files (drift, sender parser, timing rules, pitch check against the profile), no hardware needed. Python 3.11+ |
+| `samples/story-1-6/` | Story 1.6 note list `ode-to-joy.melody` (source) and the generated trial files (committed; regenerate, do not edit by hand) |
+| `serial_rx_log.py` | Read-only logger of what the 2wiCC firmware sends back during a run (`+ERR WATCHDOG`, `+WRN TIMEOUT`, `+LGHT`), with timestamps; start it before the trial, stop it after (Story 1.6 diagnosis) |
+| `test_serial_rx_log.py` | Tests for `serial_rx_log.py` with a fake port |
 | `count_frames.py` | Counts distinct images per second in a screen video (Story 1.4, U10) |
 | `test_count_frames.py` | Tests for `count_frames.py` with synthetic frames (one optional ffmpeg test) |
 | `test_default_profile.py` | Consistency checks on the bundled profile `app/profiles/oot-switch2-1.1.1.toml` (Story 1.5; not a profile loader, replaced by Story 5.1). Python 3.11+: `uv run --python 3.12 --with pytest pytest spikes/test_default_profile.py` |
@@ -235,6 +240,7 @@ Tests:
 
 ```sh
 uv run --with pytest --with pyserial --with numpy pytest spikes/
+uv run --python 3.12 --with pytest --with pyserial --with numpy pytest spikes/   # the whole folder, incl. the 3.11+ tests
 ```
 
 Without `--with numpy` the `listen_trial.py` tests are skipped and the others still run.
@@ -287,6 +293,79 @@ uv run spikes/listen_trial.py --combine spikes/recordings/u7-minpress-part*-????
 uv run spikes/listen_trial.py --combine spikes/recordings/u2-gap-part*-rescored.csv --pool-controls
 uv run spikes/listen_trial.py --analyse REC.wav TRIAL.txt --offset 0.354 --scale 1.0 --mode detect --report-tag rescored
 ```
+
+## Story 1.6 trials (`gen_trials_1_6.py`)
+
+Walking skeleton (risk R4): the first whole melody from a note list, through the measured profile and the spike sender, to sound in free play; plus the short U1 sustain trial of the same session. Throwaway spike code, MIT, standard library only, **Python 3.11+** (`tomllib`): run it with `uv run --python 3.12`. It is not a precursor of the Epic 5 pipeline (Story 5.5 writes the real timeline compiler).
+
+**Melody files.** `samples/story-1-6/ode-to-joy.melody` holds the note list: the whole Ode to Joy theme (A, A', B, A'; Beethoven, public domain) in G major with the tonic at G5, 62 notes, 64 beats, D5 to D6, one note per line `<sounding pitch> <beats>` (`R <beats>` is a rest). The generator reads every value from `app/profiles/oot-switch2-1.1.1.toml` (`[buttons]`, `[modifiers]`, `[range]`, `[[fingerings]]`, `[timing]`, `[profile] frame_rate`) and:
+
+- takes the `chart = true` fingering of each pitch (a pitch outside `[range]` or without a chart row is an error naming the note; no transpose);
+- puts the onsets on the frame grid from **cumulative** beats (beat = 3600 / BPM frames at 60 Hz), first press at `start_lead_ms`;
+- never moves an onset, it shortens the previous press instead: `min_gap_same_button_frames` before a note on the same button, `modifier_lead_frames` before a note whose D-pad or stick state changes (the new modifiers are set there), a hand-over at the onset otherwise (U3: one note button at a time); a rest is neutral;
+- re-presses a note longer than `max_sustain_ms` after the min gap (FR-05a; Ode to Joy has none);
+- **caps every press at 400 ms** (`DEFAULT_MAX_PRESS_MS`, staccato: a longer note is a 400 ms press, then neutral until the next onset). This is a Story 1.6 workaround, see "Known issue" below; `--max-press-ms 0` writes an uncapped `-uncapped.txt` variant;
+- refuses a press under `min_press_frames`, a same-button gap under the min gap, a modifier change while a note sounds, and any input outside the allow-list.
+
+Every note row has a label `NOTE 07 B5 83 fingering=Y` (index, sounding pitch, MIDI, fingering) that `listen_trial.py --mode melody` reads.
+
+| File | Tempo | Shortest press | Longest press | Duration | Use |
+|---|---:|---:|---:|---:|---|
+| `ode-to-joy-60bpm.txt` | 60 BPM (beat 60 frames) | 24 frames | 24 frames (cap) | 65.5 s | by ear first; not run in its final (capped, simplified) form |
+| `ode-to-joy-90bpm.txt` | 90 BPM (beat 40 frames) | 15 frames | 24 frames (cap) | 44.2 s | main run, 3 times with the analyser |
+| `ode-to-joy-120bpm.txt` | 120 BPM (beat 30 frames) | 10 frames | 24 frames (cap) | 33.5 s | optional stress run; not run in its final (capped, simplified) form |
+
+The shortest press is the eighth note before the same button (B5 then C6, both on Y): eighth minus the 5-frame gap (at 60 BPM that is 25 frames, so the cap sets every press to 24 frames).
+
+**Known issue: about every 7th note is cut (2026-11-21, Part B).** With full-length (legato) presses, the game ends a held note by itself 0.54 to 0.91 s after its onset, about every 7th sounded note (07, 15, 23, ... in the 60 BPM runs; 07 and 14 even with 17 identical A5 notes), and ignores input for up to about 1 s, so a note that follows by hand-over or within that time is lost. This is a hypothesis; the mechanism is unknown. Not an analyser artefact (the audio is silent at those moments). No evidence for a sender or 2wiCC queue cause (later notes stay on schedule; 0 firmware lines in one diagnostic run with `serial_rx_log.py`), and the dev agent's offline reading of the OoT decompilation (read only, not verified on hardware) found no song recognition or input lock that would explain it. With the 400 ms cap there was no audible event in 1 full 60 BPM run (the owner heard one "silent" note there, attributed offline to the cap plus the then syncopated rhythm) and 1 short run (notes 1-8); the 3 official capped 90 BPM runs of the final (simplified) file were 62/62. Owner decision (2026-11-21): the 400 ms staccato cap is the spike default; re-pressing long notes is the preferred direction for the real pipeline (follow-up); whether a value belongs in the profile is an open owner call. Evidence: `docs/test-plan.md`, "Walking skeleton (Story 1.6)". The U1 files keep their long holds; mind the event when reading short auto-stop times there.
+
+Diagnostic options for `--set melody` (files are labelled `DIAGNOSTIC`, write them to `spikes/recordings/diag/`, never over the committed folder): `--notes A-B` (only those notes, original numbering), `--extra-lead-ms N` (neutral before the first press), `--max-press-ms N` (another cap; `0` = uncapped). `serial_rx_log.py --port PORT` logs what the firmware sends back during a run (start it first, stop it after the run).
+
+**U1 files.** `u1-sustain-A-part1..5.txt`: one round each (shuffled, a different order per round), 9 scored attempts plus a `WARMUP` per file: A held 4, 5, 5.5, 6, 6.5 and 7 s, a 10 s control (gives the auto-stop time directly), a 1 s control (must be held to its release) and a blank (no press, must stay silent). Every attempt is 30 neutral frames, the hold, 180 neutral frames (3 s). 80.2 s per file, about 6.7 min for the five. These holds are longer than the 6 s guard of the older generators on purpose; this generator has its own bound (at most 12 s, buttons L R A Y X only, no modifiers). `TRY` labels: `TRY u1 A hold_ms=5500 attempt=3 round 2/5` (`blank`, `control`).
+
+`u1-confirm-<L|R|Y|X>.txt` are generated **in the session** after round 1 from the candidate limit: 5 attempts at the candidate and 5 at the next longer tested duration (candidate + 500 ms beyond 7 s), shuffled, plus a warm-up, on each of L, R, Y, X (96.2 s per file for a 5500 ms candidate). Commit them with the results; the tests regenerate them from the `# u1_confirm_ms:` header line.
+
+```sh
+uv run --python 3.12 spikes/gen_trials_1_6.py                                   # (re)write the committed set
+uv run --python 3.12 spikes/gen_trials_1_6.py --set melody --bpm 90 --key       # one tempo, print the note list
+uv run --python 3.12 spikes/gen_trials_1_6.py --set confirm --u1-confirm-ms 5500 # U1 confirmation files (L R Y X)
+```
+
+`--key` prints, per note, the index, name, MIDI, fingering, onset frame, release frame and frames pressed (or the attempt times of the U1 files): a reading aid, never a result. Other options: `--melody`, `--profile`, `--out-dir`, `--u1-button`, `--u1-buttons`, and the diagnostic options above. If the profile changes (Story 1.6 Part C may change `max_sustain_ms`), the drift test fails on purpose: regenerate and commit (the melody file headers list the profile values used).
+
+### `listen_trial.py --mode melody` and `--mode sustain` (Story 1.6)
+
+Both default to `--latency 0.13` (the Story 1.4 heard latency; measure it per session with `calibration-A.txt` and pass the median onset). Use `--backend sounddevice` (lossless); a run with a PortAudio overflow is reported as INVALID.
+
+- `--mode melody`: reads the `NOTE` rows. Window per note from its heard onset (scheduled press + latency) + 40 ms (skips the stick start glide) to the next heard onset - 20 ms (the last note: + 0.5 s). **Audible** = the level within +-3 % of the expected pitch (with the game's +27 c) at least `--min-snr-db` (10) above the same band in the lead-in before the first note (levels per second, so windows of different lengths compare). **Pitch** = the strongest spectral peak within +-3 semitones of the expected pitch (a wrong neighbour is found, not forced onto the expected note); a peak at another pitch counts only if it is still there in the second half of the window (the decaying tail of the previous note is not a wrong note). **In tune** (owner decision 3) = the nearest note (A4 = 440 Hz) is the expected note and the cents are within +-50 c of the run's own median for that pitch class. **Onsets** from the tone envelope at the expected pitch (30 ms window): an attack is a rise of `--rise-db` (8) within +-120 ms of the heard onset (a repeated pitch only rises after a dip, so a merged repeat has 0 attacks = missed); each dip of `--dip-db` (8) lasting at least 30 ms and followed by such a rise back to within 10 dB of the level before the dip, inside the note, is an extra onset (a click over a held note or noise in the silence after a note stopped is not); a note that is not audible has 0 onsets. **Cut short** (the sustain-mode interruption rule): the tone at the expected pitch falls 20 dB below its level at the start of the note (or under `--min-snr-db` above the lead-in) for at least 150 ms, starting more than 100 ms before the note's scheduled release; the report gives how long it sounded (`sounded_ms`). Verdicts `ok`, `CUT SHORT`, `WRONG PITCH`, `NO SOUND`; summary: notes, audible, right pitch (`ok` + `CUT SHORT`), missed (no sound or no attack), cut, extra onsets, cents spread, per pitch class medians, and the list of every wrong/missed/cut/doubled note with its fingering.
+- `--mode sustain`: reads the `TRY u1` rows. Per attempt: heard onset, the level of the tone at the expected pitch (20 ms window); **interrupted** (owner decision 1) = the tone falls below `--min-snr-db` above the noise or 20 dB below its own median level in the first second after the attack, for at least 150 ms, starting at least 100 ms before the scheduled release; the drop time after the heard onset is the **auto-stop time**. Wavering in numbers: the level (dB) and pitch (c) of every full second of the hold relative to the first second. Per (button, hold): interrupted count out of the attempts that sounded, the auto-stop times, then D_ok, T_stop and the candidate `floor100(min(D_ok, T_stop) - 500 ms)` for the rows given. The blank must stay silent and the 1 s control must be held, or the report says INVALID. A stop sooner than 2 s after the onset is the Story 1.6 every-~7th-note event, not the auto-stop: it is listed under `EARLY STOPS` with its attempt and position in the file (the warm-up is note 1) and left out of the counts, D_ok and T_stop; re-run those holds. `--combine` on sustain CSVs prints the same per-duration table over several files.
+
+```sh
+uv run spikes/listen_trial.py --port /dev/cu.usbmodem101 --backend sounddevice --mode melody --latency 0.13 spikes/samples/story-1-6/ode-to-joy-90bpm.txt
+uv run spikes/listen_trial.py --port /dev/cu.usbmodem101 --backend sounddevice --mode sustain spikes/samples/story-1-6/u1-sustain-A-part1.txt
+uv run spikes/listen_trial.py --combine spikes/recordings/u1-sustain-A-part*-??????.csv spikes/recordings/u1-confirm-*-??????.csv
+```
+
+### Story 1.6 session commands (Part B)
+
+Do the "Hardware safety" checks (`docs/test-plan.md`; the GND check is skipped while the wiring is unchanged), open free play with D-pad left on the real controller, dismiss any prompt by hand, wait 2 s, keep the real controller within reach, stop with Ctrl+C in a real terminal. Do not detach or reattach a Joy-Con inside the session (the first injected input after a connect is ignored: after any connect, run `calibration-A.txt` before the next file; a run whose first note is silent while the rest is fine is re-run, not counted).
+
+```sh
+P=/dev/cu.usbmodem101
+uv run spikes/listen_trial.py --selftest-tone --backend sounddevice --seconds 60                                 # once
+uv run spikes/listen_trial.py --port $P --backend sounddevice spikes/samples/story-1-3/calibration-A.txt          # 4 s; A5 SNR well above 10 dB, onset ms -> L
+uv run spikes/send_2wicc.py --dry-run spikes/samples/story-1-6/ode-to-joy-90bpm.txt                              # dry run
+uv run spikes/send_2wicc.py --port $P --announce spikes/samples/story-1-6/ode-to-joy-60bpm.txt                   # by ear (65.5 s)
+uv run spikes/listen_trial.py --port $P --backend sounddevice --mode melody --latency L spikes/samples/story-1-6/ode-to-joy-90bpm.txt   # x3 (44.2 s each)
+uv run spikes/listen_trial.py --port $P --backend sounddevice --mode melody --latency L spikes/samples/story-1-6/ode-to-joy-120bpm.txt  # optional (33.5 s)
+for k in 1 2 3 4 5; do uv run spikes/listen_trial.py --port $P --backend sounddevice --mode sustain --latency L spikes/samples/story-1-6/u1-sustain-A-part$k.txt; done   # 80.2 s each
+uv run spikes/listen_trial.py --combine spikes/recordings/u1-sustain-A-part*-??????.csv                          # candidate from round 1
+uv run --python 3.12 spikes/gen_trials_1_6.py --set confirm --u1-confirm-ms C                                     # C = the candidate hold
+for b in L R Y X; do uv run spikes/listen_trial.py --port $P --backend sounddevice --mode sustain --latency L spikes/samples/story-1-6/u1-confirm-$b.txt; done
+uv run spikes/listen_trial.py --combine spikes/recordings/u1-sustain-A-part*-??????.csv spikes/recordings/u1-confirm-*-??????.csv
+```
+
+`L` is the calibration onset in seconds (onset ms / 1000; default 0.13 s). Re-analyse any recording with the printed `--analyse REC.wav TRIAL.txt --offset S --scale 1.0 --mode melody|sustain --report-tag NAME` command. Recordings and reports stay in `spikes/recordings/` (git-ignored).
 
 ### `count_frames.py`: frame rate from a video (U10)
 

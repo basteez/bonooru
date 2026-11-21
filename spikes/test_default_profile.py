@@ -166,8 +166,10 @@ def test_timing_floor_and_sustain_bound(profile: dict) -> None:
     assert timing["min_press_frames"] >= 2
     assert timing["min_gap_same_button_frames"] >= 2
     assert timing["modifier_lead_frames"] >= 0
-    # U1: the game cuts a held note at about 6 s (hand-timed), so the profile value must stay below it.
-    assert 0 < timing["max_sustain_ms"] < 6000
+    # U1 measured on A (Story 1.6, test plan row 1.10): every hold up to 6500 ms held (D_ok), shortest auto-stop
+    # 6599 ms (T_stop). The value must keep at least the 500 ms margin of the update rule below both.
+    d_ok_ms, t_stop_ms, margin_ms = 6500, 6599, 500
+    assert 0 < timing["max_sustain_ms"] <= min(d_ok_ms, t_stop_ms) - margin_ms
     assert timing["start_lead_ms"] >= 0
 
 

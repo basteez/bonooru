@@ -17,6 +17,8 @@ spikes/recordings/ (git-ignored).
 Usage: uv run spikes/listen_trial.py --port /dev/cu.usbmodem101 spikes/samples/story-1-3/calibration-A.txt
        uv run spikes/listen_trial.py --analyse REC.wav TRIAL.txt --offset 0.123
        uv run spikes/listen_trial.py --list-devices
+       uv run spikes/listen_trial.py --port PORT --backend sounddevice --mode melody spikes/samples/story-1-6/ode-to-joy-90bpm.txt
+       uv run spikes/listen_trial.py --port PORT --backend sounddevice --mode sustain spikes/samples/story-1-6/u1-sustain-A-part1.txt
 """
 
 from __future__ import annotations
@@ -326,7 +328,8 @@ def analyse(x: np.ndarray, sr: int, presses: Sequence[Press], offset: float, p: 
 _FIELD_RE = re.compile(r"(\w+)=(\d+)f?")
 _ROUND_RE = re.compile(r"round (\d+)/(\d+)")
 FRAME_MS = 1000.0 / FRAME_RATE
-MODES = ("pitch", "detect", "retrigger", "lead", "jitter")
+MODES = ("pitch", "detect", "retrigger", "lead", "jitter", "melody", "sustain")
+TIMING_MODES = ("detect", "retrigger", "lead", "jitter")
 
 
 @dataclass(frozen=True)
@@ -1357,6 +1360,533 @@ def list_devices(ffmpeg: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Story 1.6: melody (NOTE rows) and sustain (U1 TRY rows)
+# ---------------------------------------------------------------------------
+
+STORY_1_6_LATENCY = 0.13  # default heard latency for melody/sustain, s (Story 1.4 calibration: 130 to 140 ms)
+_NOTE_RE = re.compile(r"NOTE (\d+) (\S+) (\d+) fingering=(\S+)")
+
+
+@dataclass(frozen=True)
+class MelodyNote:
+    index: int
+    line: int
+    t: float          # schedule s of the press
+    name: str
+    midi: int         # expected sounding pitch (from the label, the generator's profile fingering)
+    fingering: str
+    label: str
+    t_release: float | None = None  # schedule s of the first release of the note's button (or hand-over)
+
+
+def melody_notes_from_rows(rows: Sequence, frame_rate: float = FRAME_RATE) -> list[MelodyNote]:
+    """Every `NOTE` row of a Story 1.6 melody file (gen_trials_1_6.py labels), in order."""
+    out = []
+    frames = [s.time_to_frame(r.time, frame_rate) for r in rows]
+    for i, r in enumerate(rows):
+        m = _NOTE_RE.match(r.label)
+        if m:
+            j = i + 1
+            while j < len(rows) and rows[j].state.buttons == r.state.buttons:
+                j += 1
+            rel = frames[j] / frame_rate if j < len(rows) else None
+            out.append(MelodyNote(int(m.group(1)), r.line, frames[i] / frame_rate, m.group(2), int(m.group(3)),
+                                  m.group(4), r.label, rel))
+    return out
+
+
+def first_drop(t: np.ndarray, e: np.ndarray, t_from: float, t_to: float, thr: float, run: int) -> float | None:
+    """Time of the first sample in [t_from, t_to] below `thr` that stays below it for `run` samples
+    (the U1 interruption rule; also the melody "cut short" rule)."""
+    for i in np.flatnonzero((t >= t_from) & (t <= t_to)):
+        if e[i] < thr and i + run <= e.size and np.all(e[i: i + run] < thr):
+            return float(t[i])
+    return None
+
+
+def band_mean_db(x: np.ndarray, sr: int, t0: float, t1: float, f: float, width: float = 0.03) -> float:
+    """`band_power_db` divided by the window length: comparable between windows of different lengths
+    (melody notes are 0.2 to 1.3 s, the quiet reference 0.4 s; band_power_db grows with the length)."""
+    n = round((t1 - t0) * sr)
+    v = band_power_db(x, sr, t0, t1, f, width)
+    return v - 10.0 * math.log10(n) if n > 0 and math.isfinite(v) else -math.inf
+
+
+def max_rise(env: np.ndarray) -> float:
+    """Largest rise of `env` above the lowest value before it (an attack, from silence or from a dip)."""
+    if env.size < 2:
+        return 0.0
+    return float(np.max(env - np.minimum.accumulate(env)))
+
+
+def count_reattacks(env: np.ndarray, dip_db: float, rise_db: float, min_dip: int = 1,
+                    reach_db: float = math.inf) -> int:
+    """Dips of at least `dip_db` below the running peak that last at least `min_dip` samples, each followed
+    by a rise of `rise_db` from the dip back to within `reach_db` of that peak: every one is a new attack
+    (the `dip_and_rise` rule, counted instead of yes/no). A shorter dip (a click or a room transient over a
+    held note) is not a new attack, nor is noise or another sound in the silence after a note stopped."""
+    n, peak, low, below, in_dip = 0, -math.inf, math.inf, 0, False
+    for v in env:
+        if not in_dip:
+            peak = max(peak, v)
+            if peak - v >= dip_db:
+                in_dip, low, below = True, v, 1
+        else:
+            low = min(low, v)
+            if peak - v >= dip_db:
+                below += 1
+            if v - low >= rise_db and v >= peak - reach_db:
+                if below >= min_dip:
+                    n += 1
+                    peak = v
+                else:
+                    peak = max(peak, v)
+                in_dip = False
+    return n
+
+
+@dataclass(frozen=True)
+class MelodyParams:
+    """Thresholds of `--mode melody`; every value is printed in the report."""
+    skip: float = 0.040        # window starts at the heard onset + this (stick start glide, row 2.3: ~30 ms)
+    end_guard: float = 0.020   # ... and ends this before the next heard onset
+    last_window: float = 0.5   # the last note: heard onset + this
+    search_semitones: float = 3.0   # pitch = strongest peak within this of the expected pitch
+    tune_cents: float = 50.0   # in tune: within this of the run's median for the pitch class
+    dip_db: float = 8.0        # onsets: dip below the running peak ...
+    rise_db: float = 8.0       # ... and rise from the dip (or from silence) for an attack
+    start_span: float = 0.12   # the attack of a note is searched within +- this of its heard onset
+    min_dip: float = 0.030     # an extra attack needs a dip at least this long (a same-button re-press: 83 ms)
+    reach_db: float = 10.0     # ... and a re-rise to within this of the level before the dip
+    cut_db: float = 20.0       # cut short: the tone falls this far below its own start level (or under the SNR)
+    cut_min_s: float = 0.150   # ... for at least this long ...
+    cut_before_s: float = 0.100  # ... starting more than this before the scheduled release (U1 rule)
+    early_db: float = 6.0      # early stop near the release: the tone falls this far below its start ...
+    early_margin_s: float = 0.075  # ... and stays down until the heard release, falling more than this before it
+    release_tail: float = 0.100  # a note followed by a rest is judged up to its heard release + this
+    early_window_s: float = 0.300  # ... but at most this before it (earlier falls: the 150 ms rule; a long sag is not a stop)
+    env_win: float = 0.030     # tone envelope window (separates a semitone at the ocarina's pitches)
+    env_hop: float = 0.005
+
+
+@dataclass(frozen=True)
+class MelodyResult:
+    note: MelodyNote
+    t_heard: float
+    level_db: float
+    noise_db: float
+    audible: bool
+    hz: float | None
+    heard_midi: int | None
+    cents: float | None        # vs equal temperament, A4 = 440 Hz
+    dev_cents: float | None    # vs the run's median for the pitch class
+    onsets: int
+    verdict: str
+    sounded_ms: float | None = None  # cut short: heard onset to the drop, schedule ms (None = not cut)
+
+
+def melody_analyse(x: np.ndarray, sr: int, notes: Sequence[MelodyNote], offset: float, p: Params = Params(),
+                   mp: MelodyParams = MelodyParams()) -> list[MelodyResult]:
+    """Per note: audible at the expected pitch, pitch (peak within +-3 semitones, so a wrong neighbour is
+    found), attacks around the onset and inside the note, then the in-tune rule on the whole run."""
+    if not notes:
+        return []
+    xb = bandpass(x, sr, *p.band)
+    heard = [wav_time(n.t, offset, p) for n in notes]
+    q0, q1 = heard[0] - 0.45, heard[0] - 0.05  # quiet reference: the lead-in before the first note
+    dur = x.size / sr
+    raw = []
+    for k, n in enumerate(notes):
+        h = heard[k]
+        w0 = h + mp.skip
+        w1 = heard[k + 1] - mp.end_guard if k + 1 < len(notes) else h + mp.last_window
+        if w1 > dur:
+            break
+        tr = wav_time(n.t_release, offset, p) if n.t_release is not None else None
+        if tr is not None:
+            # A short (staccato) press followed by a rest: judge the sounding part only, not the silence after
+            # it (live 2026-11-21, --max-press-ms 400: a 0.4 s G5 in a 2 s slot read 9.9 dB and NO SOUND).
+            w1 = max(w0 + 0.05, min(w1, tr + mp.release_tail))
+        f = expected_hz(n.midi)
+        level, noise = band_mean_db(xb, sr, w0, w1, f), band_mean_db(xb, sr, q0, q1, f)
+        audible = math.isfinite(level) and (not math.isfinite(noise) or level - noise >= p.min_snr_db)
+        span = 2 ** (mp.search_semitones / 12.0)
+        peak = spectral_peak(xb, sr, w0, w1, f / span, f * span)
+        hz = None
+        if peak is not None:
+            # Another pitch counts only if it is still there in the second half of the window: the decaying
+            # tail of the previous note (a missed note after a hand-over) is not a wrong note.
+            mid = (w0 + w1) / 2
+            lp, npk = band_mean_db(xb, sr, mid, w1, peak), band_mean_db(xb, sr, q0, q1, peak)
+            if audible or (math.isfinite(lp) and (not math.isfinite(npk) or lp - npk >= p.min_snr_db)):
+                hz = peak
+        # attacks, on the level of the tone at the expected pitch
+        t, e = tone_env_db(xb, sr, f, h - mp.start_span - mp.env_win, w1 + mp.env_win, mp.env_win, mp.env_hop)
+        _, en = tone_env_db(xb, sr, f, q0, q1, mp.env_win, mp.env_hop)
+        if en.size:
+            e = np.maximum(e, float(np.median(en)) + 6.0)  # noise wobble is not an attack
+        start = e[(t >= h - mp.start_span) & (t <= h + mp.start_span)]
+        # no new attack without a press: after the heard release only the release tail is left (a G5 released
+        # with the stick still up dipped and bounced back 5 dB within 50 ms, live 2026-11-21)
+        body_end = w1 - 0.04 if tr is None else min(w1 - 0.04, tr - 0.02)
+        body = e[(t >= h + mp.start_span / 2) & (t <= body_end)]
+        onsets = int(max_rise(start) >= mp.rise_db) + count_reattacks(body, mp.dip_db, mp.rise_db,
+                                                                      max(1, round(mp.min_dip / mp.env_hop)), mp.reach_db)
+        if not audible:
+            onsets = 0  # attacks of the expected note only count if the note sounds at all
+        midi, c = note_and_cents(hz) if hz is not None else (None, None)
+        sounded = None
+        if audible and n.t_release is not None:
+            sounded = melody_cut(xb, sr, f, h, wav_time(n.t_release, offset, p), (q0, q1), p, mp)
+        raw.append((n, h, level, noise, audible, hz, midi, c, onsets, sounded))
+    by_pc: dict[int, list[float]] = {}
+    for n, *_, midi, c, _o, _s in raw:
+        if midi == n.midi:
+            by_pc.setdefault(n.midi % 12, []).append(c)
+    med = {pc: float(np.median(v)) for pc, v in by_pc.items()}
+    out = []
+    for n, h, level, noise, audible, hz, midi, c, onsets, sounded in raw:
+        dev = c - med[n.midi % 12] if midi == n.midi else None
+        if hz is None:
+            verdict = "NO SOUND"
+        elif midi != n.midi or abs(dev) > mp.tune_cents:
+            verdict = "WRONG PITCH"
+        elif not audible:
+            verdict = "NO SOUND"
+        elif sounded is not None:
+            verdict = "CUT SHORT"
+        else:
+            verdict = "ok"
+        out.append(MelodyResult(n, h, level, noise, audible, hz, midi, c, dev, onsets, verdict, sounded))
+    return out
+
+
+def melody_cut(xb: np.ndarray, sr: int, f: float, h: float, tr: float, quiet: tuple[float, float], p: Params,
+               mp: MelodyParams) -> float | None:
+    """Cut short (the sustain-mode interruption rule on a melody note): the tone at the expected pitch falls
+    `cut_db` below its own level at the start of the note, or under `min_snr_db` above the lead-in, for at
+    least `cut_min_s`, starting more than `cut_before_s` before the heard release. Returns how long the note
+    sounded (heard onset to the drop, schedule ms), or None if it was held to its release. Also an early stop
+    near the release (`early_stop`): it falls `early_db` and stays down from more than `early_margin_s` before
+    the heard release."""
+    t, e = tone_env_db(xb, sr, f, h - 0.05, tr + mp.cut_min_s + 0.05, mp.env_win, mp.env_hop)
+    _, en = tone_env_db(xb, sr, f, *quiet, mp.env_win, mp.env_hop)
+    head = e[(t >= h + mp.skip) & (t <= min(h + mp.skip + 0.2, tr - mp.cut_before_s))]
+    if not head.size:
+        return None
+    ref = float(np.median(head))
+    thr = ref - mp.cut_db
+    if en.size:
+        thr = max(thr, float(np.median(en)) + p.min_snr_db)
+    drop = first_drop(t, e, h + mp.skip, tr - mp.cut_before_s, thr, max(1, round(mp.cut_min_s / mp.env_hop)))
+    if drop is None:
+        drop = early_stop(t, e, max(h + mp.skip, tr - mp.early_window_s - 0.05), tr, ref - mp.early_db,
+                          mp.early_margin_s, mp.early_window_s)
+    return None if drop is None else (drop - h) * 1000.0 / p.scale
+
+
+def early_stop(t: np.ndarray, e: np.ndarray, t_from: float, tr: float, thr: float, margin: float,
+               window: float = math.inf) -> float | None:
+    """An early stop close to the release, which the 150 ms rule cannot see when the next note comes soon
+    (seen live 2026-11-21: A5 x 17 at 60 BPM, notes 07 and 14 stopped about 110 ms before their heard
+    release, other notes started to fall about 10 ms after it; with the room tail the 30 ms envelope only
+    fell 10 to 14 dB). The time the tone falls below `thr` for good, i.e. it stays below until the heard
+    release `tr`, if that is between `window` and `margin` before `tr`; else None."""
+    sel = np.flatnonzero((t >= t_from) & (t <= tr))
+    if sel.size == 0 or e[sel[-1]] >= thr:
+        return None
+    above = sel[e[sel] >= thr]
+    if above.size == 0:
+        return None  # never above: no sound to stop (a NO SOUND note is judged elsewhere)
+    i = int(above[-1]) + 1  # first sample of the final stretch below thr
+    return float(t[i]) if tr - window <= t[i] < tr - margin else None
+
+
+MELODY_COLUMNS = ("n", "line", "t_s", "label", "expected", "fingering", "snr_db", "audible", "hz", "note",
+                  "cents", "dev_cents", "onsets", "sounded_ms", "verdict")
+
+
+def melody_row(r: MelodyResult) -> dict[str, str]:
+    n = r.note
+    return {"n": f"{n.index:02d}", "line": str(n.line), "t_s": f"{n.t:.3f}", "label": n.label, "expected": n.name,
+            "fingering": n.fingering, "snr_db": _fmt(r.level_db - r.noise_db, ".1f"),
+            "audible": "1" if r.audible else "0", "hz": _fmt(r.hz, ".1f"),
+            "note": g.midi_name(r.heard_midi) if r.heard_midi is not None else "-",
+            "cents": _fmt(r.cents, "+.0f"), "dev_cents": _fmt(r.dev_cents, "+.0f"), "onsets": str(r.onsets),
+            "sounded_ms": _fmt(r.sounded_ms, ".0f"), "verdict": r.verdict}
+
+
+def melody_summary_lines(results: Sequence[MelodyResult], p: Params, mp: MelodyParams,
+                         meta: dict[str, str] | None = None) -> list[str]:
+    n = len(results)
+    audible = sum(r.audible for r in results)
+    right = sum(r.verdict in ("ok", "CUT SHORT") for r in results)
+    cut = [r for r in results if r.verdict == "CUT SHORT"]
+    missed = [r for r in results if r.verdict == "NO SOUND" or r.onsets == 0]
+    extra = [r for r in results if r.onsets > 1]
+    devs = [r.dev_cents for r in results if r.dev_cents is not None]
+    out = [(f"thresholds: latency {p.latency:.3f} s; window heard onset + {mp.skip * 1000:.0f} ms to next heard "
+           f"onset - {mp.end_guard * 1000:.0f} ms (last note {mp.last_window:g} s); audible: level at the expected "
+           f"pitch (+-3 %) >= {p.min_snr_db:g} dB above the lead-in; pitch: peak within +-{mp.search_semitones:g} "
+           f"semitones; in tune: nearest note = expected and within +-{mp.tune_cents:g} c of the run's median for "
+           f"the pitch class; attack: rise >= {mp.rise_db:g} dB within +-{mp.start_span * 1000:.0f} ms of the heard "
+           f"onset, extra attack: dip >= {mp.dip_db:g} dB for >= {mp.min_dip * 1000:.0f} ms then rise >= {mp.rise_db:g} dB to within {mp.reach_db:g} dB of the level "
+           f"before the dip, inside the note "
+           f"(tone envelope {mp.env_win * 1000:.0f} ms); cut short: the tone falls >= {mp.cut_db:g} dB below its "
+           f"start (or under {p.min_snr_db:g} dB above the lead-in) for >= {mp.cut_min_s * 1000:.0f} ms, starting "
+           f"> {mp.cut_before_s * 1000:.0f} ms before the scheduled release, or it falls >= {mp.early_db:g} dB and stays "
+           f"down from {mp.early_margin_s * 1000:.0f} to {mp.early_window_s * 1000:.0f} ms before the heard release")]
+    meds: dict[str, list[float]] = {}
+    for r in results:
+        if r.dev_cents is not None:
+            meds.setdefault(g.NOTE_NAMES[r.note.midi % 12], []).append(r.cents)
+    out.append("pitch-class medians (c vs A4 = 440 Hz): " +
+               (", ".join(f"{k} {float(np.median(v)):+.0f}" for k, v in sorted(meds.items())) or "-"))
+    spread = f"{min(devs):+.0f} to {max(devs):+.0f} c, sd {float(np.std(devs)):.1f} c" if devs else "-"
+    out.append(f"notes {n}, audible {audible}/{n}, right pitch {right}/{n}, missed {len(missed)}, cut {len(cut)}, "
+               f"extra onsets {sum(r.onsets - 1 for r in extra)}, cents spread {spread}")
+    if missed:
+        out.append("missed: " + ", ".join(f"{r.note.index:02d} {r.note.name} {r.note.fingering}"
+                                          f" ({r.verdict if r.verdict == 'NO SOUND' else 'no attack'})"
+                                          for r in missed))
+    if cut:
+        out.append("cut short: " + ", ".join(
+            f"{r.note.index:02d} {r.note.name} {r.note.fingering} sounded {r.sounded_ms:.0f} of "
+            f"{(r.note.t_release - r.note.t) * 1000:.0f} ms" for r in cut))
+    wrong = [r for r in results if r.verdict == "WRONG PITCH"]
+    if wrong:
+        out.append("wrong pitch: " + ", ".join(
+            f"{r.note.index:02d} {r.note.name} {r.note.fingering} heard "
+            f"{g.midi_name(r.heard_midi) if r.heard_midi is not None else '-'} {_fmt(r.dev_cents, '+.0f')}"
+            for r in wrong))
+    if extra:
+        out.append("extra onsets: " + ", ".join(f"{r.note.index:02d} {r.note.name} ({r.onsets})" for r in extra))
+    if meta and meta.get("valid", "yes").startswith("no"):
+        out.append("INVALID RUN: PortAudio input overflow, samples were lost; run it again")
+    return out
+
+
+def report_melody(x: np.ndarray, sr: int, notes: Sequence[MelodyNote], offset: float, p: Params,
+                  mp: MelodyParams, base: pathlib.Path, meta: dict[str, str]) -> int:
+    meta = {**meta, "mode": "melody", "offset_s": f"{offset:.3f}", "scale": f"{p.scale:.4f}",
+            "latency_s": f"{p.latency:.3f}", "min_snr_db": f"{p.min_snr_db:g}"}
+    results = melody_analyse(x, sr, notes, offset, p, mp)
+    rows = [melody_row(r) for r in results]
+    head = f"{'n':>3} {'t(s)':>7}  {'exp':<4} {'fingering':<12} {'SNR':>5} {'Hz':>7} {'note':<4} {'c':>4} " \
+           f"{'dev':>4} {'on#':>3} {'sound':>5}  verdict"
+    print()
+    print(head)
+    print("-" * len(head))
+    for r in rows:
+        print(f"{r['n']:>3} {r['t_s']:>7}  {r['expected']:<4} {r['fingering']:<12} {r['snr_db']:>5} {r['hz']:>7} "
+              f"{r['note']:<4} {r['cents']:>4} {r['dev_cents']:>4} {r['onsets']:>3} {r['sounded_ms']:>5}  {r['verdict']}")
+    summary = melody_summary_lines(results, p, mp, meta)
+    print("\n".join(summary))
+    if len(results) < len(notes):
+        print(f"note: {len(notes) - len(results)} note(s) not analysed (recording ends before them)")
+    csv_path, md_path = write_table(base, MELODY_COLUMNS, rows, meta, summary)
+    print(f"reports: {csv_path}  {md_path}")
+    return 0
+
+
+# ---- U1 sustain
+
+
+@dataclass(frozen=True)
+class SustainParams:
+    """Thresholds of `--mode sustain` (owner decision 1, Story 1.6); every value is printed in the report."""
+    drop_db: float = 20.0          # interrupted: 20 dB below the note's own level in its first second ...
+    min_drop_s: float = 0.150      # ... (or under min_snr_db above the noise) for at least this long ...
+    before_release_s: float = 0.100  # ... starting at least this before the scheduled release
+    env_win: float = 0.020
+    env_hop: float = 0.005
+
+
+@dataclass(frozen=True)
+class SustainResult:
+    attempt: Attempt
+    hold_ms: int | None
+    sound: bool
+    level_db: float               # median level in the first second after the attack
+    noise_db: float
+    onset_ms: float | None        # heard onset after the scheduled press (incl. latency shift), schedule ms
+    interrupted: bool | None
+    stop_ms: float | None         # auto-stop: time of the drop after the heard onset, schedule ms
+    level_per_s: tuple[float | None, ...] = ()   # each full second vs the first second, dB
+    cents_per_s: tuple[float | None, ...] = ()   # each full second vs the first second, c
+    verdict: str = ""
+
+
+def sustain_attempt(xb: np.ndarray, sr: int, a: Attempt, offset: float, p: Params = Params(),
+                    sp: SustainParams = SustainParams()) -> SustainResult:
+    hold = a.fields.get("hold_ms")
+    tp = wav_time(a.t, offset, p)
+    tr = wav_time(a.t + (hold or 1000) / 1000.0, offset, p)
+    f = expected_hz(a.model_midi if a.model_midi is not None else g.BUTTON_MIDI.get(a.button, 81))
+    t, e = tone_env_db(xb, sr, f, tp - 0.5, tr + 0.5, sp.env_win, sp.env_hop)
+    pre = e[(t >= tp - 0.45) & (t <= tp - 0.05)]
+    noise = float(np.median(pre)) if pre.size else -math.inf
+    if a.blank:
+        body = e[(t >= tp + 0.05) & (t <= tp + 1.0)]
+        level = float(np.median(body)) if body.size else -math.inf
+        sound = math.isfinite(level) and level - noise >= p.min_snr_db
+        return SustainResult(a, None, sound, level, noise, None, None, None,
+                             verdict="BLANK SOUNDED" if sound else "silent (ok)")
+    win = np.flatnonzero((t >= tp - 0.1) & (t <= tp + 0.5))
+    if win.size == 0:
+        return SustainResult(a, hold, False, -math.inf, noise, None, None, None, verdict="NO SOUND")
+    k = int(win[np.argmax(e[win])])
+    onset = half_crossing(t[win[0]: k + 1], e[win[0]: k + 1], k - win[0])
+    first = e[(t >= onset + 0.1) & (t <= min(onset + 1.0, tr - 0.05))]
+    level = float(np.median(first)) if first.size else -math.inf
+    on_ms = (onset - tp) * 1000.0 / p.scale
+    if not math.isfinite(level) or (math.isfinite(noise) and level - noise < p.min_snr_db):
+        return SustainResult(a, hold, False, level, noise, on_ms, None, None, verdict="NO SOUND")
+    thr = max(level - sp.drop_db, noise + p.min_snr_db if math.isfinite(noise) else -math.inf)
+    run = max(1, round(sp.min_drop_s / sp.env_hop))
+    drop = first_drop(t, e, onset + 0.1, tr - sp.before_release_s, thr, run)
+    stop = None if drop is None else (drop - onset) * 1000.0 / p.scale
+    levels, cents_ = [], []
+    ref_hz = spectral_peak(xb, sr, onset, onset + 1.0, f * 0.94, f * 1.06)
+    ref_lv = e[(t >= onset) & (t < onset + 1.0)]
+    ref_lv = float(np.median(ref_lv)) if ref_lv.size else level
+    sec = 0
+    while onset + sec + 1.0 <= tr + 1e-9:
+        seg = e[(t >= onset + sec) & (t < onset + sec + 1.0)]
+        lv = float(np.median(seg)) if seg.size else None
+        levels.append(None if lv is None else lv - ref_lv)
+        hz = spectral_peak(xb, sr, onset + sec, onset + sec + 1.0, f * 0.94, f * 1.06)
+        loud = lv is not None and (not math.isfinite(noise) or lv - noise >= p.min_snr_db)
+        cents_.append(cents(hz, ref_hz) if loud and hz and ref_hz else None)
+        sec += 1
+    verdict = f"interrupted at {stop:.0f} ms" if stop is not None else "held to release"
+    return SustainResult(a, hold, True, level, noise, on_ms, stop is not None, stop, tuple(levels), tuple(cents_),
+                         verdict)
+
+
+def sustain_analyse(x: np.ndarray, sr: int, atts: Sequence[Attempt], offset: float, p: Params = Params(),
+                    sp: SustainParams = SustainParams()) -> list[SustainResult]:
+    xb = bandpass(x, sr, *p.band)
+    dur = x.size / sr
+    keep = [a for a in atts if wav_time(a.t + a.fields.get("hold_ms", 1000) / 1000.0, offset, p) + 0.5 <= dur]
+    return [sustain_attempt(xb, sr, a, offset, p, sp) for a in keep]
+
+
+SUSTAIN_COLUMNS = ("n", "line", "t_s", "label", "button", "hold_ms", "round", "control", "blank", "snr_db",
+                   "onset_ms", "interrupted", "stop_ms", "level_per_s_db", "cents_per_s", "verdict")
+
+
+def _series(v: Sequence[float | None], spec: str) -> str:
+    return " ".join("-" if x is None else format(x, spec) for x in v) or "-"
+
+
+def sustain_row(r: SustainResult) -> dict[str, str]:
+    a = r.attempt
+    return {"n": str(a.index), "line": str(a.line), "t_s": f"{a.t:.3f}", "label": a.label, "button": a.button,
+            "hold_ms": "-" if r.hold_ms is None else str(r.hold_ms),
+            "round": "-" if a.round is None else str(a.round), "control": "1" if a.control else "0",
+            "blank": "1" if a.blank else "0", "snr_db": _fmt(r.level_db - r.noise_db, ".1f"),
+            "onset_ms": _fmt(r.onset_ms, ".0f"),
+            "interrupted": "" if r.interrupted is None else str(int(r.interrupted)),
+            "stop_ms": _fmt(r.stop_ms, ".0f"), "level_per_s_db": _series(r.level_per_s, "+.1f"),
+            "cents_per_s": _series(r.cents_per_s, "+.0f"), "verdict": r.verdict}
+
+
+def floor100(v: float) -> int:
+    return int(math.floor(v / 100.0) * 100)
+
+
+# A stop this soon after the onset is not the U1 auto-stop (about 6 s) but the Story 1.6 "every ~7th note"
+# event (a held note ended 0.54 to 0.91 s after its onset, docs/test-plan.md "Walking skeleton (Story 1.6)"):
+# such attempts are listed separately and left out of the interrupted counts, D_ok and T_stop.
+EVENT_STOP_MS = 2000.0
+_ATTEMPT_RE = re.compile(r"attempt=(\d+)")
+
+
+def sustain_summary_lines(rows: Sequence[dict[str, str]], sp: SustainParams | None = None,
+                          p: Params | None = None) -> list[str]:
+    """Per (button, hold): interrupted count out of the attempts that sounded, auto-stop times; then the
+    owner's update rule on these rows only: candidate = floor100(min(D_ok, T_stop) - 500 ms)."""
+    out = []
+    if sp is not None and p is not None:
+        out.append(f"thresholds: latency {p.latency:.3f} s; interrupted = tone at the expected pitch "
+                   f"< {p.min_snr_db:g} dB above the noise or > {sp.drop_db:g} dB below its first second, for "
+                   f">= {sp.min_drop_s * 1000:.0f} ms, starting >= {sp.before_release_s * 1000:.0f} ms before the "
+                   f"scheduled release (tone envelope {sp.env_win * 1000:.0f} ms)")
+    acc: dict[tuple[str, int], list] = {}
+    events = []
+    for r in rows:
+        if r["blank"] == "1" or r["hold_ms"] in ("", "-"):
+            continue
+        e = acc.setdefault((r["button"], int(r["hold_ms"])), [0, 0, 0, []])
+        if r["interrupted"] == "":
+            e[2] += 1  # no sound
+            continue
+        if r["interrupted"] == "1" and float(r["stop_ms"]) < EVENT_STOP_MS:
+            events.append(r)  # the every-~7th-note event, not U1 data
+            continue
+        e[1] += 1
+        if r["interrupted"] == "1":
+            e[0] += 1
+            e[3].append(float(r["stop_ms"]))
+    out.append(f"{'button':<6} {'hold_ms':>7}  interrupted  no sound  auto-stop ms")
+    for (b, h), (i, n, ns, stops) in sorted(acc.items()):
+        out.append(f"{b:<6} {h:>7}  {i:>4}/{n:<6}  {ns:>8}  {', '.join(f'{v:.0f}' for v in sorted(stops)) or '-'}")
+    holds: dict[int, list] = {}
+    for (b, h), (i, n, ns, _s) in acc.items():
+        holds.setdefault(h, []).append((i, n, ns))
+    ok = [h for h, v in holds.items() if all(i == 0 and n > 0 and ns == 0 for i, n, ns in v)]
+    stops = [v for e in acc.values() for v in e[3]]
+    d_ok = max(ok) if ok else None
+    t_stop = min(stops) if stops else None
+    basis = [v for v in (d_ok, t_stop) if v is not None]
+    cand = floor100(min(basis) - 500) if d_ok is not None else None
+    if events:
+        def where(r):
+            m = _ATTEMPT_RE.search(r["label"])
+            return f"attempt {m.group(1)} (note {int(m.group(1)) + 1} of its file, warm-up = 1)" if m else "attempt ?"
+        out.append(f"EARLY STOPS (< {EVENT_STOP_MS:.0f} ms, the Story 1.6 every-~7th-note event, not the U1 auto-stop; "
+                   "left out of the counts, D_ok and T_stop; re-run those holds): " + "; ".join(
+                       f"{r['button']} {r['hold_ms']} ms {where(r)} stopped at {float(r['stop_ms']):.0f} ms"
+                       for r in events))
+    out.append(f"buttons: {', '.join(sorted({b for b, _ in acc}))}; D_ok (largest hold with every attempt held, "
+               f"none silent) = {d_ok if d_ok is not None else '-'} ms; T_stop (shortest auto-stop) = "
+               f"{f'{t_stop:.0f}' if t_stop is not None else '-'} ms; candidate floor100(min(D_ok, T_stop) - 500) = "
+               f"{cand if cand is not None else '-'} ms (these rows only; the rule needs every button)")
+    bad = [r for r in rows if r["verdict"] == "BLANK SOUNDED" or
+           (r["control"] == "1" and r["hold_ms"] not in ("", "-") and int(r["hold_ms"]) <= 2000
+            and r["interrupted"] != "0" and r not in events)]
+    if bad:
+        out.append(f"INVALID: {len(bad)} control attempt(s) did not behave (blank sounded, or a short hold was "
+                   "not held to its release); find out why before using the numbers")
+    return out
+
+
+def report_sustain(x: np.ndarray, sr: int, atts: Sequence[Attempt], offset: float, p: Params, sp: SustainParams,
+                   base: pathlib.Path, meta: dict[str, str]) -> int:
+    meta = {**meta, "mode": "sustain", "offset_s": f"{offset:.3f}", "scale": f"{p.scale:.4f}",
+            "latency_s": f"{p.latency:.3f}", "min_snr_db": f"{p.min_snr_db:g}"}
+    results = sustain_analyse(x, sr, atts, offset, p, sp)
+    rows = [sustain_row(r) for r in results]
+    head = f"{'n':>3} {'t(s)':>8}  {'label':<44} {'SNR':>5} {'onset':>5} {'stop':>6}  verdict / level dB per s"
+    print()
+    print(head)
+    print("-" * len(head))
+    for r in rows:
+        print(f"{r['n']:>3} {r['t_s']:>8}  {r['label'][:44]:<44} {r['snr_db']:>5} {r['onset_ms']:>5} "
+              f"{r['stop_ms']:>6}  {r['verdict']} / {r['level_per_s_db']} / c {r['cents_per_s']}")
+    summary = sustain_summary_lines(rows, sp, p)
+    if meta.get("valid", "yes").startswith("no"):
+        summary.append("INVALID RUN: PortAudio input overflow, samples were lost; run it again")
+    print("\n".join(summary))
+    if len(results) < len(atts):
+        print(f"note: {len(atts) - len(results)} attempt(s) not analysed (recording ends before them)")
+    csv_path, md_path = write_table(base, SUSTAIN_COLUMNS, rows, meta, summary)
+    print(f"reports: {csv_path}  {md_path}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -1380,8 +1910,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tail", type=float, default=1.0, help="seconds recorded after the sender exits (default 1)")
     p.add_argument("--attack", type=float, default=d.attack, help="skip after the press, s (0.30)")
     p.add_argument("--release-guard", type=float, default=d.release_guard, help="stop before the release, s (0.20)")
-    p.add_argument("--latency", type=float, default=d.latency,
-                   help="extra shift, s, e.g. the measured onset median (default 0)")
+    p.add_argument("--latency", type=float, default=None,
+                   help="extra shift, s, e.g. the measured onset median (default 0; melody and sustain: "
+                        f"{STORY_1_6_LATENCY:g}, the Story 1.4 heard latency, measure it per session)")
     p.add_argument("--min-dbfs", type=float, default=d.min_dbfs, help="no sound below this level (-60)")
     p.add_argument("--min-snr-db", type=float, default=d.min_snr_db, help="no sound below this SNR (10)")
     p.add_argument("--list-devices", action="store_true", help="list avfoundation devices and exit")
@@ -1389,11 +1920,14 @@ def build_parser() -> argparse.ArgumentParser:
     # Story 1.4
     p.add_argument("--mode", default="pitch", choices=MODES,
                    help="pitch: Story 1.3 note pitch (default); detect: row 2.1; retrigger: row 2.2; "
-                        "lead: row 2.3; jitter: row 2.4 (Story 1.4 files, attempts = TRY rows)")
+                        "lead: row 2.3; jitter: row 2.4 (Story 1.4 files, attempts = TRY rows); "
+                        "melody: Story 1.6 melody files (NOTE rows); sustain: Story 1.6 U1 files (TRY u1 rows)")
     p.add_argument("--backend", default="ffmpeg", choices=("ffmpeg", "sounddevice"),
                    help="capture: ffmpeg avfoundation (default; loses samples) or sounddevice (PortAudio, lossless)")
-    p.add_argument("--dip-db", type=float, help="retrigger: dip below the first note (default: from the controls)")
-    p.add_argument("--rise-db", type=float, help="retrigger: re-rise after the dip (default: from the controls)")
+    p.add_argument("--dip-db", type=float, help="retrigger: dip below the first note (default: from the controls); "
+                   f"melody: dip for an extra attack (default {MelodyParams().dip_db:g})")
+    p.add_argument("--rise-db", type=float, help="retrigger: re-rise after the dip (default: from the controls); "
+                   f"melody: rise of an attack (default {MelodyParams().rise_db:g})")
     p.add_argument("--lead-cents", type=float, default=TimingParams().lead_cents,
                    help="lead: pass if the first 40 ms are within this of the steady pitch (50)")
     p.add_argument("--selftest-tone", action="store_true",
@@ -1412,7 +1946,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def params_from(a: argparse.Namespace) -> Params:
-    return Params(a.attack, a.release_guard, a.min_dbfs, a.min_snr_db, Params().min_voiced, a.latency, a.scale)
+    latency = a.latency
+    if latency is None:
+        latency = STORY_1_6_LATENCY if a.mode in ("melody", "sustain") else Params().latency
+    return Params(a.attack, a.release_guard, a.min_dbfs, a.min_snr_db, Params().min_voiced, latency, a.scale)
+
+
+def melody_params_from(a: argparse.Namespace) -> MelodyParams:
+    d = MelodyParams()
+    return MelodyParams(dip_db=d.dip_db if a.dip_db is None else a.dip_db,
+                        rise_db=d.rise_db if a.rise_db is None else a.rise_db)
+
+
+def report_any(x: np.ndarray, sr: int, a: argparse.Namespace, rows_: Sequence, presses: Sequence[Press],
+               offset: float, p: Params, tp_: TimingParams, base: pathlib.Path, meta: dict[str, str]) -> int:
+    """Run the analysis of `--mode` on a recording and write its reports."""
+    if a.mode == "melody":
+        return report_melody(x, sr, melody_notes_from_rows(rows_), offset, p, melody_params_from(a), base, meta)
+    if a.mode == "sustain":
+        return report_sustain(x, sr, attempts_from_rows(rows_), offset, p, SustainParams(), base, meta)
+    if a.mode != "pitch":
+        return report_timing(x, sr, attempts_from_rows(rows_), offset, p, tp_, a.mode, base, meta)
+    report(x, sr, presses, offset, p, base, meta)
+    return 0
 
 
 def report(x: np.ndarray, sr: int, presses: Sequence[Press], offset: float, p: Params,
@@ -1511,6 +2067,9 @@ def combine(paths: Sequence[str], pool: bool = False) -> int:
         except OSError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
+    if rows and "interrupted" in rows[0]:
+        print("\n".join([f"files: {len(paths)}", *sustain_summary_lines(rows)]))
+        return 0
     if not rows or "pass" not in rows[0]:
         print("error: not a Story 1.4 attempt report (no 'pass' column)", file=sys.stderr)
         return 1
@@ -1595,8 +2154,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     atts = attempts_from_rows(rows_)
     tp_ = TimingParams(dip_db=a.dip_db, rise_db=a.rise_db, lead_cents=a.lead_cents, band_snr_db=a.band_snr_db)
-    if a.mode != "pitch" and not atts:
-        print(f"error: --mode {a.mode} needs a Story 1.4 trial file (TRY rows)", file=sys.stderr)
+    if a.mode in (*TIMING_MODES, "sustain") and not atts:
+        print(f"error: --mode {a.mode} needs a Story 1.4 / 1.6 trial file (TRY rows)", file=sys.stderr)
+        return 1
+    if a.mode == "melody" and not melody_notes_from_rows(rows_):
+        print("error: --mode melody needs a Story 1.6 melody file (NOTE rows)", file=sys.stderr)
         return 1
     p = params_from(a)
 
@@ -1614,10 +2176,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         base = wav.with_suffix("")
         if a.report_tag:
             base = base.with_name(f"{base.name}-{a.report_tag}")
-        if a.mode != "pitch":
-            return report_timing(x, sr, atts, a.offset, p, tp_, a.mode, base, meta)
-        report(x, sr, presses, a.offset, p, base, meta)
-        return 0
+        return report_any(x, sr, a, rows_, presses, a.offset, p, tp_, base, meta)
 
     if not a.port:
         print("error: --port is required (or --analyse WAV --offset S)", file=sys.stderr)
@@ -1673,10 +2232,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if overflows is not None:
         meta["input_overflows"] = str(overflows)
         meta["valid"] = "no (input overflow)" if overflows else "yes"
-    if a.mode != "pitch":
-        report_timing(x, sr, atts, offset, p, tp_, a.mode, wav.with_suffix(""), meta)
-        return code
-    report(x, sr, presses, offset, p, wav.with_suffix(""), meta)
+    report_any(x, sr, a, rows_, presses, offset, p, tp_, wav.with_suffix(""), meta)
     return code
 
 

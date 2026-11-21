@@ -982,3 +982,506 @@ def test_combine_rejects_two_reports_of_one_recording(tmp_path, capsys):
     other.write_text(pathlib.Path(tagged).read_text())
     assert lt.main(["--combine", tagged, str(other)]) == 0
     assert "appear in more than one recording" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ Story 1.6: --mode melody
+
+
+S16 = HERE / "samples" / "story-1-6"
+MEL90 = S16 / "ode-to-joy-90bpm.txt"  # committed: staccato, presses capped at 400 ms (Story 1.6 workaround)
+_UNCAPPED: dict[int, pathlib.Path] = {}
+
+
+def uncapped(bpm: int = 90) -> pathlib.Path:
+    """The melody file without the 400 ms press cap (long notes, hand-overs): the analyser rules for cuts,
+    repeats and extra onsets need held notes. Generated on demand (Python 3.11+, tomllib)."""
+    if bpm not in _UNCAPPED:
+        pytest.importorskip("tomllib")
+        import atexit
+        import shutil
+        import tempfile
+        from fractions import Fraction
+
+        g6 = lt._load("gen_trials_1_6")
+        tf = g6.melody_file(g6.DEFAULT_MELODY, g6.load_profile(), Fraction(bpm), max_press_ms=None)
+        d = pathlib.Path(tempfile.mkdtemp(prefix="uncapped-"))
+        atexit.register(shutil.rmtree, d, True)
+        _UNCAPPED[bpm] = d / tf.name
+        _UNCAPPED[bpm].write_text(g6.render(tf), encoding="utf-8")
+    return _UNCAPPED[bpm]
+LAT = lt.STORY_1_6_LATENCY  # the default heard latency of melody/sustain
+
+
+def melody_rows_and_presses(path=None):
+    rows_, presses = lt.load_presses(path or uncapped())
+    return rows_, presses, lt.melody_notes_from_rows(rows_)
+
+
+def melody_recording(presses, offset=0.4, change=None, decay=0.03, level=0.2):
+    """Pretend game: every press sounds its model pitch (+27 c) from the press to the release, then decays.
+    `change(k, press)` may return None (silent), a list of (t0, dur, cents) pieces (relative to the press),
+    or a pitch offset in semitones (float) for press k (1-based)."""
+    x = background(presses[-1].t_release + offset + LAT + 1.5)
+    for k, p in enumerate(presses, start=1):
+        f = lt.expected_hz(p.model_midi)
+        dur = p.t_release - p.t_press
+        pieces = [(0.0, dur, 0.0)]
+        c = change(k, p) if change else 0.0
+        if c is None:
+            continue
+        if isinstance(c, list):
+            pieces = c
+        elif c:
+            pieces = [(0.0, dur, 100.0 * c)]
+        for t0, d, cents_ in pieces:
+            place(x, note_wave(f * 2 ** (cents_ / 1200.0), d, decay=decay, level=level), offset + LAT + p.t_press + t0)
+    return x
+
+
+def test_melody_notes_from_the_committed_file():
+    _, presses, notes = melody_rows_and_presses()
+    assert len(notes) == 62 and len(presses) == 62
+    assert [n.index for n in notes] == list(range(1, 63))
+    assert notes[0].name == "B5" and notes[0].midi == 83 and notes[0].fingering == "Y"
+    assert notes[8].fingering == "R+stick-up" and notes[46].midi == 74
+    for n, p in zip(notes, presses):  # the label pitch agrees with the state's model pitch
+        assert n.midi == p.model_midi and abs(n.t - p.t_press) < 1e-9
+
+
+def test_melody_all_notes_ok_relative_to_the_game_tuning():
+    _, presses, notes = melody_rows_and_presses()
+    res = lt.melody_analyse(melody_recording(presses), SR, notes, 0.4, lt.Params(latency=LAT))
+    assert len(res) == 62
+    assert [r.verdict for r in res] == ["ok"] * 62, [(r.note.index, r.verdict, r.onsets) for r in res if r.verdict != "ok"]
+    assert all(r.audible and r.onsets == 1 for r in res)
+    # the game is +27 c of A4 = 440 Hz; that is not a fault, the reference is the run's own median
+    assert all(abs(r.cents - lt.GAME_CENTS) < 6 and abs(r.dev_cents) < 6 for r in res)
+    lines = lt.melody_summary_lines(res, lt.Params(latency=LAT), lt.MelodyParams())
+    assert "right pitch 62/62" in lines[-1] and "missed 0" in lines[-1] and "extra onsets 0" in lines[-1]
+    assert "+-50 c" in lines[0] and "10 dB" in lines[0]
+
+
+def test_melody_missing_note_is_no_sound():
+    _, presses, notes = melody_rows_and_presses()
+    x = melody_recording(presses, change=lambda k, p: None if k == 20 else 0.0)  # D6 after D6 (X repeat)
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    assert res[19].verdict == "NO SOUND" and not res[19].audible and res[19].onsets == 0
+    assert [r.note.index for r in res if r.verdict != "ok"] == [20]
+    assert "missed 1" in lt.melody_summary_lines(res, lt.Params(latency=LAT), lt.MelodyParams())[2]
+
+
+def test_melody_wrong_neighbour_is_found_not_forced():
+    _, presses, notes = melody_rows_and_presses()
+    x = melody_recording(presses, change=lambda k, p: 1.0 if k == 8 else 0.0)  # A5 sounds A#5
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    assert res[7].verdict == "WRONG PITCH" and lt.g.midi_name(res[7].heard_midi) == "A#5"
+    assert [r.note.index for r in res if r.verdict != "ok"] == [8]
+
+
+def test_melody_nearest_note_right_but_out_of_tune():
+    # -70 c from the game's B5 is still nearest B5 (+27 - 70 = -43 c of 440 Hz), but off the run's median
+    _, presses, notes = melody_rows_and_presses()
+    x = melody_recording(presses, change=lambda k, p: -0.7 if k == 7 else 0.0)
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    assert res[6].heard_midi == 83 and res[6].verdict == "WRONG PITCH" and res[6].dev_cents < -60
+    assert sum(r.verdict == "ok" for r in res) == 61
+
+
+def test_melody_extra_onset_is_reported():
+    _, presses, notes = melody_rows_and_presses()
+
+    def split(k, p):  # note 15 (A5, 80 frames) restarts in its middle: a second note
+        if k != 15:
+            return 0.0
+        d = p.t_release - p.t_press
+        return [(0.0, 0.5 * d - 0.08, 0.0), (0.5 * d, 0.5 * d, 0.0)]
+
+    res = lt.melody_analyse(melody_recording(presses, change=split), SR, notes, 0.4, lt.Params(latency=LAT))
+    assert res[14].onsets == 2 and res[14].verdict == "ok"
+    assert all(r.onsets == 1 for r in res if r.note.index != 15)
+    assert "extra onsets 1" in lt.melody_summary_lines(res, lt.Params(latency=LAT), lt.MelodyParams())[2]
+
+
+def test_melody_repeated_pitch_needs_a_dip():
+    # B5 B5 at the start (Y, Y): with the release gap there is a dip and a new attack; merged, note 2 has none
+    _, presses, notes = melody_rows_and_presses()
+    p1, p2 = presses[0], presses[1]
+
+    def merge(k, p):
+        if k == 1:
+            return [(0.0, p2.t_release - p1.t_press, 0.0)]
+        return None if k == 2 else 0.0
+
+    res = lt.melody_analyse(melody_recording(presses, change=merge), SR, notes, 0.4, lt.Params(latency=LAT))
+    assert res[1].onsets == 0 and res[1].verdict == "ok"  # it sounds the right pitch, but it was never attacked
+    assert "02 B5 Y (no attack)" in lt.melody_summary_lines(res, lt.Params(latency=LAT), lt.MelodyParams())[3]
+    res = lt.melody_analyse(melody_recording(presses), SR, notes, 0.4, lt.Params(latency=LAT))
+    assert res[1].onsets == 1
+
+
+def test_melody_window_skips_the_stick_glide():
+    # G5 (R + stick up) starts 30 ms about -29 c low (row 2.3): the window starts 40 ms after the onset
+    _, presses, notes = melody_rows_and_presses()
+
+    def glide(k, p):
+        if p.model_midi != 79:
+            return 0.0
+        d = p.t_release - p.t_press
+        return [(0.0, 0.03, -29.0 * 3), (0.03, d - 0.03, 0.0)]
+
+    res = lt.melody_analyse(melody_recording(presses, change=glide), SR, notes, 0.4, lt.Params(latency=LAT))
+    assert all(r.verdict == "ok" for r in res if r.note.midi == 79)
+
+
+def test_melody_quiet_x_notes_still_audible_at_the_pitch():
+    # D6 (X) is the quiet button at the microphone: 14 dB below the others, louder room noise
+    _, presses, notes = melody_rows_and_presses()
+    x = background(presses[-1].t_release + 0.4 + LAT + 1.5) + loud_background(presses[-1].t_release + 0.4 + LAT + 1.5)
+    for p in presses:
+        lv = 0.2 if p.model_midi != 86 else 0.04
+        place(x, note_wave(lt.expected_hz(p.model_midi), p.t_release - p.t_press, decay=0.03, level=lv),
+              0.4 + LAT + p.t_press)
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    assert all(r.verdict == "ok" for r in res), [(r.note.index, r.verdict) for r in res if r.verdict != "ok"]
+
+
+def test_melody_mode_cli(tmp_path, capsys):
+    _, presses, _ = melody_rows_and_presses()
+    wav = tmp_path / "mel.wav"
+    lt.write_wav(wav, melody_recording(presses, change=lambda k, p: None if k == 33 else 0.0), SR)
+    assert lt.main(["--analyse", str(wav), str(uncapped()), "--offset", "0.4", "--mode", "melody"]) == 0
+    out = capsys.readouterr().out
+    assert "right pitch 61/62" in out and "missed 1" in out and "latency 0.130" in out
+    md = (tmp_path / "mel.md").read_text()
+    assert "mode: melody" in md and "latency_s: 0.130" in md and "NOTE 33" in md
+    # a wrong --latency moves the windows: with 0 s the attacks are found late and notes go wrong
+    assert lt.main(["--analyse", str(wav), str(uncapped()), "--offset", "0.4", "--mode", "melody", "--latency", "0.13",
+                    "--report-tag", "t"]) == 0
+    assert (tmp_path / "mel-t.csv").exists()
+
+
+def test_melody_mode_needs_note_rows(capsys):
+    assert lt.main(["--analyse", "x.wav", str(CAL), "--offset", "0", "--mode", "melody"]) == 1
+    assert "NOTE rows" in capsys.readouterr().err
+
+
+def test_melody_invalid_run_is_flagged():
+    _, presses, notes = melody_rows_and_presses()
+    res = lt.melody_analyse(melody_recording(presses), SR, notes, 0.4, lt.Params(latency=LAT))
+    lines = lt.melody_summary_lines(res, lt.Params(latency=LAT), lt.MelodyParams(), {"valid": "no (input overflow)"})
+    assert lines[-1].startswith("INVALID RUN")
+
+
+def test_count_reattacks_and_max_rise():
+    flat = np.zeros(50)
+    assert lt.count_reattacks(flat, 8, 8) == 0 and lt.max_rise(flat) == 0
+    two = np.concatenate([np.zeros(10), np.full(5, -20.0), np.zeros(10), np.full(5, -20.0), np.zeros(10)])
+    assert lt.count_reattacks(two, 8, 8) == 2
+    assert lt.count_reattacks(two, 25, 8) == 0  # dip not deep enough
+    shallow = np.concatenate([np.zeros(10), np.full(5, -6.0), np.zeros(10)])
+    assert lt.count_reattacks(shallow, 8, 8) == 0  # tremolo is not a new note
+    assert lt.max_rise(np.concatenate([np.full(5, -40.0), np.zeros(5)])) == 40
+
+
+# ------------------------------------------------------------------ Story 1.6: --mode sustain
+
+
+U1P1 = S16 / "u1-sustain-A-part1.txt"
+
+
+def u1_attempts(path=U1P1):
+    rows_, _ = lt.load_presses(path)
+    return lt.attempts_from_rows(rows_)
+
+
+def u1_recording(atts, offset=0.4, auto_stop=6.0, waver_db_per_s=-1.0, blank_sounds=False, shape=None):
+    """Pretend game: a held A5 sounds until the release or `auto_stop` s after the press, whichever is first;
+    its level falls `waver_db_per_s` dB every second. `shape(a, t)` may return extra gain (dB) per sample."""
+    end = max(a.t + a.fields.get("hold_ms", 0) / 1000 for a in atts) + offset + LAT + 2.0
+    x = background(end)
+    for a in atts:
+        if a.blank and not blank_sounds:
+            continue
+        hold = a.fields.get("hold_ms", 1000) / 1000
+        d = min(hold, auto_stop)
+        with np.errstate(over="ignore", invalid="ignore"):  # exp() of the unused branch before the stop
+            seg = note_wave(A5, d, decay=0.005)
+        t = np.arange(seg.size) / SR
+        gain_db = waver_db_per_s * np.minimum(t, d)
+        if shape is not None:
+            gain_db = gain_db + shape(a, t)
+        place(x, seg * 10 ** (gain_db / 20), offset + LAT + a.t)
+    return x
+
+
+def test_u1_attempts_from_the_committed_file():
+    atts = u1_attempts()
+    assert len(atts) == 9 and {a.kind for a in atts} == {"u1"} and {a.button for a in atts} == {"A"}
+    assert sorted(a.fields.get("hold_ms", 0) for a in atts) == [0, 1000, 4000, 5000, 5500, 6000, 6500, 7000, 10000]
+    assert sum(a.blank for a in atts) == 1 and sum(a.control for a in atts) == 3
+    assert all(a.model_midi == 81 and a.round == 1 for a in atts)
+
+
+def test_sustain_auto_stop_time_and_held_notes():
+    atts = u1_attempts()
+    res = lt.sustain_analyse(u1_recording(atts), SR, atts, 0.4, lt.Params(latency=LAT))
+    by = {r.hold_ms: r for r in res}
+    for h in (1000, 4000, 5000, 5500, 6000):
+        assert by[h].sound and by[h].interrupted is False, (h, by[h].verdict)
+    for h in (6500, 7000, 10000):
+        assert by[h].interrupted is True and abs(by[h].stop_ms - 6000) <= 20, (h, by[h].stop_ms)
+    assert by[None].verdict == "silent (ok)"
+
+
+def test_sustain_wavering_in_numbers():
+    atts = u1_attempts()
+    res = lt.sustain_analyse(u1_recording(atts, waver_db_per_s=-1.0), SR, atts, 0.4, lt.Params(latency=LAT))
+    r = next(r for r in res if r.hold_ms == 5000)
+    assert len(r.level_per_s) == 4  # full seconds before the release (the heard onset is a little early)
+    assert r.level_per_s[0] == 0.0
+    for k, v in enumerate(r.level_per_s):
+        assert abs(v - (-1.0 * k)) < 0.6, r.level_per_s
+    assert all(c is not None and abs(c) < 3 for c in r.cents_per_s)
+    long = next(r for r in res if r.hold_ms == 10000)
+    assert long.cents_per_s[-1] is None  # after the auto-stop there is no tone to read a pitch from
+
+
+def test_sustain_traps_not_interrupted():
+    atts = u1_attempts()
+    four = next(a for a in atts if a.fields.get("hold_ms") == 4000)
+
+    def dip(db, at, dur):
+        def shape(a, t):
+            if a is not four:
+                return np.zeros_like(t)
+            return np.where((t >= at) & (t < at + dur), db, 0.0)
+        return shape
+
+    for shape, why in ((dip(-12.0, 2.0, 0.5), "a 12 dB sag is wavering, not a stop"),
+                       (dip(-60.0, 2.0, 0.10), "a 100 ms dropout is shorter than 150 ms"),
+                       (dip(-60.0, 3.95, 0.5), "a drop 50 ms before the release is the release")):
+        res = lt.sustain_analyse(u1_recording(atts, shape=shape), SR, [four], 0.4, lt.Params(latency=LAT))
+        assert res[0].interrupted is False, why
+    res = lt.sustain_analyse(u1_recording(atts, shape=dip(-60.0, 2.0, 0.3)), SR, [four], 0.4, lt.Params(latency=LAT))
+    assert res[0].interrupted is True and abs(res[0].stop_ms - 2000) <= 20
+
+
+def test_sustain_summary_rule_and_cli_combine(tmp_path, capsys):
+    paths = []
+    for k in (1, 2):
+        path = S16 / f"u1-sustain-A-part{k}.txt"
+        atts = u1_attempts(path)
+        wav = tmp_path / f"u1-sustain-A-part{k}-20261122-10000{k}.wav"
+        lt.write_wav(wav, u1_recording(atts), SR)
+        assert lt.main(["--analyse", str(wav), str(path), "--offset", "0.4", "--mode", "sustain"]) == 0
+        paths.append(str(wav.with_suffix(".csv")))
+    out = capsys.readouterr().out
+    assert "interrupted" in out and "latency 0.130" in out and "INVALID" not in out
+    assert lt.main(["--combine", *paths]) == 0
+    out = capsys.readouterr().out
+    assert "A         6500     2/2" in out and "A         5500     0/2" in out
+    assert "D_ok (largest hold with every attempt held, none silent) = 6000 ms" in out
+    assert "candidate floor100(min(D_ok, T_stop) - 500) = 5500 ms" in out
+
+
+def test_sustain_blank_that_sounds_invalidates(tmp_path, capsys):
+    atts = u1_attempts()
+    wav = tmp_path / "u1.wav"
+    lt.write_wav(wav, u1_recording(atts, blank_sounds=True), SR)
+    assert lt.main(["--analyse", str(wav), str(U1P1), "--offset", "0.4", "--mode", "sustain"]) == 0
+    out = capsys.readouterr().out
+    assert "BLANK SOUNDED" in out and "INVALID" in out
+
+
+def test_sustain_mode_needs_try_rows(capsys):
+    assert lt.main(["--analyse", "x.wav", str(MEL90), "--offset", "0", "--mode", "sustain"]) == 1
+    assert "TRY rows" in capsys.readouterr().err
+
+
+def test_latency_default_only_for_story_1_6_modes():
+    p = lt.build_parser()
+    assert lt.params_from(p.parse_args(["t.txt"])).latency == 0.0
+    assert lt.params_from(p.parse_args(["t.txt", "--mode", "detect"])).latency == 0.0
+    assert lt.params_from(p.parse_args(["t.txt", "--mode", "melody"])).latency == LAT
+    assert lt.params_from(p.parse_args(["t.txt", "--mode", "sustain", "--latency", "0.12"])).latency == 0.12
+
+
+def test_melody_missed_note_after_a_hand_over_is_not_the_previous_tail():
+    # note 33 (B5 on Y) follows A5 on A without a release gap; if Y is ignored, A5 only decays: NO SOUND,
+    # not "WRONG PITCH A5" (the tail is gone by the second half of the window)
+    _, presses, notes = melody_rows_and_presses()
+    x = melody_recording(presses, change=lambda k, p: None if k == 33 else 0.0)
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    assert res[32].verdict == "NO SOUND"
+    assert [r.note.index for r in res if r.verdict != "ok"] == [33]
+
+
+@pytest.mark.parametrize("bpm", [60, 120])
+def test_melody_other_tempos_all_ok(bpm):
+    _, presses, notes = melody_rows_and_presses(S16 / f"ode-to-joy-{bpm}bpm.txt")
+    res = lt.melody_analyse(melody_recording(presses), SR, notes, 0.4, lt.Params(latency=LAT))
+    assert len(res) == 62 and all(r.verdict == "ok" and r.onsets == 1 for r in res), \
+        [(r.note.index, r.verdict, r.onsets) for r in res if r.verdict != "ok" or r.onsets != 1]
+
+
+def test_count_reattacks_needs_a_long_dip_and_a_real_re_rise():
+    click = np.concatenate([np.zeros(20), np.full(2, -20.0), np.zeros(20)])  # 10 ms dip at 5 ms hops
+    assert lt.count_reattacks(click, 8, 8) == 1 and lt.count_reattacks(click, 8, 8, min_dip=6) == 0
+    regap = np.concatenate([np.zeros(20), np.full(12, -30.0), np.zeros(20)])  # a 60 ms re-press gap
+    assert lt.count_reattacks(regap, 8, 8, min_dip=6, reach_db=10) == 1
+    after_cut = np.concatenate([np.zeros(20), np.full(10, -40.0), np.full(3, -28.0), np.full(10, -40.0)])
+    assert lt.count_reattacks(after_cut, 8, 8, min_dip=6) == 1  # noise bump in the silence ...
+    assert lt.count_reattacks(after_cut, 8, 8, min_dip=6, reach_db=10) == 0  # ... is not a new note
+
+
+def test_melody_cut_note_and_clicks_are_not_extra_onsets():
+    # Seen live (2026-11-21, 60 BPM run): a held note stops early and the room noise / clicks in the
+    # silence or over a held note were counted as extra attacks; a silent note had "3 onsets".
+    _, presses, notes = melody_rows_and_presses()
+
+    def cut(k, p):
+        if k == 15:  # A5 half note stops 0.55 s after its start
+            return [(0.0, 0.55, 0.0)]
+        return None if k == 16 else 0.0
+
+    x = melody_recording(presses, change=cut)
+    h15 = 0.4 + LAT + presses[14].t_press
+    for dt in np.arange(0.65, 1.2, 0.12):  # short noise bursts in the silence after the cut (note 15 lasts 1.33 s)
+        place(x, RNG.normal(0, 0.01, int(0.02 * SR)), h15 + dt)
+    h1 = 0.4 + LAT + presses[0].t_press
+    place(x, -0.19 * note_wave(lt.expected_hz(83), 0.01, level=1.0), h1 + 0.5)  # a 10 ms notch over note 1
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    assert res[14].onsets == 1 and res[0].onsets == 1
+    assert res[15].verdict == "NO SOUND" and res[15].onsets == 0
+
+
+def test_melody_notes_know_their_release():
+    _, presses, notes = melody_rows_and_presses()
+    for n, p in zip(notes, presses):
+        assert abs(n.t_release - p.t_release) < 1e-9
+
+
+def test_melody_cut_short_verdict_and_sounded_length():
+    # 90 BPM: note 15 is an A5 half note (80 frames = 1.333 s); it stops 0.55 s after its start
+    _, presses, notes = melody_rows_and_presses()
+    x = melody_recording(presses, change=lambda k, p: [(0.0, 0.55, 0.0)] if k == 15 else 0.0, decay=0.005)
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    r = res[14]
+    assert r.verdict == "CUT SHORT" and abs(r.sounded_ms - 550) <= 20, (r.verdict, r.sounded_ms)
+    assert [q.note.index for q in res if q.verdict != "ok"] == [15]
+    lines = lt.melody_summary_lines(res, lt.Params(latency=LAT), lt.MelodyParams())
+    assert "right pitch 62/62, missed 0, cut 1," in lines[2]
+    assert lines[3].startswith("cut short: 15 A5 A sounded 5") and "of 1333 ms" in lines[3]
+    assert "cut short: the tone falls >= 20 dB" in lines[0]
+
+
+@pytest.mark.parametrize("why, pieces", [
+    ("a 100 ms dropout is shorter than 150 ms", [(0.0, 0.4, 0.0), (0.5, 0.833, 0.0)]),
+    ("a stop 60 ms before the release is the release", [(0.0, 1.273, 0.0)]),
+    ("a 12 dB sag is not a stop", None),
+])
+def test_melody_cut_short_traps(why, pieces):
+    _, presses, notes = melody_rows_and_presses()
+    x = melody_recording(presses, change=lambda k, p: pieces if (k == 15 and pieces) else (None if k == 15 else 0.0),
+                         decay=0.005)
+    if pieces is None:  # note 15 at full level for 0.4 s, then 12 dB lower to its release
+        p15 = presses[14]
+        t0 = 0.4 + LAT + p15.t_press
+        place(x, note_wave(lt.expected_hz(81), 0.4, decay=0.005), t0)
+        place(x, 0.25 * note_wave(lt.expected_hz(81), p15.t_release - p15.t_press - 0.4, decay=0.005, attack=0.0),
+              t0 + 0.4)
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    assert res[14].verdict == "ok" and res[14].sounded_ms is None, why
+
+
+def test_melody_cli_reports_cut(tmp_path, capsys):
+    _, presses, _ = melody_rows_and_presses()
+    wav = tmp_path / "cut.wav"
+    lt.write_wav(wav, melody_recording(presses, change=lambda k, p: [(0.0, 0.3, 0.0)] if k == 13 else 0.0,
+                                       decay=0.005), SR)
+    assert lt.main(["--analyse", str(wav), str(uncapped()), "--offset", "0.4", "--mode", "melody"]) == 0
+    out = capsys.readouterr().out
+    assert "CUT SHORT" in out and "cut 1" in out and "cut short: 13 B5 Y sounded 3" in out
+    assert "sounded_ms" in (tmp_path / "cut.csv").read_text().splitlines()[0]
+
+
+A5X5 = "\n".join(["0f - # neutral lead-in"] + [
+    f"{120 + 60 * k}f A # NOTE {k + 1:02d} A5 81 fingering=A\n{175 + 60 * k}f - # release" for k in range(5)
+] + ["480f - # end"]) + "\n"
+
+
+def test_melody_early_stop_close_to_the_release():
+    # Live shape (A5 x 17, 60 BPM, 2026-11-21): presses of 55 frames, 5-frame re-press gaps; notes 07 and 14
+    # stopped about 110 ms before their heard release (a 180 ms silence instead of about 30 ms). The 150 ms
+    # rule cannot see it because the next note starts again 180 ms later.
+    rows_ = lt.s.parse_lines(A5X5.splitlines())
+    presses = lt.presses_from_rows(rows_)
+    notes = lt.melody_notes_from_rows(rows_)
+    x = melody_recording(presses, change=lambda k, p: [(0.0, 55 / 60 - 0.11, 0.0)] if k == 3 else 0.0,
+                         decay=0.01)  # the live stop fell 10 dB within about 10 ms
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    assert [r.verdict for r in res] == ["ok", "ok", "CUT SHORT", "ok", "ok"], [(r.verdict, r.sounded_ms) for r in res]
+    assert abs(res[2].sounded_ms - (55 / 60 - 0.11) * 1000) <= 25
+    lines = lt.melody_summary_lines(res, lt.Params(latency=LAT), lt.MelodyParams())
+    assert "cut 1" in lines[2] and "stays down from 75 to 300 ms before the heard release" in lines[0]
+
+
+def test_melody_early_stop_margin_absorbs_latency_jitter():
+    # the heard release is up to about a frame off the assumed latency: a note that ends 40 ms "early" is fine
+    rows_ = lt.s.parse_lines(A5X5.splitlines())
+    presses = lt.presses_from_rows(rows_)
+    x = melody_recording(presses, change=lambda k, p: [(0.0, 55 / 60 - 0.04, 0.0)] if k == 3 else 0.0, decay=0.01)
+    res = lt.melody_analyse(x, SR, lt.melody_notes_from_rows(rows_), 0.4, lt.Params(latency=LAT))
+    assert all(r.verdict == "ok" for r in res)
+
+
+STACCATO = "\n".join(["0f - # neutral lead-in"] + [
+    f"{120 + 120 * k}f R - 80:00 # NOTE {k + 1:02d} G5 79 fingering=R+stick-up\n{144 + 120 * k}f - - 80:00 # release"
+    for k in range(4)
+] + ["600f - # end"]) + "\n"
+
+
+def test_melody_staccato_note_in_a_long_slot_is_audible_and_release_bounce_is_no_onset():
+    # Live (2026-11-21, --max-press-ms 400 at 60 BPM): a 0.4 s G5 in a 2 s slot read NO SOUND (the silence after
+    # the release diluted the level), and a G5 released with the stick still up dipped and bounced back ~5 dB
+    # within 50 ms, counted as a second onset.
+    rows_ = lt.s.parse_lines(STACCATO.splitlines())
+    presses = lt.presses_from_rows(rows_)
+    notes = lt.melody_notes_from_rows(rows_)
+    x = background(presses[-1].t_release + 0.4 + LAT + 2.0)
+    for p in presses:
+        h = 0.4 + LAT + p.t_press
+        place(x, note_wave(lt.expected_hz(79), 0.4, decay=0.005, level=0.006), h)
+        place(x, note_wave(lt.expected_hz(79), 0.05, decay=0.03, level=0.006 * 10 ** (-5 / 20)), h + 0.43)
+    x += loud_background(x.size / SR, level=0.004)
+    res = lt.melody_analyse(x, SR, notes, 0.4, lt.Params(latency=LAT))
+    assert [r.verdict for r in res] == ["ok"] * 4, [(r.verdict, r.level_db - r.noise_db) for r in res]
+    assert all(r.onsets == 1 for r in res), [r.onsets for r in res]
+
+
+def test_melody_committed_staccato_file_all_ok():
+    # the committed 90 BPM file: every long note is a 400 ms press then silence (Story 1.6 workaround)
+    _, presses, notes = melody_rows_and_presses(MEL90)
+    assert max(p.t_release - p.t_press for p in presses) <= 0.4 + 1e-9
+    res = lt.melody_analyse(melody_recording(presses), SR, notes, 0.4, lt.Params(latency=LAT))
+    assert all(r.verdict == "ok" and r.onsets == 1 for r in res), [(r.note.index, r.verdict, r.onsets) for r in res
+                                                                  if r.verdict != "ok" or r.onsets != 1]
+
+
+def test_sustain_early_stop_is_the_7th_note_event_not_the_auto_stop(tmp_path, capsys):
+    # an attempt stopped 0.8 s after its onset (the Story 1.6 event) must not become T_stop or break D_ok
+    atts = u1_attempts()
+    five = next(a for a in atts if a.fields.get("hold_ms") == 5000)
+
+    def shape(a, t):
+        return np.where(t >= 0.8, -80.0, 0.0) if a is five else np.zeros_like(t)
+
+    wav = tmp_path / "u1-sustain-A-part1-20261122-100001.wav"
+    lt.write_wav(wav, u1_recording(atts, shape=shape), SR)
+    assert lt.main(["--analyse", str(wav), str(U1P1), "--offset", "0.4", "--mode", "sustain"]) == 0
+    out = capsys.readouterr().out
+    n = five.fields["attempt"]
+    assert "EARLY STOPS" in out and f"A 5000 ms attempt {n} (note {n + 1} of its file, warm-up = 1) stopped at 8" in out
+    assert "A         5000     0/0" in out  # left out of the counts
+    assert "D_ok (largest hold with every attempt held, none silent) = 6000 ms" in out
+    assert "candidate floor100(min(D_ok, T_stop) - 500) = 5500 ms" in out and "INVALID" not in out
