@@ -462,15 +462,107 @@ Result (1.9): every one of the 45 combinations sounds the model pitch (button + 
 
 Needs a scripted sender (any tiny script over the serial port is fine for a spike).
 
-|  ID | Measure                             | Sweep                                                      | Pass threshold      |
-|----:|-------------------------------------|------------------------------------------------------------|---------------------|
-| 2.1 | U7 min press that always sounds     | 1…10 frames (16.7 ms steps), 20 tries each                 | 20/20 sound         |
-| 2.2 | U2 min gap to retrigger same button | 1…10 frames                                                | 20/20 retrigger     |
-| 2.3 | U5 modifier lead                    | 0…5 frames                                                 | 20/20 correct pitch |
-| 2.4 | Onset jitter                        | 120 BPM 16ths, 30 s, record + onset detection (e.g. aubio) | σ ≤ 1 frame         |
-| 2.5 | U10 frame rate                      | count frames in a 60 fps capture                           | –                   |
+|  ID | Measure                             | Sweep                                                      | Pass threshold      | Result (Story 1.4, 2026-11-21) |
+|----:|-------------------------------------|------------------------------------------------------------|---------------------|--------------------------------|
+| 2.1 | U7 min press that always sounds     | 1…10 frames (16.7 ms steps), 20 tries each                 | 20/20 sound         | **2 frames (33.3 ms)**: 20/20 on A, L, R, X, Y; 1 frame sounds 16 to 18/20 |
+| 2.2 | U2 min gap to retrigger same button | 1…10 frames                                                | 20/20 retrigger     | **5 frames (83.3 ms), owner-chosen value**. Measured 20/20: A, L, Y at 4 frames; R 5 frames 19/20 pooled (20/20 with its own file's threshold); X unresolved (mic level, best 4 frames 18/20); R and X not run above 5 frames. Definition-dependent, see below |
+| 2.3 | U5 modifier lead                    | 0…5 frames                                                 | 20/20 correct pitch | **0 frames** for D-up, D-down, stick up, stick down: no wrong pitch longer than about 35 ms (2 frames) at lead 0 (20/20 at every lead 0 to 5 frames on A; confirmed on L, R, X, Y at 0 frames); a 1 to 2 frame lateness is not resolvable by audio |
+| 2.4 | Onset jitter                        | 120 BPM 16ths, 30 s, record + onset detection (e.g. aubio) | σ ≤ 1 frame         | IOI error σ 8.1 / 11.7 / 11.7 ms (0.48 / 0.70 / 0.70 frame) in 3 runs: **σ ≤ 1 frame met**; latency 123 to 139 ms; per-note latency in two clusters one frame apart |
+| 2.5 | U10 frame rate                      | count frames in a 60 fps capture                           | –                   | **frame period 16.67 ms (60 Hz)** from a 240 fps phone video; sustained 60 distinct images per second not shown (the scene did not move continuously) |
 
-Done when: the `[timing]` section of the profile is filled with measured values + safety margin.
+Done when: the `[timing]` section of the profile is filled with measured values + safety margin. The measured values are in "Story 1.4 field trials" below ("Values for Story 1.5"); Story 1.5 adds the safety margin and fills the profile.
+
+### Story 1.4 field trials (2026-11-21)
+
+All trials run on 2026-11-21 by the owner, Part B of Story 1.4. Answers are also in `docs/ocarina-input-mechanics.md` (U2, U5, U7, U10). The raw per-run log (every command, offset, part table) is in the Story 1.4 file, Dev Agent Record.
+
+#### Values for Story 1.5
+
+| Profile field | Value | From | Notes |
+|---|---|---|---|
+| `min_press` | **2 frames = 33.3 ms** | row 2.1 | 20/20 on all five buttons; 1 frame sounds 16 to 18/20 (not reliable) |
+| `min_gap_same_button` | **5 frames = 83.3 ms** (owner-chosen, not a measured limit) | row 2.2 (decision) | measured 20/20: A, L, Y at 4 frames; R 5 frames 19/20 pooled (20/20 with its own file's threshold); X unresolved (mic level, best 4 frames 18/20); R and X not run above 5 frames |
+| `modifier_lead` | **0 frames** measured (per type: D-up 0, D-down 0, stick up 0, stick down 0) | row 2.3 | means: no wrong pitch longer than about 35 ms (2 frames) at lead 0; a 1 to 2 frame lateness is not resolvable by audio, so **keep a margin of at least 1 frame** in Story 1.5. The stick still glides at the start (Y + stick up: first 30 ms window −25 to −36 c, median −29 c; median of the first 40 ms −7 c) |
+| `[profile] frame_rate` | **60 Hz (frame period 16.67 ms)** | row 2.5 | 240 fps phone video, median run of 4 identical capture frames; sustained-motion caveat |
+| jitter | IOI error σ 8.1 to 11.7 ms (0.48 to 0.70 frame), p95 18.8 to 21.1 ms, max 21.8 to 22.9 ms; latency 123 to 139 ms (per run), drift ≤ 0.22 ms/s | row 2.4 | 2wiCC's per-frame queue is not our scheduler (the sender grid is quantised at 7/8 frames here; the real firmware scheduler is Story 2.4/2.5). Schedule quantisation σ 8.35 ms (0.50 frame) is separate |
+
+All values except `min_gap_same_button` are measured limits (the smallest value that passed 20/20, and the pass counts around it); the safety margin is Story 1.5's.
+
+#### Environment and capture
+
+- Switch 2 system 23.5.0, OoT 1.1.1, console handheld (built-in screen, not docked, so no TV video mode) for all trials; controller on the Switch 2 bottom USB-C port (top port for the U10 video only, console standing). Per-session wiring/GND check skipped by owner decision (wiring unchanged since the GND↔GND 0.1 Ω measurement above); bridge probes `+ID`/`+VER`/`+GQS` verified at every controller connect.
+- macOS (Darwin 27.2); bridge `/dev/cu.usbmodem101` ("2wiCC COM"), 2wiCC v2.2 + 2wiCC_Comms v1.1, Apple USB-C cable.
+- Sender [`spikes/send_2wicc.py`](../spikes/README.md) through `spikes/listen_trial.py`; trial files `spikes/samples/story-1-4/` (round 1, `confirm-*`, `jitter-120bpm-16ths.txt`) and `spikes/samples/story-1-4-ext/` (R gap 4 and 5 frames), all generated by `spikes/gen_trials_1_4.py`: times in frames, 20 tries per step in interleaved shuffled rounds (phase diversity), a warm-up attempt per file, blank and gap controls.
+- Capture: MacBook Pro built-in microphone through PortAudio (`--backend sounddevice`, lossless). Capture self-test (1 kHz tone from the Mac speakers, 60 s): 0 phase discontinuities, delivered-sample ratio 1.00000, 0 overflows, PASS. Every sounddevice run had scale 1.0000. The Switch 2 was next to the Mac from U7 part 3 on; the character was moved to a quieter spot before U7 part 4.
+- Calibration (`calibration-A.txt`): A5 894.2 Hz, +28 c, onset 130 to 140 ms after the scheduled press. The first calibration run gave no sound (the console had not accepted the injected controller yet: the first-input-after-connect quirk); after L+R then A by hand it worked.
+- Results below are the **final re-score** with the fixed analysers (reports `spikes/recordings/*-rescored.*`, git-ignored). The live-run numbers of the confirmation and jitter runs were wrong because of analyser artefacts (see "Lessons").
+
+#### 2.1 U7 min press (`--mode detect`)
+
+Sound = power within ±3 % of the expected pitch, 0.02 to 0.30 s after the press, at least 8 dB above the same band before the press.
+
+| Press (frames / ms) | A (round 1) | L | R | X | Y |
+|---|---|---|---|---|---|
+| 1 / 16.7 | 18/20 (rounds 1, 15) | 18/20 | 18/20 | 17/20 | 16/20 |
+| 2 / 33.3 | 20/20 | 20/20 | 20/20 | 20/20 | 20/20 |
+| 3 to 10 / 50 to 167 | 20/20 each | – | – | – | – |
+
+Blank controls (no press): 20/20 silent on A and in every confirmation file. Result: **U7 = 2 frames (33.3 ms)** on every button. The sounded length is not proportional to the press (a 1-frame press sounded about 100 to 210 ms in the part 1 live report).
+
+#### 2.2 U2 min gap, same button (`--mode retrigger`)
+
+A held 12 frames, released `gap` frames, pressed 12 frames again; controls gap 0 (one held note) and gap 30 (clear retrigger) in every round. The analyser measures the dip of the note's fundamental between the two presses; the threshold comes from the controls pooled per button: deepest gap-0 dip + min(6 dB, half the distance to the shallowest gap-30 dip).
+
+| Gap (frames / ms) | A (thr 11.8 dB) | L (17.7) | R (16.9) | X (10.2) | Y (10.8) |
+|---|---|---|---|---|---|
+| 1 / 16.7 | 0/20 | – | – | – | – |
+| 2 / 33.3 | 4/20 | – | – | – | – |
+| 3 / 50.0 | 19/20 | 17/20 | 5/20 | 12/20 | 19/20 |
+| 4 / 66.7 | 20/20 | 20/20 | 17/40 (two runs) | 18/20 | 20/20 |
+| 5 / 83.3 | 20/20 | – | 19/20 (20/20 in its own file) | – | – |
+| 6 to 10 | 20/20 each | – | – | – | – |
+
+Controls: every gap-0 and gap-30 control behaves under the pooled threshold. Median dip per gap: A 1f 5.8, 2f 9.6, 3f 16.0, 4f 19.9, 5f+ about 21 dB; R 3f 13.9, 4f 16.1, 5f 20.3, gap 30 21.2 dB. The dip grows smoothly with the gap (the note decays while the button is up), so "retrigger" is a threshold on a continuous quantity, not a yes/no of the game. R's threshold is raised by one held note that dipped 14.7 dB; with a 95th-percentile rule instead of the deepest held-note dip R gives 3f 13/20, 4f 37/40, 5f 20/20. X's full dip (gap 30) is only about 13 dB above its noise floor at the mic, so its 4-frame dips (median 12.8 dB) sit on the threshold: a measurement limit, not a game result. Owner decision: **U2 = 5 frames (83.3 ms)** for the profile; this is a chosen value, not a measured limit (R and X were not run above 5 frames).
+
+#### 2.3 U5 modifier lead (`--mode lead`)
+
+Modifier set `k` frames before A (0 to 5), note 36 frames, modifier kept 6 frames after the release. Pass = median pitch of the 9 overlapping 30 ms windows starting in the first 40 ms of the note within 50 c of the steady pitch. Resolution (synthetic notes, ±100 c and −200 c): a wrong start of 33 ms passes, one of 36 ms or more fails, so a pass means no wrong pitch longer than about 35 ms (2 frames).
+
+| Lead (frames) | D-up (A♯5) | D-down (G♯5) | stick up (B5) | stick down (G5) |
+|---|---|---|---|---|
+| 0 to 5 | 20/20 each | 20/20 each | 20/20 each | 20/20 each |
+
+Confirmation at 0 frames on L, R, X, Y: 20/20 in every file except X + stick down 19/20 and Y + stick up 19/20 (one failure each). Result: **U5 = 0 frames** for all four modifiers, at the 2-frame resolution above; Story 1.5 should keep a margin of at least 1 frame. Finding: on Y + stick up the first 30 ms window reads −25 to −36 c (median −29 c) from the steady pitch (the stick bend still gliding; also −25 c on R + stick up), the 40 ms median −7 c, so it passes. An earlier analysis method read about −50 c for the same window.
+
+#### 2.4 Onset jitter (`--mode jitter`)
+
+`jitter-120bpm-16ths.txt`: 240 notes, L R A Y X Y A R cycle, press 3 frames (`--press-frames 3 --min-press 2 --min-gap 4`), 7/8-frame slots. Onsets per button pitch (20 ms window), one latency per run, onset at the −6 dB crossing; IOI error = measured inter-onset interval minus the sender's scheduled interval.
+
+| Run | Backend | Matched | Latency (median, sd) | Drift | IOI σ | p95 | max |
+|---|---|---|---|---|---|---|---|
+| 1 | sounddevice | 237/240 | 127.3 ms (5.8) | +0.011 ms/s | 8.07 ms (0.48 f) | 18.8 ms | 21.8 ms |
+| 2 | sounddevice | 240/240 | 138.9 ms (7.5) | +0.215 ms/s | 11.67 ms (0.70 f) | 21.1 ms | 22.2 ms |
+| 3 | sounddevice | 239/240 | 123.3 ms (7.1) | +0.054 ms/s | 11.65 ms (0.70 f) | 20.9 ms | 22.9 ms |
+| 4 | ffmpeg | invalid: 78 % of real time delivered | – | – | 47.7 ms | – | – |
+
+Schedule quantisation (7/8-frame pattern vs ideal 125 ms), not jitter: σ 8.35 ms (0.50 frame). The per-note latency falls into two clusters about one frame apart (run 3: 95 notes at −6 ms and 76 at +6 ms from the median; run 1: 154 at −2 ms, 25 at −18 ms): consistent with the game sampling input once per 60 Hz frame while the sender's grid is not phase-locked to it. **σ ≤ 1 frame: met** in all three valid runs. 2wiCC's per-frame queue is not our scheduler (the sender grid is quantised at 7/8 frames here; the real firmware scheduler is Story 2.4/2.5). Run 4 shows why the lossless capture is needed (Task 10.3).
+
+#### 2.5 U10 frame rate (`count_frames.py`)
+
+iPhone slow motion 240 fps (h264 1280×720, 9929 frames, 41.4 s), phone fixed on the Switch screen, handheld console standing, while `jitter-120bpm-16ths.txt` played so the picture moved. `uv run spikes/count_frames.py spikes/recordings/u10-framerate-IMG5861.mov`: 620 changes, threshold 1.49 grey levels (static noise 0.37); run lengths of identical capture frames 4: 464, 8: 31, 12: 15, 3: 14, others few; median run 4 → **frame period 16.67 ms (60 Hz)**. Distinct images per 1 s window: min 0, median 15, max 33, because the scene was not in continuous motion for a whole second, so "60 distinct images every second" is not directly shown; when the picture changes it changes on a 16.67 ms grid. The logic/input rate is not measured by video; the one-frame latency clusters of row 2.4 are consistent with 60 Hz input. Video 41 s, not several minutes (the story asked for a few minutes).
+
+#### Lessons (analysis artefacts found and fixed, 2026-11-21)
+
+The final numbers come from analysers revised after seeing these recordings (each fix has a synthetic test for its trap). The 1-frame U7 counts, U2 at 2 to 3 frames and the jitter σ depend on analysis definitions and should be confirmed on fresh recordings with the frozen analyser in Story 1.5 / Epic 7.
+
+- A broadband (250 to 4000 Hz) peak-vs-RMS SNR is biased: room noise alone scored 5 to 14 dB, so blanks "sounded" and X (D6, quieter at the mic: 9 to 11 dB broadband) failed. Measured at the expected pitch, X notes are 14 to 23 dB and blanks at most 6.8 dB.
+- Short-window YIN on noisy notes locked onto f/2, f/3 or 2f (X read as G4 or D5; lead errors of ±1170 to 1910 c). Pitches are now spectral peaks searched near the expected pitch.
+- Jitter: generic onset detection found about 385 onsets for 240 notes and the latency search locked onto wrong offsets (87 to 354 ms), with a fake drift and errors bounded by the 40 ms match window. Per-button envelopes with one latency per run fixed it.
+- The U2 dip depth depends on the gap continuously and on the button's decay; one outlier held note changes a per-file threshold, so controls are pooled per button.
+- The ffmpeg avfoundation capture is unusable for timing (78 % of real time delivered in the jitter run).
+- After any controller connect, the first injected input is ignored (seen again: first calibration run, after every re-plug).
+
+Possible follow-ups (dropped by the owner on 2026-11-21): U2 on X with the microphone closer to the speaker; another R gap-0 control run to see whether a held R note dips 14.7 dB again; a longer U10 video with continuous motion.
 
 ### Spike sender check (Story 1.2)
 

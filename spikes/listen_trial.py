@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["numpy>=1.26", "pyserial>=3.5"]
+# dependencies = ["numpy>=1.26", "pyserial>=3.5", "sounddevice>=0.5"]
 # ///
 """Play a trial file through send_2wicc.py while recording the game audio, then read the pitch of every note.
 
@@ -28,6 +28,7 @@ import importlib.util
 import math
 import os
 import pathlib
+import queue
 import re
 import signal
 import subprocess
@@ -35,6 +36,7 @@ import sys
 import threading
 import time
 import wave
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -318,6 +320,678 @@ def analyse(x: np.ndarray, sr: int, presses: Sequence[Press], offset: float, p: 
 
 
 # ---------------------------------------------------------------------------
+# Story 1.4: attempts (TRY rows) and the timing analysers (detect, retrigger, lead, jitter)
+# ---------------------------------------------------------------------------
+
+_FIELD_RE = re.compile(r"(\w+)=(\d+)f?")
+_ROUND_RE = re.compile(r"round (\d+)/(\d+)")
+FRAME_MS = 1000.0 / FRAME_RATE
+MODES = ("pitch", "detect", "retrigger", "lead", "jitter")
+
+
+@dataclass(frozen=True)
+class Attempt:
+    index: int
+    line: int
+    t: float                 # schedule s of the TRY row (the press, or where a blank's press would be)
+    t_end: float             # schedule s of the next attempt's TRY/WARMUP row (or the file end)
+    kind: str                # u7, u2, u5, jit
+    button: str
+    fields: dict             # key=value fields of the label (frames), e.g. {"press": 3}
+    round: int | None
+    control: bool
+    blank: bool
+    model_midi: int | None   # button + D-pad + stick of the TRY row's state
+    label: str
+
+    @property
+    def step(self) -> str:
+        key = {"u7": "press", "u2": "gap", "u5": "lead"}.get(self.kind)
+        if self.blank:
+            return "blank"
+        return f"{self.fields[key]}f" if key in self.fields else "-"
+
+    @property
+    def family(self) -> str:
+        return f"{self.kind} {self.fields_mod}".strip()
+
+    @property
+    def fields_mod(self) -> str:
+        m = re.search(r"mod=(\w+)", self.label)
+        return m.group(1) if m else ""
+
+
+def attempts_from_rows(rows: Sequence, frame_rate: float = FRAME_RATE) -> list[Attempt]:
+    """Every `TRY` row of a Story 1.4 trial file (gen_trials_1_4.py labels), in order."""
+    frames = [s.time_to_frame(r.time, frame_rate) for r in rows]
+    marks = [i for i, r in enumerate(rows) if r.label.startswith(("TRY", "WARMUP"))]
+    out: list[Attempt] = []
+    for k, i in enumerate(marks):
+        r = rows[i]
+        if not r.label.startswith("TRY"):
+            continue
+        toks = r.label.split()
+        nxt = marks[k + 1] if k + 1 < len(marks) else None
+        t_end = (frames[nxt] if nxt is not None else frames[-1] + 1) / frame_rate
+        rm = _ROUND_RE.search(r.label)
+        model = None
+        if toks[2] in g.BUTTON_MIDI and r.state.hat in g.HAT_OFFSET:
+            y12 = s.stick_to_12(r.state.stick)[1]
+            sign = (y12 > s.STICK_CENTRE_12) - (y12 < s.STICK_CENTRE_12)
+            model = g.BUTTON_MIDI[toks[2]] + g.HAT_OFFSET[r.state.hat] + 2 * sign
+        out.append(Attempt(len(out) + 1, r.line, frames[i] / frame_rate, t_end, toks[1], toks[2],
+                           {k_: int(v) for k_, v in _FIELD_RE.findall(r.label)},
+                           int(rm.group(1)) if rm else None, "control" in toks, "blank" in toks, model, r.label))
+    return out
+
+
+def envelope_db(x: np.ndarray, sr: int, hop: float = 0.002, smooth: float = 0.006) -> np.ndarray:
+    """Level in dBFS per `hop` (RMS), power-averaged over `smooth`. Index k covers x[k*hop : (k+1)*hop]."""
+    n = max(1, round(hop * sr))
+    m = x.size // n
+    if m == 0:
+        return np.full(0, -math.inf)
+    p = np.mean(np.square(x[: m * n].reshape(m, n)), axis=1)
+    w = max(1, round(smooth / hop))
+    if w > 1:
+        p = np.convolve(p, np.ones(w) / w, mode="same")
+    with np.errstate(divide="ignore"):
+        return 10.0 * np.log10(p)
+
+
+@dataclass(frozen=True)
+class TimingParams:
+    """Thresholds of the Story 1.4 analysers; every value used is printed in the report."""
+    detect_from: float = 0.02     # detect window: press + 0.02 s ...
+    detect_to: float = 0.30       # ... to press + 0.30 s (the game latency is about 0.13 s)
+    band_snr_db: float = 8.0      # sound = level at the expected pitch at least this above the same band before
+    pitch_tol_cents: float = 60.0  # a sounding note further than this from the expected pitch is a wrong note
+    audible_db: float = 20.0      # audible length: time above peak - 20 dB
+    dip_db: float | None = None   # retrigger thresholds; None = from the g=0 / g=30 controls
+    rise_db: float | None = None
+    lead_cents: float = 50.0
+    lead_window: float = 0.040    # pitch windows that start within onset + 40 ms
+    pitch_window: float = 0.030
+    pitch_hop: float = 0.005
+
+
+@dataclass(frozen=True)
+class AttemptResult:
+    attempt: Attempt
+    sound: bool
+    level_dbfs: float
+    noise_dbfs: float
+    onset_ms: float | None = None
+    audible_ms: float | None = None
+    hz: float | None = None
+    onsets: int | None = None
+    dip_db: float | None = None
+    start_cents: float | None = None   # lead: first window vs the steady pitch
+    lead_cents: float | None = None    # lead: median of the first 40 ms vs the steady pitch
+    verdict: str = ""
+    passed: bool | None = None         # None for controls and blanks (not scored)
+
+
+# The game plays about +27 cents sharp of A4 = 440 Hz (Story 1.3); expected pitches include it.
+GAME_CENTS = 27.0
+
+
+def expected_hz(midi: int) -> float:
+    return g.midi_hz(midi) * 2 ** (GAME_CENTS / 1200.0)
+
+
+def cents(f: float, ref: float) -> float:
+    return 1200.0 * math.log2(f / ref)
+
+
+def band_power_db(x: np.ndarray, sr: int, t0: float, t1: float, f: float, width: float = 0.03) -> float:
+    """Mean power (dB) of x[t0:t1] within +-`width` (relative) of `f` (Hann window, FFT).
+
+    A narrow band around the expected pitch is far less sensitive to the room and console noise than
+    the 250 to 4000 Hz band: on the live recordings X (D6) notes were 9 to 11 dB above the broadband
+    noise but 14 to 23 dB above the same narrow band before the press (2026-11-21)."""
+    seg = _seg(x, sr, t0, t1)
+    if seg.size < 16:
+        return -math.inf
+    spec = np.abs(np.fft.rfft(seg * np.hanning(seg.size))) ** 2
+    fr = np.fft.rfftfreq(seg.size, 1.0 / sr)
+    sel = (fr > f * (1 - width)) & (fr < f * (1 + width))
+    p = float(spec[sel].sum()) / seg.size
+    return 10.0 * math.log10(p) if p > 0 else -math.inf
+
+
+def spectral_peak(x: np.ndarray, sr: int, t0: float, t1: float, lo: float, hi: float,
+                  nfft: int = 1 << 15) -> float | None:
+    """Frequency of the strongest spectral peak of x[t0:t1] in [lo, hi] (zero-padded FFT, parabolic fit).
+
+    Searching only near the expected pitch makes octave and fifth errors impossible (short-window YIN
+    on noisy notes locked onto f/2, f/3 or 2f on the live recordings)."""
+    seg = _seg(x, sr, t0, t1)
+    if seg.size < 16:
+        return None
+    n = max(nfft, seg.size)
+    mag = np.abs(np.fft.rfft(seg * np.hanning(seg.size), n))
+    fr = np.fft.rfftfreq(n, 1.0 / sr)
+    idx = np.flatnonzero((fr >= lo) & (fr <= hi))
+    if idx.size < 3:
+        return None
+    k = int(idx[np.argmax(mag[idx])])
+    if 0 < k < mag.size - 1 and mag[k] > 0:
+        a, b, c = (math.log(max(v, 1e-30)) for v in mag[k - 1: k + 2])
+        den = a - 2 * b + c
+        shift = 0.5 * (a - c) / den if den < 0 else 0.0
+    else:
+        shift = 0.0
+    return float((k + shift) * sr / n)
+
+
+def tone_env_db(x: np.ndarray, sr: int, f: float, t0: float, t1: float, win: float = 0.010,
+                hop: float = 0.002) -> tuple[np.ndarray, np.ndarray]:
+    """Level (dBFS amplitude) of the component at `f`: Hann-windowed demodulation, window `win`,
+    one value per `hop`. Returns (window centre times s, levels dB)."""
+    n, h = round(win * sr), max(1, round(hop * sr))
+    a0, a1 = max(0, round(t0 * sr)), min(x.size, round(t1 * sr))
+    if a1 - a0 < n:
+        return np.zeros(0), np.zeros(0)
+    w = np.hanning(n)
+    ker = w * np.exp(-2j * np.pi * f * np.arange(n) / sr) * 2.0 / w.sum()
+    frames = np.lib.stride_tricks.sliding_window_view(x[a0:a1], n)[::h]
+    amp = np.empty(frames.shape[0])
+    for k in range(0, frames.shape[0], 4096):  # chunks keep memory bounded on long files
+        amp[k: k + 4096] = np.abs(frames[k: k + 4096] @ ker)
+    t = (a0 + np.arange(amp.size) * h + n / 2) / sr
+    with np.errstate(divide="ignore"):
+        return t, 20.0 * np.log10(amp)
+
+
+def half_crossing(t: np.ndarray, env: np.ndarray, peak_idx: int, drop_db: float = 6.0) -> float:
+    """Time of the rising crossing of (peak - drop_db) before `peak_idx`, linearly interpolated."""
+    thr = env[peak_idx] - drop_db
+    j = peak_idx
+    while j > 0 and env[j - 1] >= thr:
+        j -= 1
+    if j == 0 or env[j] == env[j - 1]:
+        return float(t[j])
+    frac = (thr - env[j - 1]) / (env[j] - env[j - 1])
+    return float(t[j - 1] + frac * (t[j] - t[j - 1]))
+
+
+def band_onset(xb: np.ndarray, sr: int, lo: float, hi: float, tp: float) -> tuple[float | None, float, float]:
+    """(onset s, peak dB, noise dB) of the level in the band [lo, hi] around a press at WAV time `tp`.
+
+    The onset is the -6 dB crossing before the peak in [tp - 0.05 s, tp + 0.8 s] of the 2 ms envelope of
+    the band. Used by `lead`: the band covers every pitch the note may start at (a missing modifier is
+    up to 2 semitones away), so a wrong-pitch start is not skipped as "before the onset"."""
+    t0 = max(0.0, tp - 0.5)
+    y = bandpass(_seg(xb, sr, t0, tp + 0.9), sr, lo, hi)
+    env = envelope_db(y, sr)
+    if env.size == 0:
+        return None, -math.inf, -math.inf
+    times = t0 + (np.arange(env.size) + 0.5) * 0.002
+    pre = env[(times >= tp - 0.45) & (times < tp - 0.05)]
+    win = np.flatnonzero((times >= tp - 0.05) & (times <= tp + 0.8))
+    if win.size == 0:
+        return None, -math.inf, -math.inf
+    k = int(win[np.argmax(env[win])])
+    noise = float(np.median(pre)) if pre.size else -math.inf
+    return half_crossing(times[win[0]: k + 1], env[win[0]: k + 1], k - win[0]), float(env[k]), noise
+
+
+def detect_attempt(xb: np.ndarray, sr: int, a: Attempt, offset: float, p: Params, tp_: TimingParams,
+                   floor: float = -math.inf) -> AttemptResult:
+    """Row 2.1: sound yes/no at the expected pitch, onset, audible length, measured pitch.
+
+    Sound = power within +-3 % of the expected pitch in [press + 0.02 s, press + 0.30 s] at least
+    `band_snr_db` above the same band just before the press. If not, a strong peak elsewhere (another
+    note) is a FAIL pitch. Pitch = strongest spectral peak between 0.75 and 1.33 x the expected pitch."""
+    tp = wav_time(a.t, offset, p)
+    f = expected_hz(a.model_midi if a.model_midi is not None else g.BUTTON_MIDI.get(a.button, 81))
+    w0, w1 = tp + tp_.detect_from, tp + tp_.detect_to
+    level = band_power_db(xb, sr, w0, w1, f)
+    noise = band_power_db(xb, sr, tp - 0.45, tp - 0.05, f)
+    sound = math.isfinite(level) and (not math.isfinite(noise) or level - noise >= tp_.band_snr_db)
+    if a.blank:
+        return AttemptResult(a, sound, level, noise, verdict="BLANK SOUNDED" if sound else "silent (ok)")
+    if not sound:
+        other = spectral_peak(xb, sr, w0, w1, F_MIN, F_MAX)
+        if other is not None and abs(cents(other, f)) > tp_.pitch_tol_cents:
+            lo, no = band_power_db(xb, sr, w0, w1, other), band_power_db(xb, sr, tp - 0.45, tp - 0.05, other)
+            if math.isfinite(lo) and lo - no >= tp_.band_snr_db:
+                return AttemptResult(a, True, level, noise, hz=other, verdict="FAIL pitch", passed=False)
+        return AttemptResult(a, False, level, noise, verdict="FAIL no sound", passed=False)
+    hz = spectral_peak(xb, sr, w0, w1, f * 0.75, f * 1.33)
+    t, e = tone_env_db(xb, sr, f, tp - 0.05, tp + 0.8)
+    on_ms = audible = None
+    if e.size:
+        k = int(np.argmax(e))
+        on_ms = (half_crossing(t, e, k) - tp) * 1000.0 / p.scale
+        _, en = tone_env_db(xb, sr, f, tp - 0.45, tp - 0.05)
+        floor_db = float(np.median(en)) + 3.0 if en.size else -math.inf
+        audible = float(np.sum(e >= max(e[k] - tp_.audible_db, floor_db))) * 2.0 / p.scale
+    ok = hz is not None and abs(cents(hz, f)) <= tp_.pitch_tol_cents
+    return AttemptResult(a, True, level, noise, on_ms, audible, hz, verdict="PASS" if ok else "FAIL pitch",
+                         passed=ok)
+
+
+def valley_depth(env: np.ndarray) -> float:
+    """Deepest dip that is followed by a re-rise: max over k of min(peak before k, peak after k) - env[k]."""
+    if env.size < 3:
+        return 0.0
+    before = np.maximum.accumulate(env)
+    after = np.maximum.accumulate(env[::-1])[::-1]
+    return float(np.max(np.minimum(before - env, after - env)))
+
+
+def dip_and_rise(env: np.ndarray, dip_db: float, rise_db: float) -> bool:
+    before = np.maximum.accumulate(env)
+    after = np.maximum.accumulate(env[::-1])[::-1]
+    return bool(np.any((before - env >= dip_db) & (after - env >= rise_db)))
+
+
+RETRIGGER_BAND = (0.8, 1.25)  # x the expected pitch: the fundamental only (keeps X above the noise)
+
+
+def _u2_env(xf: np.ndarray, sr: int, a: Attempt, offset: float, p: Params, floor: float) -> tuple[np.ndarray, float]:
+    tp = wav_time(a.t, offset, p)
+    noise = _local_noise(xf, sr, tp, floor)
+    span = (2 * a.fields.get("hold", 12) + a.fields.get("gap", 0)) / FRAME_RATE
+    end = min(wav_time(a.t + span + 0.5, offset, p), wav_time(a.t_end, offset, p) - 0.45)
+    env = envelope_db(_seg(xf, sr, tp - 0.05, end), sr)
+    if math.isfinite(noise):
+        env = np.maximum(env, noise + 6.0)  # noise wobble below the floor + 6 dB is not a dip or a rise
+    return env, noise
+
+
+def _local_noise(xb: np.ndarray, sr: int, tp: float, floor: float) -> float:
+    local = dbfs(_seg(xb, sr, tp - 0.45, tp - 0.05))
+    return min(local, floor) if math.isfinite(floor) else local
+
+
+RETRIGGER_MARGIN_DB = 6.0
+
+
+def calibrate_retrigger(valleys0: Sequence[float], valleys30: Sequence[float],
+                        margin: float = RETRIGGER_MARGIN_DB) -> tuple[float | None, bool]:
+    """Dip/rise threshold from the controls: the deepest valley of a held note (g=0) plus `margin` dB,
+    but at most half way to the shallowest valley of a clear retrigger (g=30). Valid if they are apart.
+
+    The g=0 control measures how much a held note wobbles on its own; a short real retrigger dips far
+    less than the g=30 one, so a plain midpoint would miss it. Pool the controls of every file of one
+    button (`--combine --pool-controls`): one file's 20 controls can miss a rare deep wobble."""
+    if not valleys0 or not valleys30:
+        return None, False
+    hi0, lo30 = max(valleys0), min(valleys30)
+    return hi0 + min(margin, (lo30 - hi0) / 2.0), hi0 < lo30
+
+
+def _retrigger_verdict(a_control: bool, gap: int | None, n_on: int | None) -> tuple[str, bool | None]:
+    want = 1 if gap == 0 else 2
+    if n_on is None:
+        return "NO THRESHOLD", None
+    if a_control:
+        return ("control ok" if n_on == want else "CONTROL WRONG"), None
+    return ("PASS" if n_on == 2 else f"FAIL {n_on} onset(s)"), n_on == 2
+
+
+def retrigger_attempts(x: np.ndarray, sr: int, atts: Sequence[Attempt], offset: float, p: Params,
+                       tp_: TimingParams) -> tuple[list[AttemptResult], dict[str, str]]:
+    """Row 2.2: onsets (1 or 2) and the dip depth per attempt, on the band around the note's fundamental
+    (`RETRIGGER_BAND`); thresholds from the controls unless given."""
+    bands: dict[int, tuple[np.ndarray, float]] = {}
+    envs = []
+    for a in atts:
+        m = a.model_midi if a.model_midi is not None else 81
+        if m not in bands:
+            f = expected_hz(m)
+            xf = bandpass(x, sr, f * RETRIGGER_BAND[0], f * RETRIGGER_BAND[1])
+            bands[m] = (xf, noise_floor_dbfs(xf, sr))
+        envs.append(_u2_env(bands[m][0], sr, a, offset, p, bands[m][1]))
+    valleys = [valley_depth(e) if e.size else 0.0 for e, _ in envs]
+    v0 = [v for a, v in zip(atts, valleys) if a.control and a.fields.get("gap") == 0]
+    v30 = [v for a, v in zip(atts, valleys) if a.control and a.fields.get("gap", 0) > 0]
+    thr, separated = calibrate_retrigger(v0, v30)
+    dip = tp_.dip_db if tp_.dip_db is not None else thr
+    rise = tp_.rise_db if tp_.rise_db is not None else thr
+    meta = {"band": f"{RETRIGGER_BAND[0]:g} to {RETRIGGER_BAND[1]:g} x the expected pitch",
+            "dip_db": _fmt(dip, ".1f"), "rise_db": _fmt(rise, ".1f"),
+            "threshold_source": "options" if tp_.dip_db is not None and tp_.rise_db is not None else "controls",
+            "controls_g0_valley_top3_db": ", ".join(f"{v:.1f}" for v in sorted(v0)[-3:]) or "-",
+            "controls_g30_valley_low3_db": ", ".join(f"{v:.1f}" for v in sorted(v30)[:3]) or "-",
+            "controls_separated": str(separated)}
+    out = []
+    for a, (env, noise), v in zip(atts, envs, valleys):
+        peak = float(np.max(env)) if env.size else -math.inf
+        sound = env.size > 0 and peak >= p.min_dbfs and (not math.isfinite(noise) or peak - noise >= p.min_snr_db)
+        if not sound:
+            n_on = 0
+        elif dip is None or rise is None:
+            n_on = None
+        else:
+            n_on = 2 if dip_and_rise(env, dip, rise) else 1
+        verdict, ok = _retrigger_verdict(a.control, a.fields.get("gap"), n_on)
+        out.append(AttemptResult(a, sound, peak, noise, onsets=n_on, dip_db=v, verdict=verdict, passed=ok))
+    return out, meta
+
+
+def pooled_rescore(rows: Sequence[dict[str, str]]) -> tuple[list[dict[str, str]], list[str]]:
+    """Re-score retrigger report rows with one threshold from the controls of all of them (same rule as
+    `calibrate_retrigger`). Rows without sound (0 onsets) stay as they are."""
+    def dip(r):
+        return float(r["dip_db"]) if r["dip_db"] not in ("", "-") else 0.0
+    g0 = [r for r in rows if r["control"] == "1" and r["step"] == "0f"]
+    g30 = [r for r in rows if r["control"] == "1" and r["step"] != "0f"]
+    thr, separated = calibrate_retrigger([dip(r) for r in g0], [dip(r) for r in g30])
+    if thr is None:
+        return list(rows), ["pooled controls: none (need gap 0 and gap 30 controls)"]
+    out = []
+    for r in rows:
+        r = dict(r)
+        if r["onsets"] not in ("0",):
+            n_on = 2 if dip(r) >= thr else 1
+            r["onsets"] = str(n_on)
+            r["verdict"], ok = _retrigger_verdict(r["control"] == "1", int(r["step"][:-1]), n_on)
+            r["pass"] = "" if ok is None else str(int(ok))
+        out.append(r)
+    top = sorted(g0, key=dip)[-3:]
+    deepest = "; ".join(f"{dip(r):.1f} dB {r['label']}" for r in reversed(top))
+    lines = [(f"pooled controls: {len(g0)} held (gap 0), {len(g30)} retrigger (gap 30); threshold {thr:.1f} dB "
+              f"(deepest held-note dip + min(6 dB, half the distance to the shallowest gap-30 dip)); "
+              f"separated {separated}"),
+             f"deepest held-note dips (outliers raise the threshold): {deepest}"]
+    return out, lines
+
+
+def lead_attempt(xb: np.ndarray, sr: int, a: Attempt, offset: float, p: Params, tp_: TimingParams,
+                 floor: float = -math.inf) -> AttemptResult:
+    """Row 2.3: is the pitch right from the note start? Median of the windows in [onset, onset + 40 ms]
+    vs the steady pitch (last half of the hold), within `lead_cents`.
+
+    The onset is taken on the level of the band 0.8 to 1.25 x the pitch (every pitch the note may start
+    at), and every pitch is the strongest spectral peak in that band: wide enough for a missing modifier
+    (+-2 semitones), too narrow for an octave error. Resolution: the verdict is the median of 9 overlapping
+    30 ms windows, so a wrong start shorter than about 35 ms (2 frames) passes (synthetic notes: 33 ms
+    passes, 36 ms fails, see the tests); a 1 to 2 frame lateness of a modifier is not resolvable by audio."""
+    tp = wav_time(a.t, offset, p)
+    f = expected_hz(a.model_midi if a.model_midi is not None else 81)
+    on, peak, noise = band_onset(xb, sr, f * 0.8, f * 1.25, tp)
+    # sound check as in detect, on a band wide enough for a missing modifier (+-2 semitones)
+    level = band_power_db(xb, sr, tp + tp_.detect_from, tp + tp_.detect_to, f, width=0.13)
+    quiet = band_power_db(xb, sr, tp - 0.45, tp - 0.05, f, width=0.13)
+    if on is None or not math.isfinite(level) or (math.isfinite(quiet) and level - quiet < tp_.band_snr_db):
+        return AttemptResult(a, False, level, quiet, verdict="FAIL no sound", passed=False)
+    note = a.fields.get("note", 36) / FRAME_RATE * p.scale
+    steady = spectral_peak(xb, sr, on + note / 2, on + note - 0.01, f * 0.8, f * 1.25)
+    if steady is None:
+        return AttemptResult(a, True, peak, noise, verdict="FAIL no pitch", passed=False)
+    start = []
+    t = on
+    while t <= on + tp_.lead_window + 1e-9:
+        fs = spectral_peak(xb, sr, t, t + tp_.pitch_window, steady * 0.8, steady * 1.25)
+        if fs is not None:
+            start.append(fs)
+        t += tp_.pitch_hop
+    on_ms = (on - tp) * 1000.0 / p.scale
+    if not start:
+        return AttemptResult(a, True, peak, noise, on_ms, verdict="FAIL no pitch", passed=False)
+    err = cents(float(np.median(start)), steady)
+    ok = abs(err) <= tp_.lead_cents
+    return AttemptResult(a, True, peak, noise, on_ms, hz=steady, start_cents=cents(start[0], steady),
+                         lead_cents=err, verdict="PASS" if ok else "FAIL pitch at start", passed=ok)
+
+
+def analyse_attempts(x: np.ndarray, sr: int, atts: Sequence[Attempt], offset: float, mode: str,
+                     p: Params = Params(), tp_: TimingParams = TimingParams()) -> tuple[list[AttemptResult], dict]:
+    dur = x.size / sr
+    atts = [a for a in atts if wav_time(a.t, offset, p) + 0.8 <= dur]
+    if mode == "retrigger":
+        return retrigger_attempts(x, sr, atts, offset, p, tp_)
+    xb = bandpass(x, sr, *p.band)
+    if mode == "detect":
+        return [detect_attempt(xb, sr, a, offset, p, tp_) for a in atts], {
+            "band_snr_db": f"{tp_.band_snr_db:g}", "game_cents": f"{GAME_CENTS:+g}",
+            "window_s": f"{tp_.detect_from:g} to {tp_.detect_to:g} after the press"}
+    if mode == "lead":
+        return [lead_attempt(xb, sr, a, offset, p, tp_) for a in atts], {
+            "lead_cents": f"{tp_.lead_cents:g}", "band_snr_db": f"{tp_.band_snr_db:g}"}
+    raise ValueError(f"mode {mode!r}")
+
+
+@dataclass(frozen=True)
+class StepStat:
+    family: str
+    step: str
+    passes: int
+    tries: int
+    fail_rounds: tuple[int, ...]
+
+
+def step_table(rows: Sequence[dict[str, str]]) -> list[StepStat]:
+    """Pass counts per (family, step) from result rows (the CSV columns); controls/blanks are not scored."""
+    acc: dict[tuple[str, str], list] = {}
+    for r in rows:
+        if r["pass"] not in ("0", "1"):
+            continue
+        e = acc.setdefault((r["family"], r["step"]), [0, 0, []])
+        e[1] += 1
+        if r["pass"] == "1":
+            e[0] += 1
+        elif r["round"] not in ("", "-"):
+            e[2].append(int(r["round"]))
+
+    def key(k):
+        fam, step = k
+        return fam, int(step[:-1]) if step.endswith("f") and step[:-1].isdigit() else 10 ** 6
+
+    return [StepStat(f, st, e[0], e[1], tuple(sorted(e[2]))) for (f, st), e in sorted(acc.items(), key=lambda kv: key(kv[0]))]
+
+
+def smallest_passing(stats: Sequence[StepStat]) -> dict[str, str]:
+    """Per family: the smallest step for which that step and every larger step passed every try."""
+    out: dict[str, str] = {}
+    for fam in dict.fromkeys(st.family for st in stats):
+        steps = [st for st in stats if st.family == fam]
+        best = None
+        for st in reversed(steps):
+            if st.passes != st.tries:
+                break
+            best = st.step
+        if best is None:
+            out[fam] = "none (the largest step did not pass every try)"
+        else:
+            n = int(best[:-1])
+            out[fam] = f"{best} = {n * FRAME_MS:.1f} ms"
+    return out
+
+
+ATTEMPT_COLUMNS = ("n", "line", "t_s", "label", "family", "step", "round", "control", "level_dbfs", "snr_db",
+                   "onset_ms", "audible_ms", "hz", "note", "onsets", "dip_db", "start_cents", "lead_cents",
+                   "verdict", "pass")
+
+
+def attempt_row(r: AttemptResult) -> dict[str, str]:
+    a = r.attempt
+    return {
+        "n": str(a.index), "line": str(a.line), "t_s": f"{a.t:.3f}", "label": a.label, "family": a.family,
+        "step": a.step, "round": "-" if a.round is None else str(a.round), "control": "1" if a.control else "0",
+        "level_dbfs": _fmt(r.level_dbfs, ".1f"), "snr_db": _fmt(r.level_dbfs - r.noise_dbfs, ".1f"),
+        "onset_ms": _fmt(r.onset_ms, ".0f"), "audible_ms": _fmt(r.audible_ms, ".0f"), "hz": _fmt(r.hz, ".1f"),
+        "note": g.midi_name(note_and_cents(r.hz)[0]) if r.hz else "-",
+        "onsets": "-" if r.onsets is None else str(r.onsets), "dip_db": _fmt(r.dip_db, ".1f"),
+        "start_cents": _fmt(r.start_cents, "+.0f"), "lead_cents": _fmt(r.lead_cents, "+.0f"),
+        "verdict": r.verdict, "pass": "" if r.passed is None else str(int(r.passed)),
+    }
+
+
+def attempt_summary_lines(rows: Sequence[dict[str, str]], meta: dict[str, str]) -> list[str]:
+    out = [f"{k}: {v}" for k, v in meta.items()]
+    stats = step_table(rows)
+    if stats:
+        out.append(f"{'family':<10} {'step':>5} {'ms':>6}  passes  fail rounds")
+        for st in stats:
+            ms = f"{int(st.step[:-1]) * FRAME_MS:.1f}" if st.step[:-1].isdigit() else "-"
+            out.append(f"{st.family:<10} {st.step:>5} {ms:>6}  {st.passes:>2}/{st.tries:<3}  "
+                       f"{','.join(map(str, st.fail_rounds)) or '-'}")
+        for fam, v in smallest_passing(stats).items():
+            out.append(f"smallest step passing every try (and every larger step): {fam}: {v}")
+    bad = [r for r in rows if r["verdict"] in ("BLANK SOUNDED", "CONTROL WRONG", "NO THRESHOLD")]
+    if bad:
+        out.append(f"INVALID: {len(bad)} control/blank attempt(s) did not behave "
+                   f"({', '.join(sorted({r['verdict'] for r in bad}))}); find out why before using the numbers")
+    return out
+
+
+# ---- row 2.4: jitter (inter-onset intervals against the sender's frame schedule)
+
+
+@dataclass(frozen=True)
+class JitterResult:
+    notes: int
+    matched: int              # notes whose own button was the loudest (>= min_dom_db) at its peak
+    ioi_err_ms: np.ndarray    # measured IOI (rescaled to schedule s) minus scheduled IOI, consecutive pairs
+    drift_ms_per_s: float
+    latency_ms: float         # median per-note latency (schedule t to onset)
+    latency_sd_ms: float
+    lag_hist: tuple[tuple[int, int], ...]  # (ms from the median, count) in 4 ms bins
+    quant_sigma_ms: float     # sigma of the schedule's own IOI vs the ideal 125 ms (the 7/8 frame pattern)
+
+    def stats(self) -> dict[str, float]:
+        e = self.ioi_err_ms
+        if e.size < 2:
+            return {}
+        a = np.abs(e)
+        return {"mean_ms": float(np.mean(e)), "sigma_ms": float(np.std(e, ddof=1)),
+                "p95_ms": float(np.percentile(a, 95)), "max_ms": float(np.max(a))}
+
+
+def analyse_jitter(x: np.ndarray, sr: int, atts: Sequence[Attempt], offset: float, p: Params = Params(),
+                   ideal_ioi: float = 0.125, win: float = 0.020, hop: float = 0.001, min_dom_db: float = 3.0,
+                   max_latency: float = 0.5) -> JitterResult:
+    """Onsets per button: one level envelope per button pitch (window `win`; 20 ms separates A5 and B5,
+    110 Hz apart). One latency for the whole run: the shift at which each scheduled note's own button is
+    loudest. Each onset = the -6 dB crossing of its button's envelope in [e + L - 70 ms, e + L + 100 ms],
+    kept only if that button is at least `min_dom_db` louder than the others at its peak. No per-note
+    latency tracking; the drift comes from the fit only."""
+    xb = bandpass(x, sr, *p.band)
+    mids = sorted({a.model_midi for a in atts if a.model_midi is not None})
+    env = {}
+    t = np.zeros(0)
+    for m in mids:
+        t, env[m] = tone_env_db(xb, sr, expected_hz(m), 0.0, x.size / sr, win, hop)
+    if t.size == 0 or not mids:
+        return JitterResult(len(atts), 0, np.zeros(0), math.nan, math.nan, math.nan, (), math.nan)
+    stack = np.vstack([env[m] for m in mids])
+    dom = {m: env[m] - np.max(np.delete(stack, i, axis=0), axis=0) if len(mids) > 1 else env[m]
+           for i, m in enumerate(mids)}
+
+    def idx(tt):
+        return np.clip(np.round((np.asarray(tt) - t[0]) / hop).astype(int), 0, t.size - 1)
+
+    exp = np.array([wav_time(a.t, offset, p) for a in atts])
+    ms = [a.model_midi for a in atts]
+    best_l, best_s = 0.0, -math.inf
+    for lat in np.arange(0.0, max_latency, 0.002):
+        sc = float(np.mean([dom[m][i] for m, i in zip(ms, idx(exp + lat + 0.04))]))
+        if sc > best_s:
+            best_l, best_s = float(lat), sc
+    got: list[float | None] = []
+    for e, m in zip(exp, ms):
+        i0, i1 = idx(e + best_l - 0.07), idx(e + best_l + 0.10)
+        if i1 - i0 < 3:
+            got.append(None)
+            continue
+        k = i0 + int(np.argmax(env[m][i0:i1]))
+        got.append(half_crossing(t, env[m], k) if dom[m][k] >= min_dom_db else None)
+    sched = np.array([a.t for a in atts])
+    pairs = [(i, i + 1) for i in range(len(atts) - 1) if got[i] is not None and got[i + 1] is not None]
+    err = np.array([((got[j] - got[i]) / p.scale - (sched[j] - sched[i])) * 1000.0 for i, j in pairs])
+    keep = [i for i in range(len(atts)) if got[i] is not None]
+    lag = np.array([((got[i] - offset - p.latency) / p.scale - sched[i]) * 1000.0 for i in keep])
+    drift = float(np.polyfit(sched[keep], lag, 1)[0]) if len(keep) >= 3 else math.nan
+    med = float(np.median(lag)) if lag.size else math.nan
+    hist: tuple[tuple[int, int], ...] = ()
+    if lag.size:
+        h, edges = np.histogram(lag - med, bins=np.arange(-30, 34, 4))
+        hist = tuple((int(e0), int(c)) for e0, c in zip(edges[:-1], h) if c)
+    q = np.diff(sched) - ideal_ioi
+    return JitterResult(len(atts), len(keep), err, drift, med, float(np.std(lag)) if lag.size else math.nan, hist,
+                        float(np.std(q, ddof=1)) * 1000.0 if q.size > 1 else math.nan)
+
+
+def jitter_lines(j: JitterResult) -> list[str]:
+    st = j.stats()
+    out = [f"notes {j.notes}, matched {j.matched} (the note's own button the loudest at its onset)",
+           (f"latency (median, includes USB, console and audio) {j.latency_ms:.1f} ms, per-note sd "
+            f"{j.latency_sd_ms:.1f} ms; drift {j.drift_ms_per_s:+.3f} ms per s")]
+    if st:
+        out.append("IOI error vs the sender's frame schedule: " + ", ".join(
+            f"{k[:-3]} {v:.2f} ms ({v / FRAME_MS:.3f} frames)" for k, v in st.items()))
+    if j.lag_hist:
+        out.append("per-note latency minus median (4 ms bins): "
+                   + ", ".join(f"{a:+d}: {c}" for a, c in j.lag_hist))
+    out.append(f"schedule quantisation (7/8-frame pattern vs ideal 125 ms), not jitter: sigma "
+               f"{j.quant_sigma_ms:.2f} ms ({j.quant_sigma_ms / FRAME_MS:.3f} frames)")
+    out.append("2wiCC's per-frame queue is not our scheduler (the sender grid is quantised at 7/8 frames here; "
+               "the real firmware scheduler is Story 2.4/2.5)")
+    return out
+
+
+# ---- capture self-test (steady tone from another device)
+
+
+@dataclass(frozen=True)
+class ToneCheck:
+    count: int            # phase steps larger than step_ms where the tone is present
+    amp: float            # median block amplitude of the tone
+    lead_s: float = 0.0   # low-level time skipped at the start (input start-up, before the tone)
+    tail_s: float = 0.0   # low-level time skipped at the end
+    dropouts: int = 0     # low-level stretches between the first and the last tone block
+
+
+STARTUP_GRACE_S = 0.5  # the start of a capture is not judged (macOS input start-up, seen live 2026-11-21)
+
+
+def tone_discontinuities(x: np.ndarray, sr: int, f0: float = 1000.0, block: float = 0.005,
+                         step_ms: float = 0.2, min_rel_db: float = -20.0,
+                         grace: float = STARTUP_GRACE_S) -> ToneCheck:
+    """Count phase steps larger than `step_ms` in a steady tone.
+
+    Phase per block from the projection on exp(-j 2 pi f0 t); the steady frequency offset of the other
+    device is removed with the median phase advance. Each block's phase is compared with the one two
+    blocks before, so a step inside a block is seen in full. Only blocks whose tone amplitude is within
+    `min_rel_db` of the median take part: the phase of a block without the tone is noise (seen live:
+    the first 0.17 s of a recording are the input's start-up silence). Low-level stretches at the start
+    and end are reported as skipped time, those in the middle as dropouts. The first `grace` seconds are
+    never judged: on macOS the input may deliver a first buffer of tone, then about 150 ms of near-silence
+    while it starts (seen live), which is start-up, not a dropout. Dropping a whole number of
+    tone periods is invisible (48 samples at 48 kHz for 1 kHz); a 1024-sample packet is not."""
+    n = round(block * sr)
+    m = x.size // n
+    if m < 4:
+        return ToneCheck(0, 0.0)
+    t = np.arange(m * n) / sr
+    z = (x[: m * n] * np.exp(-2j * np.pi * f0 * t)).reshape(m, n).sum(axis=1)
+    mag = np.abs(z)
+    amp = float(np.median(mag)) * 2.0 / n
+    ok = mag >= float(np.median(mag)) * 10 ** (min_rel_db / 20.0)
+    ok[: min(m, math.ceil(grace / block))] = False
+    if not ok.any():
+        return ToneCheck(0, amp)
+    first, last = int(np.argmax(ok)), int(m - 1 - np.argmax(ok[::-1]))
+    inner = ok[first: last + 1]
+    dropouts = int(np.sum(~inner[1:] & inner[:-1]))
+    ph = np.angle(z)
+    step = np.angle(np.exp(1j * (ph[2:] - ph[:-2])))
+    valid = ok[2:] & ok[1:-1] & ok[:-2]
+    if not valid.any():
+        return ToneCheck(0, amp, first * block, (m - 1 - last) * block, dropouts)
+    adv = float(np.median(step[valid]))
+    res = np.abs(np.angle(np.exp(1j * (step - adv))))
+    bad = (res > 2 * np.pi * f0 * step_ms / 1000.0) & valid
+    runs = int(np.sum(bad[1:] & ~bad[:-1]) + bad[0])
+    return ToneCheck(runs, amp, first * block, (m - 1 - last) * block, dropouts)
+
+
+# ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
 
@@ -551,6 +1225,95 @@ class Recorder:
         return err
 
 
+class SdRecorder:
+    """PortAudio (sounddevice) input -> WAV, lossless unless PortAudio reports an overflow (Story 1.4).
+
+    Same interface as Recorder (start, stop, chunks, total). The callback only copies the block and
+    puts it on a SimpleQueue (no locks, no file I/O); a writer thread does the rest. Every callback
+    status flag is kept; `overflows` counts input overflows, and any overflow makes the run invalid."""
+
+    def __init__(self, device: str, sr: int, wav_path: pathlib.Path, sd=None):
+        self.device = int(device) if str(device).isdigit() else device
+        self.sr = sr
+        self.wav_path = wav_path
+        self.sd = sd
+        self.chunks: list[tuple[float, int]] = []
+        self.total = 0
+        self.overflows = 0
+        self.statuses: list[str] = []
+        self.q: queue.SimpleQueue = queue.SimpleQueue()
+        self.first = threading.Event()
+        self.stream = None
+        self.thread: threading.Thread | None = None
+
+    def _callback(self, indata, frames, time_info, status) -> None:
+        if status:
+            if getattr(status, "input_overflow", False):
+                self.overflows += 1
+            self.statuses.append(str(status))
+        self.q.put((time.monotonic(), bytes(indata)))
+
+    def _write(self) -> None:
+        while True:
+            item = self.q.get()
+            if item is None:
+                break
+            now, data = item
+            self.wav.writeframes(data)
+            self.total += len(data) // 2
+            self.chunks.append((now, self.total))
+            self.first.set()
+
+    def start(self, timeout: float = 5.0) -> None:
+        if self.sd is None:
+            try:
+                import sounddevice as sd  # optional: only this backend needs PortAudio
+            except (ImportError, OSError) as e:
+                raise RuntimeError(f"--backend sounddevice needs the sounddevice package ({e})") from None
+            self.sd = sd
+        self.wav = wave.open(str(self.wav_path), "wb")  # noqa: SIM115 - closed in stop()
+        self.wav.setnchannels(1)
+        self.wav.setsampwidth(2)
+        self.wav.setframerate(self.sr)
+        self.thread = threading.Thread(target=self._write, daemon=True)
+        self.thread.start()
+        try:
+            self.stream = self.sd.RawInputStream(samplerate=self.sr, channels=1, dtype="int16", device=self.device,
+                                                 callback=self._callback)
+            self.stream.start()
+        except Exception as e:  # noqa: BLE001 - PortAudio errors have their own types
+            self.stop()
+            raise RuntimeError(f"cannot open the input device {self.device!r}: {e}") from None
+        if not self.first.wait(timeout):
+            err = self.stop()
+            raise RuntimeError(f"no audio from the input device within {timeout:.0f} s (microphone permission "
+                               f"for the terminal? device name?) {err}")
+
+    def stop(self) -> str:
+        if self.stream is not None:
+            try:
+                self.stream.stop()
+                self.stream.close()
+            finally:
+                self.stream = None
+        if self.thread is not None:
+            self.q.put(None)
+            self.thread.join(timeout=5)
+            self.thread = None
+        if hasattr(self, "wav"):
+            self.wav.close()
+        if self.statuses:
+            return f"PortAudio status flags in {len(self.statuses)} callback(s), {self.overflows} input overflow(s): " \
+                   f"{sorted(set(self.statuses))}"
+        return ""
+
+
+def make_recorder(backend: str, device: str, sr: int, wav_path: pathlib.Path, ffmpeg: str = "ffmpeg"):
+    if backend == "sounddevice":
+        return SdRecorder(device, sr, wav_path)
+    return Recorder(device, sr, wav_path, ffmpeg)
+
+
 def run_sender(port: str, trial: pathlib.Path, extra: Sequence[str]) -> tuple[int, list[tuple[float, str]], bool]:
     """Run the unchanged sender with --announce; echo and timestamp its stdout. Returns (code, lines, interrupted)."""
     cmd = [sys.executable, "-u", str(SENDER), "--port", port, "--announce", *extra, str(trial)]
@@ -623,6 +1386,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-snr-db", type=float, default=d.min_snr_db, help="no sound below this SNR (10)")
     p.add_argument("--list-devices", action="store_true", help="list avfoundation devices and exit")
     p.add_argument("--max-lead-frames", type=int, help="passed to the sender")
+    # Story 1.4
+    p.add_argument("--mode", default="pitch", choices=MODES,
+                   help="pitch: Story 1.3 note pitch (default); detect: row 2.1; retrigger: row 2.2; "
+                        "lead: row 2.3; jitter: row 2.4 (Story 1.4 files, attempts = TRY rows)")
+    p.add_argument("--backend", default="ffmpeg", choices=("ffmpeg", "sounddevice"),
+                   help="capture: ffmpeg avfoundation (default; loses samples) or sounddevice (PortAudio, lossless)")
+    p.add_argument("--dip-db", type=float, help="retrigger: dip below the first note (default: from the controls)")
+    p.add_argument("--rise-db", type=float, help="retrigger: re-rise after the dip (default: from the controls)")
+    p.add_argument("--lead-cents", type=float, default=TimingParams().lead_cents,
+                   help="lead: pass if the first 40 ms are within this of the steady pitch (50)")
+    p.add_argument("--selftest-tone", action="store_true",
+                   help="capture self-test: record a steady tone from another device, count phase jumps; no trial")
+    p.add_argument("--seconds", type=float, default=60.0, help="self-test length, s (60)")
+    p.add_argument("--tone-hz", type=float, default=1000.0, help="self-test tone frequency (1000)")
+    p.add_argument("--combine", nargs="+", metavar="CSV",
+                   help="merge the step tables of several report CSVs (the parts of one row) and exit")
+    p.add_argument("--pool-controls", action="store_true",
+                   help="with --combine on retrigger reports: one threshold from the controls of all the files")
+    p.add_argument("--band-snr-db", type=float, default=TimingParams().band_snr_db,
+                   help="detect/lead: level at the expected pitch above the same band before the press (8)")
+    p.add_argument("--report-tag", default="",
+                   help="with --analyse: suffix for the report names (keeps the reports of the live run)")
     return p
 
 
@@ -643,18 +1428,175 @@ def report(x: np.ndarray, sr: int, presses: Sequence[Press], offset: float, p: P
     return results
 
 
+def write_table(base: pathlib.Path, columns: Sequence[str], rows: Sequence[dict[str, str]], meta: dict[str, str],
+                extra: Sequence[str] = ()) -> tuple[pathlib.Path, pathlib.Path]:
+    csv_path, md_path = base.with_suffix(".csv"), base.with_suffix(".md")
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=columns)
+        w.writeheader()
+        w.writerows(rows)
+    md = [f"# Trial analysis: {meta.get('trial', '')}", ""] + [f"- {k}: {v}" for k, v in meta.items()]
+    md += ["", *(f"    {line}" for line in extra), ""] if extra else [""]
+    md.append("| " + " | ".join(columns) + " |")
+    md.append("|" + "---|" * len(columns))
+    md += ["| " + " | ".join(r[c].replace("|", "/") for c in columns) + " |" for r in rows]
+    md_path.write_text("\n".join(md) + "\n", encoding="utf-8")
+    return csv_path, md_path
+
+
+def report_timing(x: np.ndarray, sr: int, atts: Sequence[Attempt], offset: float, p: Params, tp_: TimingParams,
+                  mode: str, base: pathlib.Path, meta: dict[str, str]) -> int:
+    """Story 1.4 modes: print the per-attempt table and the step summary, write CSV + Markdown."""
+    meta = {**meta, "mode": mode, "offset_s": f"{offset:.3f}", "scale": f"{p.scale:.4f}",
+            "min_snr_db": f"{p.min_snr_db:g}", "min_dbfs": f"{p.min_dbfs:g}"}
+    if not atts:
+        print("error: no TRY rows in the trial file (Story 1.4 files only)", file=sys.stderr)
+        return 1
+    if mode == "jitter":
+        j = analyse_jitter(x, sr, atts, offset, p)
+        lines = jitter_lines(j)
+        print()
+        print("\n".join(lines))
+        st = j.stats()
+        rows = [{"pair": str(k + 1), "ioi_err_ms": f"{e:+.2f}"} for k, e in enumerate(j.ioi_err_ms)]
+        meta.update({k: f"{v:.2f}" for k, v in st.items()})
+        csv_path, md_path = write_table(base, ("pair", "ioi_err_ms"), rows, meta, lines)
+        print(f"reports: {csv_path}  {md_path}")
+        return 0
+    results, extra_meta = analyse_attempts(x, sr, atts, offset, mode, p, tp_)
+    meta.update(extra_meta)
+    rows = [attempt_row(r) for r in results]
+    head = f"{'n':>3} {'t(s)':>8}  {'label':<46} {'SNR':>5} {'onset':>5} {'len':>5} {'note':<4} " \
+           f"{'on#':>3} {'dip':>5} {'lead':>5}  verdict"
+    print()
+    print(head)
+    print("-" * len(head))
+    for r in rows:
+        print(f"{r['n']:>3} {r['t_s']:>8}  {r['label'][:46]:<46} {r['snr_db']:>5} {r['onset_ms']:>5} "
+              f"{r['audible_ms']:>5} {r['note']:<4} {r['onsets']:>3} {r['dip_db']:>5} {r['lead_cents']:>5}  "
+              f"{r['verdict']}")
+    summary = attempt_summary_lines(rows, meta={k: v for k, v in extra_meta.items()})
+    print("\n".join(summary))
+    if len(results) < len(atts):
+        print(f"note: {len(atts) - len(results)} attempt(s) not analysed (recording ends before them)")
+    csv_path, md_path = write_table(base, ATTEMPT_COLUMNS, rows, meta, summary)
+    print(f"reports: {csv_path}  {md_path}")
+    return 0
+
+
+_RECORDING_RE = re.compile(r"(.+-\d{8}-\d{6})(?:-.+)?$")
+
+
+def recording_id(path: str) -> str:
+    """The recording a report belongs to: `<trial>-<date>-<time>` without a `--report-tag` suffix."""
+    stem = pathlib.Path(path).stem
+    m = _RECORDING_RE.match(stem)
+    return m.group(1) if m else stem
+
+
+def combine(paths: Sequence[str], pool: bool = False) -> int:
+    seen: dict[str, str] = {}
+    for path in paths:
+        rid = recording_id(path)
+        if rid in seen:
+            print(f"error: {path} and {seen[rid]} are reports of the same recording ({rid}); pass one report "
+                  "per recording (e.g. only the *-rescored.csv files)", file=sys.stderr)
+            return 1
+        seen[rid] = path
+    rows: list[dict[str, str]] = []
+    for path in paths:
+        try:
+            with open(path, newline="", encoding="utf-8") as fh:
+                rows += list(csv.DictReader(fh))
+        except OSError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+    if not rows or "pass" not in rows[0]:
+        print("error: not a Story 1.4 attempt report (no 'pass' column)", file=sys.stderr)
+        return 1
+    extra: list[str] = []
+    keys = Counter((r["label"], r["round"], r["family"], r["step"]) for r in rows)
+    repeats = sum(n - 1 for n in keys.values() if n > 1)
+    if repeats:
+        extra.append(f"note: {repeats} attempt(s) appear in more than one recording (repeat runs of the same "
+                     "trial file); they are counted once per run")
+    if pool:
+        rows, pooled = pooled_rescore(rows)
+        extra += pooled
+    print("\n".join([*extra, *attempt_summary_lines(rows, {"files": str(len(paths))})]))
+    return 0
+
+
+def selftest_lines(x: np.ndarray, sr: int, chunks, f0: float, backend: str, overflows: int | None) -> tuple[list[str], bool]:
+    xb = bandpass(x, sr, f0 - 200.0, f0 + 200.0)
+    tc = tone_discontinuities(xb, sr, f0)
+    count, amp = tc.count, tc.amp
+    rate = audio_rate(chunks)
+    ratio = rate / sr if rate else math.nan
+    level = 20 * math.log10(amp) if amp > 0 else -math.inf
+    lines = [f"tone {f0:g} Hz level {level:.1f} dBFS; phase discontinuities (> 0.2 ms): {count}",
+             f"delivered-sample ratio {ratio:.5f} (samples per real second / nominal rate)"]
+    lines.append(f"not judged: first {STARTUP_GRACE_S:g} s (input start-up grace); "
+                 f"low-level time skipped: start {tc.lead_s:.3f} s, end {tc.tail_s:.3f} s; "
+                 f"tone dropouts in the middle: {tc.dropouts}")
+    if overflows is not None:
+        lines.append(f"PortAudio input overflows: {overflows}")
+    ok = level > -50 and count == 0 and tc.dropouts == 0 and abs(ratio - 1.0) <= 0.001 and not overflows
+    if level <= -50:
+        lines.append("no tone found: play a steady tone near the microphone")
+    if tc.dropouts:
+        lines.append("the tone dropped out mid-recording (not checked there): keep the tone steady and run again")
+    lines.append(f"self-test ({backend}): {'PASS' if ok else 'FAIL'} (pass = 0 discontinuities, ratio within 0.1 %"
+                 ", no overflow)")
+    return lines, ok
+
+
+def run_selftest(a: argparse.Namespace) -> int:
+    out = pathlib.Path(a.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    wav = out / f"selftest-{a.backend}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.wav"
+    rec = make_recorder(a.backend, a.device, a.sample_rate, wav, a.ffmpeg)
+    print(f"recording {a.seconds:g} s of the test tone to {wav} ({a.backend}, '{a.device}')", flush=True)
+    try:
+        rec.start()
+    except (OSError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    try:
+        time.sleep(a.seconds)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        err = rec.stop()
+    if err:
+        print(f"{a.backend}: {err}", file=sys.stderr)
+    x, sr = read_wav(wav)
+    lines, ok = selftest_lines(x, sr, rec.chunks, a.tone_hz, a.backend, getattr(rec, "overflows", None))
+    print("\n".join(lines))
+    return 0 if ok else 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
     if a.list_devices:
         return list_devices(a.ffmpeg)
+    if a.combine:
+        return combine(a.combine, a.pool_controls)
+    if a.selftest_tone:
+        return run_selftest(a)
     if not a.trial:
         print("error: trial file is required", file=sys.stderr)
         return 1
     trial = pathlib.Path(a.trial)
     try:
-        _, presses = load_presses(trial)
+        rows_, presses = load_presses(trial)
     except (OSError, s.ParseError) as e:
         print(f"error: {trial}: {e}", file=sys.stderr)
+        return 1
+    atts = attempts_from_rows(rows_)
+    tp_ = TimingParams(dip_db=a.dip_db, rise_db=a.rise_db, lead_cents=a.lead_cents, band_snr_db=a.band_snr_db)
+    if a.mode != "pitch" and not atts:
+        print(f"error: --mode {a.mode} needs a Story 1.4 trial file (TRY rows)", file=sys.stderr)
         return 1
     p = params_from(a)
 
@@ -668,7 +1610,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (OSError, ValueError, wave.Error) as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
-        report(x, sr, presses, a.offset, p, wav.with_suffix(""), {"trial": str(trial), "wav": str(wav)})
+        meta = {"trial": str(trial), "wav": str(wav)}
+        base = wav.with_suffix("")
+        if a.report_tag:
+            base = base.with_name(f"{base.name}-{a.report_tag}")
+        if a.mode != "pitch":
+            return report_timing(x, sr, atts, a.offset, p, tp_, a.mode, base, meta)
+        report(x, sr, presses, a.offset, p, base, meta)
         return 0
 
     if not a.port:
@@ -678,8 +1626,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     wav = out / f"{trial.stem}-{stamp}.wav"
-    rec = Recorder(a.device, a.sample_rate, wav, a.ffmpeg)
-    print(f"recording {wav} from '{a.device}'", flush=True)
+    rec = make_recorder(a.backend, a.device, a.sample_rate, wav, a.ffmpeg)
+    print(f"recording {wav} from '{a.device}' ({a.backend})", flush=True)
     try:
         rec.start()
     except (OSError, RuntimeError) as e:
@@ -701,7 +1649,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         finally:
             signal.signal(signal.SIGINT, old)
     if err:
-        print(f"ffmpeg: {err}", file=sys.stderr)
+        print(f"{a.backend}: {err}", file=sys.stderr)
+    overflows = getattr(rec, "overflows", None)
+    if overflows:
+        print(f"INVALID RUN: {overflows} PortAudio input overflow(s), samples were lost", file=sys.stderr)
     print(f"sender exit {code}{' (interrupted)' if interrupted else ''}; recorded {rec.total / a.sample_rate:.1f} s")
     rows = s.parse_lines(trial.read_text(encoding="utf-8-sig").splitlines())
     t_send = sender_start(lines, s.announcements(rows, FRAME_RATE))
@@ -717,9 +1668,15 @@ def main(argv: Sequence[str] | None = None) -> int:
           f"{trial} --offset {offset:.3f} --scale {scale:.4f})")
     p = Params(p.attack, p.release_guard, p.min_dbfs, p.min_snr_db, p.min_voiced, p.latency, scale, p.band)
     x, sr = read_wav(wav)
-    report(x, sr, presses, offset, p, wav.with_suffix(""),
-           {"trial": str(trial), "wav": str(wav), "device": a.device, "sender_exit": str(code),
-            "interrupted": str(interrupted)})
+    meta = {"trial": str(trial), "wav": str(wav), "device": a.device, "backend": a.backend,
+            "sender_exit": str(code), "interrupted": str(interrupted)}
+    if overflows is not None:
+        meta["input_overflows"] = str(overflows)
+        meta["valid"] = "no (input overflow)" if overflows else "yes"
+    if a.mode != "pitch":
+        report_timing(x, sr, atts, offset, p, tp_, a.mode, wav.with_suffix(""), meta)
+        return code
+    report(x, sr, presses, offset, p, wav.with_suffix(""), meta)
     return code
 
 
