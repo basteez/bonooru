@@ -1,7 +1,7 @@
-# Sources digest — ocarina-bot app UX (2026-11-20)
+# Sources digest — bonooru app UX (2026-11-20)
 
 Factual extract for the UX session. Every item cites its source. Abbreviations:
-SPEC = `_bmad-output/specs/spec-ocarina-bot/SPEC.md`; REQ = `requirements.md`; DEC = `decisions.md`;
+SPEC = `_bmad-output/specs/spec-bonooru/SPEC.md`; REQ = `requirements.md`; DEC = `decisions.md`;
 ARCH = `architecture.md`; DIAG = `architecture-diagrams.md`; ROAD = `roadmap.md`; RISK = `risk-register.md`
 (all in the spec folder); SPINE = `ARCHITECTURE-SPINE.md`; SCORE = `docs/score-format-and-mapping.md`;
 LINK = `docs/link-protocol.md`; TEST = `docs/test-plan.md`; MECH = `docs/ocarina-input-mechanics.md`;
@@ -20,7 +20,7 @@ A fun, personal project that plays arbitrary melodies (MIDI or hand-written text
 - Skill assumption: first-time user, not the developer; GUI only, no command line, follows on-screen steps (FR-15, NFR-10; SPEC CAP-10). Inspired by / "like RiiDraw" (REQ Open points "Host UI").
 - **A.5**: "First-time user (not the developer) unblocks the unsigned app with the README, then flashes and plays a song with the GUI only, no other help" — related FR-15, NFR-10 (TEST Acceptance). SPEC CAP-10 success restates it; A.5 runs on all 3 OS with the README (SPINE Q3).
 - **Unsigned app**: no code signing/notarisation (SPINE Q3; RISK R5, accepted 2026-11-19). README documents the first-run unblock with screenshots: macOS System Settings → Privacy & Security → Open Anyway; Windows SmartScreen: More info → Run anyway; "right-click → Open" no longer works on macOS 15+ (REQ Open points; RISK R5). The unblock happens **outside** the app (README), before the GUI is reached.
-- Platforms: Windows, Linux, macOS, pre-built, no toolchain (NFR-01). Packaging: macOS universal `.app`; Linux AppImage (+ tarball if cheap) (SPINE Q6). Release assets `ocarina-bot-<ver>-<os>-<arch>.<ext>` + `bridge.uf2` + `controller.uf2`; UF2s embedded in the app (SPINE Structural Seed).
+- Platforms: Windows, Linux, macOS, pre-built, no toolchain (NFR-01). Packaging: macOS universal `.app`; Linux AppImage (+ tarball if cheap) (SPINE Q6). Release assets `bonooru-<ver>-<os>-<arch>.<ext>` + `bridge.uf2` + `controller.uf2`; UF2s embedded in the app (SPINE Structural Seed).
 - Physical context: controller board sits on the Switch (can only be flashed when moved to the PC) (DEC ADR-005 Consequences). Handheld/tabletop or dock; "don't dock mid-song" (DEC ADR-006; RISK R13). Switch on dock/stand, short cable Switch side, slack PC side (TEST Hardware safety; RISK C2).
 - Offline only, single player (NFR-06); app opens no network connections — no update check, no telemetry (SPINE AD-21).
 
@@ -82,7 +82,7 @@ Other ADR/AD items affecting UI:
 ## 5. Device / state model
 
 **Discovery** (SPINE AD-13; RISK R8; DEC ADR-005):
-- Bridge USB identity: VID:PID generic Raspberry Pi `2E8A:000A` (Q1, "for now"); product string `Ocarina Bot Bridge`; serial = flash unique ID.
+- Bridge USB identity: VID:PID generic Raspberry Pi `2E8A:000A` (Q1, "for now"); product string `Bonooru Bridge`; serial = flash unique ID.
 - Match VID:PID first; product string as extra filter where the OS reports it; `HELLO` probe only to VID:PID matches.
 - Windows: `serialport` gets no product string; Windows usually shows only "USB Serial Device" (RISK R8).
 - Other Pico boards share the VID:PID (e.g. RiiDraw firmware listed as `2e8a:000a`, product "RiiDraw" — SPIKE owner test 1). 1200-baud touch only to a port **confirmed** as our bridge: product string, "or an explicit pick by the user in the setup wizard when the OS doesn't report the string" (AD-13).
@@ -167,7 +167,7 @@ Other ADR/AD items affecting UI:
 | Condition | Detection | What sources say the app does |
 |---|---|---|
 | Bridge not found | no VID:PID match during discovery | Flow goes to Setup wizard (DIAG). CAP-6: show connection status. |
-| Other Pico board on `2E8A:000A` (e.g. RiiDraw) | VID:PID match, product string ≠ `Ocarina Bot Bridge` / no INFO | Never 1200-baud-touch unconfirmed ports; user may pick explicitly in wizard when OS lacks product string (AD-13; SPIKE test 1). |
+| Other Pico board on `2E8A:000A` (e.g. RiiDraw) | VID:PID match, product string ≠ `Bonooru Bridge` / no INFO | Never 1200-baud-touch unconfirmed ports; user may pick explicitly in wizard when OS lacks product string (AD-13; SPIKE test 1). |
 | Windows: no product string | `serialport` limitation | VID:PID + HELLO probe; explicit user pick before touch (R8; AD-13). |
 | Linux: no serial permission | adapter detects (`dialout`) | "check and explain", never escalate privileges (ADR-005; Conventions). |
 | Linux: RPI-RP2 not mounted | adapter detects (udisks) | "detect and explain" (ADR-005; Conventions). |

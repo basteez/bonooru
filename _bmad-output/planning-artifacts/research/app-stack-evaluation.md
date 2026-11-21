@@ -1,4 +1,4 @@
-# Ocarina Bot app: language and GUI toolkit evaluation
+# Bonooru app: language and GUI toolkit evaluation
 
 Date: 2026-11-19. Status: research input to a possible reopening of ADR-005 (accepted, Python) and to ADR-008 (proposed, toolkit). Nothing here is decided until the owner accepts it.
 
@@ -62,7 +62,7 @@ Scores 1 (poor) … 5 (excellent) for this project. "Dist" covers size, single f
 ### Rust + egui/eframe (top pick)
 
 - **Versions and health (checked):** egui and eframe 0.37.0 came out on 2026-10-15, after 0.34.3 (May), 0.35.0 (Jun), 0.36.0–0.36.2 (Aug–Sep). egui_plot 0.38.0 came out on 2026-10-19. Licence is MIT OR Apache-2.0. About 10 M recent downloads.
-- **Serial:** `serialport` 4.10.1 (MPL-2.0). `available_ports()` returns `UsbPortInfo` with VID, PID, serial number, manufacturer and product, so the "Ocarina Bot Bridge" lookup works directly. Setting the baud rate to 1200 and closing the port does the 1200-baud touch. On Linux the build needs `libudev-dev` and the runtime needs `libudev.so.1`, which every mainstream distro has. Alternative: `serial2` (BSD-2/Apache), but its `available_ports()` returns only paths (checked), so VID/PID would have to come from `nusb` (MIT/Apache) plus your own matching per OS.
+- **Serial:** `serialport` 4.10.1 (MPL-2.0). `available_ports()` returns `UsbPortInfo` with VID, PID, serial number, manufacturer and product, so the "Bonooru Bridge" lookup works directly. Setting the baud rate to 1200 and closing the port does the 1200-baud touch. On Linux the build needs `libudev-dev` and the runtime needs `libudev.so.1`, which every mainstream distro has. Alternative: `serial2` (BSD-2/Apache), but its `available_ports()` returns only paths (checked), so VID/PID would have to come from `nusb` (MIT/Apache) plus your own matching per OS.
 - **MIDI files:** `midly` 0.5.3 (Unlicense). Its last release was 2023, but the SMF format is frozen and the crate is zero-copy and complete. Low risk. A plain SMF parser is also only a few hundred lines.
 - **Live MIDI (after v1):** `midir` 0.11.1 (MIT), released 2026-10-10. It uses WinMM, CoreMIDI and ALSA.
 - **Audio preview:** `rodio` 0.23.0 (MIT/Apache) on top of `cpal` 0.18.2 (Apache-2.0). A sine or ocarina-like tone made from oscillators is a few lines of code. `rustysynth` (MIT) can play a SoundFont if you ever want "real instrument" previews.

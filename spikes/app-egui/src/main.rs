@@ -1,4 +1,4 @@
-//! Ocarina Bot desktop app: Rust + egui feasibility spike (throwaway).
+//! Bonooru desktop app: Rust + egui feasibility spike (throwaway).
 //!
 //! Env vars for unattended measurement (the spike author could not see the window):
 //! - `SPIKE_EXIT_AFTER=<secs>`: close the window after N seconds (0 = after first frame).
@@ -15,7 +15,7 @@ fn main() -> eframe::Result {
     if std::env::args().any(|a| a == "--list") {
         // Headless check: enumerate only (no port is opened, nothing is written).
         for p in app_core::discovery::list_ports().unwrap_or_default() {
-            let m = app_core::discovery::classify(&p, "Ocarina Bot Bridge");
+            let m = app_core::discovery::classify(&p, "Bonooru Bridge");
             println!("{:?}\t{}\t{:?}", m, p.name, p.usb);
         }
         for v in app_core::uf2::find_boot_volumes(None) {
@@ -27,7 +27,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 720.0])
-            .with_title("Ocarina Bot – egui spike"),
+            .with_title("Bonooru – egui spike"),
         ..Default::default()
     };
     eframe::run_native(

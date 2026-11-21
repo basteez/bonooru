@@ -1,8 +1,8 @@
-# Ocarina Bot: Score format and note mapping
+# Bonooru: Score format and note mapping
 
 *Converted from the author's org-roam notes on 2026-11-19. This file is now the reference in the repo.*
 
-Topic: Ocarina Bot (author's notes)
+Topic: Bonooru (author's notes)
 
 ## Pipeline
 
@@ -136,4 +136,4 @@ The app is Rust + egui/eframe (ADR-008):
 ## Related
 
 - [Ocarina of Time (Switch 2): ocarina input mechanics](ocarina-input-mechanics.md)
-- Ocarina Bot: Requirements (author's notes)
+- Bonooru: Requirements (author's notes)

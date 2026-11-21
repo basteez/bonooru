@@ -31,7 +31,7 @@ pub struct UsbInfo {
 pub enum Match {
     None,
     Rp2040,
-    /// Product string matches the configured filter (e.g. "Ocarina Bot Bridge").
+    /// Product string matches the configured filter (e.g. "Bonooru Bridge").
     Product,
 }
 
@@ -283,18 +283,18 @@ mod tests {
     #[test]
     fn classify_ports() {
         assert_eq!(
-            classify(&usb(0x2E8A, "Ocarina Bot Bridge"), "ocarina bot bridge"),
+            classify(&usb(0x2E8A, "Bonooru Bridge"), "bonooru bridge"),
             Match::Product
         );
         assert_eq!(
-            classify(&usb(0x2E8A, "RiiDraw"), "Ocarina Bot Bridge"),
+            classify(&usb(0x2E8A, "RiiDraw"), "Bonooru Bridge"),
             Match::Rp2040
         );
         assert_eq!(
-            classify(&usb(0x1234, "Ocarina Bot Bridge"), "Ocarina"),
+            classify(&usb(0x1234, "Bonooru Bridge"), "Bonooru"),
             Match::Product
         );
-        assert_eq!(classify(&usb(0x1234, "Other"), "Ocarina"), Match::None);
+        assert_eq!(classify(&usb(0x1234, "Other"), "Bonooru"), Match::None);
         assert_eq!(classify(&usb(0x1234, "Other"), ""), Match::None);
         let plain = PortInfo {
             name: "/dev/ttyS0".into(),
@@ -309,7 +309,7 @@ mod tests {
         let w2 = wakes.clone();
         let h = spawn_with(
             Duration::from_millis(20),
-            Box::new(|| Ok(vec![usb(0x2E8A, "Ocarina Bot Bridge")])),
+            Box::new(|| Ok(vec![usb(0x2E8A, "Bonooru Bridge")])),
             Box::new(|_name| {
                 Ok(Box::new(io::Cursor::new(vec![0x81u8, 0x01, 0x02])) as Box<dyn Read + Send>)
             }),

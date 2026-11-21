@@ -1,8 +1,8 @@
-# Ocarina Bot: Test plan
+# Bonooru: Test plan
 
 *Converted from the author's org-roam notes on 2026-11-19. This file is now the reference in the repo.*
 
-Topic: Ocarina Bot (author's notes)
+Topic: Bonooru (author's notes)
 
 Spikes first, all with **existing** firmware (no code of ours yet). Record for every run: Switch 2 system version, game version, port/cable, firmware + version, result.
 
@@ -796,6 +796,6 @@ Goal: prove the **whole** chain (host → bridge → controller → Switch 2 →
 
 ## Related
 
-- Ocarina Bot: Roadmap (author's notes)
-- Ocarina Bot: Requirements (author's notes)
+- Bonooru: Roadmap (author's notes)
+- Bonooru: Requirements (author's notes)
 - Scripted sender for Spike 0b and Spike 2: [`spikes/README.md`](../spikes/README.md)

@@ -1,5 +1,5 @@
 ---
-name: 'ocarina-bot'
+name: 'bonooru'
 type: architecture-spine
 purpose: build-substrate
 altitude: initiative
@@ -10,15 +10,15 @@ created: '2026-11-19'
 updated: '2026-11-20'
 binds: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7, CAP-8, CAP-9, CAP-10, CAP-11, CAP-12, NFR-01, NFR-04, NFR-05, NFR-06, NFR-07, NFR-09, NFR-10]
 sources:
-  - _bmad-output/specs/spec-ocarina-bot/SPEC.md (+ companions, docs/*)
+  - _bmad-output/specs/spec-bonooru/SPEC.md (+ companions, docs/*)
   - _bmad-output/planning-artifacts/research/app-stack-evaluation.md
   - spikes/app-egui/SPIKE-REPORT.md
-  - _bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/ (DESIGN.md, EXPERIENCE.md)
+  - _bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/ (DESIGN.md, EXPERIENCE.md)
 companions:
   - app-stack-options.md
 ---
 
-# Architecture Spine — ocarina-bot
+# Architecture Spine — bonooru
 
 ## Design Paradigm
 
@@ -230,7 +230,7 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
   - a 1200-baud touch rebooting somebody else's board;
   - two `tud_cdc_line_coding_cb` definitions.
 - **Rule:**
-  - **USB descriptors.** VID:PID is the generic Raspberry Pi pair `2E8A:000A` (Q1, decided 2026-11-19 for now; an own PID can be requested later without changing the design). Because other Pico boards share it, the app sends the 1200-baud touch only to a port confirmed as our bridge (product string `Ocarina Bot Bridge`, or an explicit pick by the user in the setup wizard when the OS doesn't report the string). The product string is `Ocarina Bot Bridge`. The serial number is the flash unique ID.
+  - **USB descriptors.** VID:PID is the generic Raspberry Pi pair `2E8A:000A` (Q1, decided 2026-11-19 for now; an own PID can be requested later without changing the design). Because other Pico boards share it, the app sends the 1200-baud touch only to a port confirmed as our bridge (product string `Bonooru Bridge`, or an explicit pick by the user in the setup wizard when the OS doesn't report the string). The product string is `Bonooru Bridge`. The serial number is the flash unique ID.
   - **Discovery.** The app matches on VID:PID first. It then uses the product string as an extra filter where the OS reports it. It sends the `HELLO` probe only to ports that match VID:PID.
   - **1200-baud touch.** The app sends it only to a port that matches VID:PID. The bridge firmware uses pico-sdk `pico_usb_reset` with `PICO_ENABLE_USB_RESET_VIA_BAUD_RATE=1` and does not define `tud_cdc_line_coding_cb` itself.
   - **Version.** The bridge's version reaches the app only through `INFO.bridge_ver`.
@@ -306,7 +306,7 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
   - **Audio output.** Opening the output device can fail transiently (e.g. Bluetooth profile switch). The UI shows a clear error with a Retry action, and the audio adapter re-opens the output when the default device changes; it never silently falls back to no sound.
   - **NFR-07 amended 2026-11-19 (Q2 resolved):** `serialport` is MPL-2.0, used unmodified. egui's default fonts are OFL-1.1 / Ubuntu-font-1.0; their licence texts ship with the app (AD-21), or the fonts are replaced.
   - **Linux build.** The Linux app ships on X11/XWayland: eframe is built without the `wayland` feature, because winit 0.30 does not deliver file drops on Wayland. File › Open… is always available, so drag-and-drop is never the only way to load a file.
-  - **UI-internal state.** App-level undo/redo and the two-way sync between the text score and the note view live in the app (ui + core score editing) and have no protocol impact. The UI contract is the UX spines `DESIGN.md` and `EXPERIENCE.md` (`_bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/`).
+  - **UI-internal state.** App-level undo/redo and the two-way sync between the text score and the note view live in the app (ui + core score editing) and have no protocol impact. The UI contract is the UX spines `DESIGN.md` and `EXPERIENCE.md` (`_bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/`).
   - **Rejected alternative:** Python 3.12 + PySide6 (bundle ~113 MB vs ~11 MB Rust binary; LGPL Qt + FFmpeg obligations; PyInstaller antivirus false positives).
 
 ### AD-19 — STATUS and controller→app reporting
@@ -419,7 +419,7 @@ stateDiagram-v2
   PLAYING --> IDLE: STOP, HELLO, END, underrun, LATE, link loss, USB event
 ```
 
-Release assets are `ocarina-bot-<ver>-<os>-<arch>.<ext>`, `bridge.uf2` and `controller.uf2`. The app bundles embed the UF2s built in the same workflow run.
+Release assets are `bonooru-<ver>-<os>-<arch>.<ext>`, `bridge.uf2` and `controller.uf2`. The app bundles embed the UF2s built in the same workflow run.
 
 ## Capability → Architecture Map
 

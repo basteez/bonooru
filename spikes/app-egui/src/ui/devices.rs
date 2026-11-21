@@ -18,7 +18,7 @@ impl DevicesTab {
         DevicesTab {
             worker,
             ports: vec![],
-            filter: "Ocarina Bot Bridge".into(),
+            filter: "Bonooru Bridge".into(),
             log: vec![],
             open: None,
             rx_total: 0,

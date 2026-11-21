@@ -102,7 +102,7 @@ The story has three parts. **Part A needs no console** (the dev agent does it; t
 - [x] **Task 9: U1 result into the profile** (AC: #3)
   - [x] 9.1 Compute the candidate by the rule in "U1 trial protocol" (owner decision 1). Edit `app/profiles/oot-switch2-1.1.1.toml`: `max_sustain_ms`, the tag (`ESTIMATE` becomes `MARGIN`: "measured X ms, profile Y ms, margin Z"), and the comment above it (row id, how many attempts, buttons covered, what is not covered). **Also when the value stays 5000**: the tag changes from ESTIMATE to what the data supports, and the comment says the estimate was confirmed. Keep the header's tag legend consistent (ESTIMATE stays defined if another value still uses it; none does after this story, so say so or drop the line only if no value uses it: check with a grep).
   - [x] 9.2 If the new value is 6000 ms or more, the bound in `spikes/test_default_profile.py` (`0 < max_sustain_ms < 6000`, derived from the hand-timed 6 s) must be changed to the measured basis; the test must still guard against a value at or above the measured auto-stop. Run the profile test.
-  - [x] 9.3 Update the places that quote the value: `docs/score-format-and-mapping.md` (the TOML excerpt comment "estimate: U1 hand-timed ~6 s ... deferred to Story 1.6", line about `max_sustain_ms`), `docs/ocarina-input-mechanics.md` row U1 (measured auto-stop time, pointer to the test-plan row), `docs/test-plan.md` row 1.3 (pointer to row 1.10) and the "Story 1.5" paragraph under Spike 2 ("a short U1 test is deferred ..."), and `_bmad-output/specs/spec-ocarina-bot/roadmap.md` row M2 (the sentence "timings are measured except `max_sustain_ms` (estimate) and `start_lead_ms`" becomes "except `start_lead_ms`" once U1 is measured). Do not touch `~/Documents/org/`.
+  - [x] 9.3 Update the places that quote the value: `docs/score-format-and-mapping.md` (the TOML excerpt comment "estimate: U1 hand-timed ~6 s ... deferred to Story 1.6", line about `max_sustain_ms`), `docs/ocarina-input-mechanics.md` row U1 (measured auto-stop time, pointer to the test-plan row), `docs/test-plan.md` row 1.3 (pointer to row 1.10) and the "Story 1.5" paragraph under Spike 2 ("a short U1 test is deferred ..."), and `_bmad-output/specs/spec-bonooru/roadmap.md` row M2 (the sentence "timings are measured except `max_sustain_ms` (estimate) and `start_lead_ms`" becomes "except `start_lead_ms`" once U1 is measured). Do not touch `~/Documents/org/`.
 
 - [x] **Task 10: Melody result into `docs/test-plan.md`** (AC: #2): the table of "Where results go"; the environment of the session; every wrong or missed note; the sentence that this is the 2wiCC queue and the PC host clock, not our firmware scheduler (Epic 2, Epic 7 measure that); a "Lessons" line for anything the analysers got wrong. Set the story to `review` only when every AC is true on recorded data. *(results written 2026-11-21; story status and AC verdicts not set by the recorder)*
 
@@ -230,7 +230,7 @@ Follow-ups (not in this story):
 | `docs/score-format-and-mapping.md` | UPDATE (Part C) | the `max_sustain_ms` comment in the TOML excerpt |
 | `app/profiles/oot-switch2-1.1.1.toml` | UPDATE (Part C) | `max_sustain_ms`, tag, comment; nothing else |
 | `spikes/test_default_profile.py` | UPDATE (Part C, only if the value reaches 6000) | the `< 6000` bound |
-| `_bmad-output/specs/spec-ocarina-bot/roadmap.md` | UPDATE (Part C) | M2 row wording |
+| `_bmad-output/specs/spec-bonooru/roadmap.md` | UPDATE (Part C) | M2 row wording |
 
 Everything else stays untouched, in particular `spikes/send_2wicc.py`, `spikes/app-egui/`, `firmware/`.
 
@@ -376,7 +376,7 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story, Part A only.
 - `app/profiles/oot-switch2-1.1.1.toml` (modified, Part C: `max_sustain_ms`)
 - `spikes/test_default_profile.py` (modified, Part C: sustain bound)
 - `docs/score-format-and-mapping.md`, `docs/ocarina-input-mechanics.md` (modified, Part C: value quotes)
-- `_bmad-output/specs/spec-ocarina-bot/roadmap.md` (modified, Part C: M2 wording)
+- `_bmad-output/specs/spec-bonooru/roadmap.md` (modified, Part C: M2 wording)
 - `docs/test-plan.md` (modified: row 1.10, "Walking skeleton (Story 1.6)" empty tables)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` (modified: 1-6 in-progress)
 

@@ -1,8 +1,8 @@
-# Ocarina Bot: USB controller emulation
+# Bonooru: USB controller emulation
 
 *Converted from the author's org-roam notes on 2026-11-19. This file is now the reference in the repo.*
 
-Topic: Ocarina Bot (author's notes)
+Topic: Bonooru (author's notes)
 
 ## Candidate profiles
 
@@ -102,6 +102,6 @@ Without a licence on 2wiCC, implement from public reverse-engineering docs (e.g.
 
 ## Related
 
-- [Ocarina Bot: Link protocol (PC, bridge, controller)](link-protocol.md)
+- [Bonooru: Link protocol (PC, bridge, controller)](link-protocol.md)
 - [Ocarina of Time (Switch 2): ocarina input mechanics](ocarina-input-mechanics.md)
 - [GP2040-CE](https://github.com/OpenStickCommunity/GP2040-CE), [ProBridge-S2](https://github.com/neur0ner25/ProBridge-S2), [2wiCC](https://github.com/knflrpn/2wiCC)

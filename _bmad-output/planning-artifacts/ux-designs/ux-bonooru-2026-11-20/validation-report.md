@@ -1,7 +1,7 @@
-# Validation Report — ocarina-bot
+# Validation Report — bonooru
 
-- **DESIGN.md:** `_bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/DESIGN.md`
-- **EXPERIENCE.md:** `_bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/EXPERIENCE.md`
+- **DESIGN.md:** `_bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/DESIGN.md`
+- **EXPERIENCE.md:** `_bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/EXPERIENCE.md`
 - **Run at:** 2026-11-20T14:36+01:00
 
 ## Overall verdict

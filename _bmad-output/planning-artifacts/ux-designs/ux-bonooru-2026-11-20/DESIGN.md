@@ -1,5 +1,5 @@
 ---
-name: ocarina-bot
+name: bonooru
 status: final
 updated: 2026-11-20
 description: Desktop app (Rust + egui/eframe) that plays melodies on the ocarina in Ocarina of Time (Switch 2) through two RP2040 boards. Dark warm frame, music on a parchment card, amber glow for selection. Direction "Hybrid". Dark only.
@@ -497,7 +497,7 @@ components:
 
 ## Brand & Style
 
-Ocarina Bot is a personal, playful tool that sits next to a Switch in handheld mode while its owner plays *Ocarina of Time* (Switch 2 remake). The app should feel like a menu from that world at night: warm dark wood around the edges, the music itself laid out on a parchment card, and a soft amber glow on whatever you are about to act on. The posture is **Hybrid**: controls, status and messages stay dark and quiet; the note view is the one bright surface, so the eye goes straight to the music when glancing over from the console.
+Bonooru is a personal, playful tool that sits next to a Switch in handheld mode while its owner plays *Ocarina of Time* (Switch 2 remake). The app should feel like a menu from that world at night: warm dark wood around the edges, the music itself laid out on a parchment card, and a soft amber glow on whatever you are about to act on. The posture is **Hybrid**: controls, status and messages stay dark and quiet; the note view is the one bright surface, so the eye goes straight to the music when glancing over from the console.
 
 The app recalls the remake's mood the way RiiDraw recalls Tomodachi Life. It does not reproduce the game.
 
