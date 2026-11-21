@@ -1,0 +1,88 @@
+# Ode to Joy (theme), Ludwig van Beethoven, Symphony no. 9 in D minor, op. 125, 4th movement.
+# The melody is public domain (Beethoven died in 1827). Theme as first stated by the cellos and basses
+# (bar 92 onwards; public-domain edition: Breitkopf & Haertel, Beethovens Werke, Serie 1 no. 9, 1863,
+# on IMSLP). Transposed from D major to G major with the tonic at G5 (Story 1.6, owner decision 2).
+# Note sequence checked against the G major melody excerpt of the English Wikipedia article
+# "Ode to Joy" (read 2026-11-21). Rhythm: the SIMPLIFIED COMMON ARRANGEMENT (owner decision 6,
+# 2026-11-21): bar 12 is G A D5(half) and the last phrase starts with two B attacks on beats 1 and 2
+# of bar 13. Beethoven's original has a syncopated entry instead (G A D5 quarters, then the B5 on
+# beat 4 of bar 12 tied over the bar line); same notes, same length. Only the notes are taken.
+#
+# SPDX-License-Identifier: MIT (this transcription file; the melody itself is public domain).
+#
+# Format (Story 1.6, read by spikes/gen_trials_1_6.py): one note per line, `<pitch> <beats>`.
+#   <pitch> is the SOUNDING pitch (profile convention: A5 = MIDI 81), name + optional # or b + octave.
+#   <beats> is a decimal number of quarter-note beats (1 = quarter, 0.5 = eighth, 1.5 = dotted quarter).
+#   `R <beats>` is a rest. `#` starts a comment. A tied note is written as one note with the summed beats.
+# 4/4, 16 bars, 64 beats, 62 notes. Range D5 (74) to D6 (86).
+
+# A (bars 1-4): 3 3 4 5 | 5 4 3 2 | 1 1 2 3 | 3. 2 2
+B5 1
+B5 1
+C6 1
+D6 1
+D6 1
+C6 1
+B5 1
+A5 1
+G5 1
+G5 1
+A5 1
+B5 1
+B5 1.5
+A5 0.5
+A5 2
+
+# A' (bars 5-8): 3 3 4 5 | 5 4 3 2 | 1 1 2 3 | 2. 1 1
+B5 1
+B5 1
+C6 1
+D6 1
+D6 1
+C6 1
+B5 1
+A5 1
+G5 1
+G5 1
+A5 1
+B5 1
+A5 1.5
+G5 0.5
+G5 2
+
+# B (bars 9-12): 2 2 3 1 | 2 3/4/ 3 1 | 2 3/4/ 3 2 | 1 2 5,(half)
+A5 1
+A5 1
+B5 1
+G5 1
+A5 1
+B5 0.5
+C6 0.5
+B5 1
+G5 1
+A5 1
+B5 0.5
+C6 0.5
+B5 1
+A5 1
+G5 1
+A5 1
+D5 2
+# (Beethoven's original: D5 1, then B5 2 entering on beat 4, tied over the bar line)
+
+# A' (bars 13-16): 3 3 4 5 | 5 4 3 2 | 1 1 2 3 | 2. 1 1
+B5 1
+B5 1
+C6 1
+D6 1
+D6 1
+C6 1
+B5 1
+A5 1
+G5 1
+G5 1
+A5 1
+B5 1
+A5 1.5
+G5 0.5
+G5 2

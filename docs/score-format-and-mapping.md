@@ -79,7 +79,7 @@ high = 89   # F6
 min_press_frames = 3            # 50 ms: measured 2 frames (U7, test plan 2.1) + 1 frame margin
 min_gap_same_button_frames = 5  # 83.3 ms: owner choice, not a measured limit (U2, test plan 2.2)
 modifier_lead_frames = 1        # 16.7 ms: measured 0 frames (U5, test plan 2.3) + 1 frame margin
-max_sustain_ms = 5000           # estimate: U1 hand-timed ~6 s, no tool; short U1 test deferred to Story 1.6
+max_sustain_ms = 6000           # measured 6500 ms on A (U1, test plan 1.10) - 500 ms margin; L R Y X assumed equal
 start_lead_ms = 500             # design default, not measured
 
 [cost]                     # fingering cost weights, design default (not measured), see above

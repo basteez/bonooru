@@ -13,7 +13,8 @@
 #   MEASURED        value measured on the console; the comment names the test plan row / U-item.
 #   MARGIN          measured limit plus a safety margin: "measured X, profile Y, margin Z".
 #   OWNER CHOICE    value chosen by the owner; it is NOT a measured limit.
-#   ESTIMATE        based on a rough observation (no tool, no error bar); to be confirmed.
+#   ESTIMATE        based on a rough observation (no tool, no error bar); to be confirmed. (No value uses it
+#                   since Story 1.6; kept for future values.)
 #   DESIGN DEFAULT  not measured at all; a starting value for the design, to be tuned later.
 #
 # Caveats:
@@ -80,12 +81,14 @@ min_gap_same_button_frames = 5
 # A 1 to 2 frame lateness is not resolvable by audio, so Story 1.4 asks for at least 1 frame. One value for
 # all four modifiers: all measured 0, no per-type split.
 modifier_lead_frames = 1
-# ESTIMATE: profile 5000 ms. U1 hand-timed with no tool and no error bar: the held note wavers from about
-# 2 s and stops by itself at about 6 s while still held (test plan row 1.3, U1). Margin about 1 s (17 %)
-# below the ~6 s to absorb hand-timing error and possible per-note variation. Notes longer than this are
-# re-pressed after min_gap_same_button_frames (FR-05a). A short U1 test (holds of about 4 to 7 s, microphone
-# onset and offset) is deferred to the owner's Story 1.6 Switch session and may revise this value.
-max_sustain_ms = 5000
+# MARGIN: measured 6500 ms, profile 6000 ms, margin 500 ms (test plan row 1.10, U1; Story 1.6, 2026-11-21).
+# Button A only, microphone onset/offset, 5 tries per hold: 4, 5, 5.5, 6 and 6.5 s held to the release 5/5
+# each (D_ok = 6500 ms); 7 s auto-stopped 3/5 at 6599 to 6832 ms, the 10 s control 5/5 at 6810 to 7157 ms
+# (T_stop = 6599 ms). Rule (Story 1.6 owner decision 1): floor100(min(D_ok, T_stop) - 500 ms) = 6000.
+# L, R, Y, X were NOT measured: assumed equal to A by owner decision (Story 1.6 decision 7). Not covered:
+# other buttons, held modifiers, the wavering (not reported as numbers). Notes longer than this are re-pressed
+# after min_gap_same_button_frames (FR-05a).
+max_sustain_ms = 6000
 # DESIGN DEFAULT (not measured): lead before the first event of a timeline (START lead_us, AD-15; Stories
 # 2.5 / 6.x), carried over from the placeholder in docs/score-format-and-mapping.md. The countdown the user
 # sees is separate.
