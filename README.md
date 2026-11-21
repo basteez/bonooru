@@ -27,8 +27,9 @@ PC (desktop app) ──USB──▶ bridge (RP2040-Zero) ──UART──▶ con
   same tag must agree on the protocol version (FR-10).
 - A release ships: the desktop app for Windows, Linux and macOS, plus `bridge.uf2`
   and `controller.uf2` (the app bundles both UF2s for its built-in flasher).
-- CI (build + test) is added with the first story that produces code; the release
-  workflow lands with milestones M8–M9.
+- Firmware CI (`.github/workflows/firmware.yml`) builds both UF2s with the pinned
+  toolchain and runs the firmware host tests on every push; app CI arrives with the
+  app, and the release workflow lands with milestones M8–M9.
 
 ## Disclaimer
 

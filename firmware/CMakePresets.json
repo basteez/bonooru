@@ -1,0 +1,56 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "fw-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "PICO_BOARD": "waveshare_rp2040_zero",
+        "PICO_TOOLCHAIN_PATH": "$env{OCB_ARM_TOOLCHAIN}",
+        "picotool_DIR": "$env{OCB_PICOTOOL_DIR}/picotool",
+        "FETCHCONTENT_FULLY_DISCONNECTED": "ON"
+      }
+    },
+    {
+      "name": "fw-release",
+      "displayName": "Firmware, release (UF2s for both boards)",
+      "inherits": "fw-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "fw-debug",
+      "displayName": "Firmware, debug (OCB_DEBUG_BUILD=1)",
+      "inherits": "fw-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "OCB_DEBUG_BUILD": "ON"
+      }
+    },
+    {
+      "name": "host-tests",
+      "displayName": "Host tests (native compiler, no pico-sdk)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "OCB_HOST_TESTS": "ON",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "fw-release", "configurePreset": "fw-release" },
+    { "name": "fw-debug", "configurePreset": "fw-debug" },
+    { "name": "host-tests", "configurePreset": "host-tests" }
+  ],
+  "testPresets": [
+    {
+      "name": "host-tests",
+      "configurePreset": "host-tests",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    }
+  ]
+}

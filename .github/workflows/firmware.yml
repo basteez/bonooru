@@ -1,0 +1,131 @@
+# Firmware CI (Story 2.1): pinned toolchain (AD-1), both UF2s, host tests,
+# pin grep (AD-20). Reusable through workflow_call so the later app/release
+# workflow downloads the `firmware-uf2` artifact instead of rebuilding.
+name: firmware
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Literal prefix: under workflow_call, github.workflow is the caller's name,
+  # and sharing the caller's group would deadlock it.
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    name: firmware (build + host tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags are needed for the git describe version (AD-14)
+          submodules: false
+
+      - name: Init pico-sdk and only its lib/tinyusb (AD-1)
+        run: |
+          git submodule update --init --depth 1 firmware/external/pico-sdk
+          git -C firmware/external/pico-sdk submodule update --init --depth 1 lib/tinyusb
+
+      - name: Check submodule pins
+        run: |
+          set -a; . firmware/tools/toolchain.env; set +a
+          sdk="$(git -C firmware/external/pico-sdk rev-parse HEAD)"
+          tusb="$(git -C firmware/external/pico-sdk/lib/tinyusb rev-parse HEAD)"
+          echo "pico-sdk HEAD: ${sdk} (pinned ${PICO_SDK_COMMIT}, tag ${PICO_SDK_TAG})"
+          echo "TinyUSB HEAD:  ${tusb} (pinned ${TINYUSB_COMMIT}, ${TINYUSB_VERSION})"
+          [ "${sdk}" = "${PICO_SDK_COMMIT}" ] || { echo "::error::pico-sdk is not at tag ${PICO_SDK_TAG}"; exit 1; }
+          [ "${tusb}" = "${TINYUSB_COMMIT}" ] || { echo "::error::TinyUSB is not at ${TINYUSB_VERSION}"; exit 1; }
+          # Initialised nested submodules have no leading '-' in `git submodule status`.
+          others="$(git -C firmware/external/pico-sdk submodule status | grep -v '^-' | grep -v ' lib/tinyusb' || true)"
+          if [ -n "${others}" ]; then
+            echo "::error::only lib/tinyusb may be initialised, found: ${others}"
+            exit 1
+          fi
+
+      - name: CMake version (needs >= 3.25)
+        run: |
+          cmake --version
+          ninja --version
+
+      - name: Cache pinned tools
+        uses: actions/cache@v6
+        with:
+          path: firmware/.tools
+          key: fw-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('firmware/tools/toolchain.env', 'firmware/tools/install-tools.sh') }}
+
+      - name: Install pinned tools (verifies SHA256, skips when cached)
+        run: |
+          firmware/tools/install-tools.sh
+          set -a; . firmware/tools/toolchain.env; set +a
+          echo "OCB_ARM_TOOLCHAIN=${GITHUB_WORKSPACE}/firmware/.tools/arm-gnu-toolchain-${ARM_TOOLCHAIN_VERSION}" >> "$GITHUB_ENV"
+          echo "OCB_PICOTOOL_DIR=${GITHUB_WORKSPACE}/firmware/.tools/picotool-${PICOTOOL_VERSION}" >> "$GITHUB_ENV"
+
+      # The prebuilt Linux picotool links libusb-1.0.so.0 dynamically (checked
+      # with readelf in Story 2.1). Install the runtime library only if the
+      # runner image lacks it; picotool is never built from source.
+      - name: picotool runtime dependency (libusb-1.0)
+        run: |
+          if ldconfig -p | grep -q 'libusb-1.0.so.0'; then
+            echo "libusb-1.0.so.0 present on the runner image"
+          else
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libusb-1.0-0
+          fi
+
+      - name: Tool versions
+        run: |
+          "${OCB_ARM_TOOLCHAIN}/bin/arm-none-eabi-gcc" --version
+          "${OCB_PICOTOOL_DIR}/picotool/picotool" version
+
+      - name: Build fw-release
+        working-directory: firmware
+        run: |
+          cmake --preset fw-release
+          cmake --build --preset fw-release
+
+      - name: Build fw-debug (compile gate for the debug-only pin)
+        working-directory: firmware
+        run: |
+          cmake --preset fw-debug
+          cmake --build --preset fw-debug
+
+      - name: Host tests
+        working-directory: firmware
+        run: |
+          cmake --preset host-tests
+          cmake --build --preset host-tests
+          ctest --preset host-tests
+
+      - name: Pin grep (AD-20)
+        run: firmware/tools/check-pins.sh
+
+      - name: Job summary
+        run: |
+          version="$(sed -n 's/^#define OCB_VERSION_STRING "\(.*\)"$/\1/p' firmware/build/fw-release/generated/ocb_version/ocb_version.h)"
+          {
+            echo "## Firmware build"
+            echo
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Firmware version | \`${version}\` |"
+            echo "| pico-sdk | \`$(git -C firmware/external/pico-sdk rev-parse HEAD)\` |"
+            echo "| TinyUSB | \`$(git -C firmware/external/pico-sdk/lib/tinyusb rev-parse HEAD)\` |"
+            echo "| Toolchain | \`$("${OCB_ARM_TOOLCHAIN}/bin/arm-none-eabi-gcc" --version | head -n 1)\` |"
+            echo "| picotool | \`$("${OCB_PICOTOOL_DIR}/picotool/picotool" version | head -n 1)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware-uf2
+          path: |
+            firmware/build/fw-release/bridge/bridge.uf2
+            firmware/build/fw-release/controller/controller.uf2
+          if-no-files-found: error
+          retention-days: 14
