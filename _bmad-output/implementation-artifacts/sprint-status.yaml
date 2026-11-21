@@ -45,7 +45,7 @@ development_status:
   epic-1-retrospective: optional
 
   epic-2: in-progress
-  2-1-firmware-build-skeleton-and-ci: review
+  2-1-firmware-build-skeleton-and-ci: done
   2-2-protocol-library-and-conformance-vectors: backlog
   2-3-controller-enumerates-as-a-wired-pro-controller: backlog
   2-4-controller-core-modes-queue-scheduler-and-safety-mask: backlog

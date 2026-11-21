@@ -4,7 +4,7 @@ baseline_commit: bd6205fc93358645cac6385ad481175b70524586
 
 # Story 2.1: Firmware build skeleton and CI
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -109,10 +109,10 @@ Tasks 1 to 9 are for the dev agent and need no hardware. **Task 10 needs the own
   - [x] 9.3 In `firmware/README.md`, a "Local build" section that works on macOS arm64 and Linux x86_64 from a fresh clone: `firmware/tools/install-tools.sh`, `export OCB_ARM_TOOLCHAIN=... OCB_PICOTOOL_DIR=...` (as printed), the two submodule commands, `cmake --preset fw-release && cmake --build --preset fw-release`, `cmake --preset host-tests && cmake --build --preset host-tests && ctest --preset host-tests`, `firmware/tools/check-pins.sh`. Say how to flash by hand (hold BOOT, plug, copy the UF2 to `RPI-RP2`), and that Homebrew's `picotool` 2.3.1 is an acceptable local alternative to the downloaded one but Homebrew's toolchain is not (cask is 15.3.rel2, not the pin; the CMake guard rejects it).
   - [x] 9.4 `docs/test-plan.md`: in "Firmware host tests" add row `F.0` (skeleton smoke: `pins.h` allow-list, version macros, pin grep self-test; pass = `ctest --no-tests=error` green; Related AD-1, AD-14, AD-20); in "Hardware-in-the-loop checks (M3/M4)" add row `H.0` "Skeleton LED check (Story 2.1): flash `bridge.uf2`, then `controller.uf2`, on a Zero each" with the pass criterion "bridge: blue, 1 Hz; controller: amber, 2 Hz; the two are told apart at a glance; LED not dazzling at arm's length; nothing else on the board changes (no other pin)" and an **empty Result cell**. Do not fill the Result cell: Task 10 is the owner's. Leave every other row and table alone.
 
-- [ ] **Task 10: Manual board check: flash both UF2s, confirm LED colour/rhythm** (AC: #2, test plan row H.0) **[owner at the bench; unchecked until verified on hardware]**
-  - [ ] 10.1 Download the `firmware-uf2` artifact of the green CI run (or use the local build), flash `bridge.uf2` on one Zero and `controller.uf2` on the other (BOOT held while plugging, copy to `RPI-RP2`), with the GND-continuity and "rewire only unplugged" rules of `docs/test-plan.md` "Hardware safety" in mind (the boards are flashed on the PC, not wired, so the rules matter only if they are on the breadboard).
-  - [ ] 10.2 Confirm the LED colour and rhythm for each board (blue 1 Hz vs amber 2 Hz, or whatever the owner tuned), that the two are easy to tell apart, and that the brightness is comfortable. Record the result, the environment (host OS, board, firmware version from `picotool info` or the CI summary) in the `H.0` Result cell. If the colour order is swapped (some Zero clones use RGB, not GRB), fix the order constant in `led.c`, rebuild, re-check, and note it in Decision D5.
-  - [ ] 10.3 Only the owner ticks this task and the Result cell. The dev agent leaves both empty and the story stays in `review` until then.
+- [x] **Task 10: Manual board check: flash both UF2s, confirm LED colour/rhythm** (AC: #2, test plan row H.0) **[owner at the bench; unchecked until verified on hardware]**
+  - [x] 10.1 Download the `firmware-uf2` artifact of the green CI run (or use the local build), flash `bridge.uf2` on one Zero and `controller.uf2` on the other (BOOT held while plugging, copy to `RPI-RP2`), with the GND-continuity and "rewire only unplugged" rules of `docs/test-plan.md` "Hardware safety" in mind (the boards are flashed on the PC, not wired, so the rules matter only if they are on the breadboard).
+  - [x] 10.2 Confirm the LED colour and rhythm for each board (blue 1 Hz vs amber 2 Hz, or whatever the owner tuned), that the two are easy to tell apart, and that the brightness is comfortable. Record the result, the environment (host OS, board, firmware version from `picotool info` or the CI summary) in the `H.0` Result cell. If the colour order is swapped (some Zero clones use RGB, not GRB), fix the order constant in `led.c`, rebuild, re-check, and note it in Decision D5.
+  - [x] 10.3 Only the owner ticks this task and the Result cell. The dev agent leaves both empty and the story stays in `review` until then.
 
 ## Dev Notes
 
@@ -327,7 +327,8 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story, 2026-11-21.
 - **CI is unverified until the owner pushes**: the workflow has never run. First-run points to watch: the libusb step (expected to find the library on the image), the cache, and the `firmware-uf2` artifact.
 - Local reproduction of every CI step (repo root, macOS arm64 or Linux x86_64): `firmware/tools/install-tools.sh`; export the two printed variables; `git submodule update --init --depth 1 firmware/external/pico-sdk`; `git -C firmware/external/pico-sdk submodule update --init --depth 1 lib/tinyusb`; `cd firmware && cmake --preset fw-release && cmake --build --preset fw-release && cmake --preset fw-debug && cmake --build --preset fw-debug && cmake --preset host-tests && cmake --build --preset host-tests && ctest --preset host-tests && cd .. && firmware/tools/check-pins.sh`.
 - Firmware version today is `0.0.0-dev` (no `v*` tag in the repo), as expected.
-- **Task 10 and the `H.0` Result cell are the owner's** (flash both UF2s, confirm colour and rhythm). The LED colours/rhythm are not confirmed by the dev agent; the story stays in `review` until then.
+- **Task 10 and the `H.0` Result cell are the owner's** (flash both UF2s, confirm colour and rhythm). The LED colours/rhythm are not confirmed by the dev agent.
+- **Task 10 done (owner, 2026-11-21): PASS.** Flashed via BOOTSEL + copy to `RPI-RP2` with the boards off the breadboard; UF2s from CI artifact `firmware-uf2`, run 44946942547, commit 25aa066 (the follow-up commit 588d76e changed only comments). Bridge: blue, ~1 Hz. Controller: amber, ~2 Hz (about 20 on-flashes in 10 s). Note: amber at ~6% brightness can look whitish when viewed head-on; it reads clearly yellow-orange off-axis or through white paper. Possible future tuning, not a defect.
 - Not committed (coordinator's job). The submodule gitlink and `.gitmodules` were staged by `git submodule add` (gitlink re-staged at the tag commit); nothing else staged.
 
 ### File List
@@ -356,3 +357,4 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story, 2026-11-21.
 - 2026-11-21: story created (ready-for-dev). Decisions D1 to D9 recorded; versions, URLs and checksums verified against upstream (all pinned versions exist). Task 10 (manual board check) reserved for the owner.
 - 2026-11-21: Tasks 1 to 9 implemented (dev agent); local builds, host tests and pin grep green; CI unverified until pushed; D4 (GP15) confirmed against the NuttX board pad table; status → review. Task 10 (owner, bench) open.
 - 2026-11-21: Addressed code review findings - 2 items resolved (concurrency group under workflow_call; bench-tuning comment wording).
+- 2026-11-21: Task 10 done (owner, bench): bridge blue ~1 Hz, controller amber ~2 Hz, PASS; `H.0` Result filled; status → done.
