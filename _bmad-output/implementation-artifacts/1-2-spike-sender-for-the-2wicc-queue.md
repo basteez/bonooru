@@ -227,7 +227,7 @@ Recent work: `0e756d5` applied Spike 1 findings to the planning docs, `09168b1` 
 - [Source: `docs/usb-controller-emulation.md`#Candidate profiles (P2 and 2wiCC), #P1: HID report (canonical state)]
 - [Source: `docs/link-protocol.md`#Why 460800 baud (hypothesis, "proven by 2wiCC"), #Framing (2wiCC is the ASCII-line reference)]
 - [Source: `docs/ocarina-input-mechanics.md`#Note buttons, #Pitch modifiers, #Fingering chart, #Unknowns U1 U3 U4 U6 U11]
-- [Source: `_bmad-output/planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/ARCHITECTURE-SPINE.md`#AD-9, #AD-10, Q5 (licence MIT)]
+- [Source: `_bmad-output/planning-artifacts/architecture/architecture-bonooru-2026-11-19/ARCHITECTURE-SPINE.md`#AD-9, #AD-10, Q5 (licence MIT)]
 - External, read only: https://github.com/knflrpn/2wiCC, https://github.com/knflrpn/2wiCC_Comms, https://github.com/knflrpn/GLaMS2, dekuNukem Nintendo_Switch_Reverse_Engineering (Pro Controller stick format)
 
 ## Dev Agent Record

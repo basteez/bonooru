@@ -11,7 +11,7 @@ Short refs used below: **TD** = `xoaninc/TomodachiDrawer-V2` (fork of `Lucas7yos
 | UI stack | Avalonia (C#/.NET) desktop, one window (`TomodachiDrawer.V2/MainWindow.axaml`) | Electron wrapping a local web UI (`apps/desktop/src/web/static/index.html`, `app.js`, `i18n.js` zh/en) |
 | Board | RP2040 / RP2350 / ESP32-S3, **USB wired** to Switch | ESP32-WROOM-32, **Bluetooth Classic** to Switch, USB serial to PC |
 | Execution model | **Offline**: the drawing is flashed onto the board, the board is unplugged from the PC and plugged into the Switch, and it replays on its own. The PC has no live link. | **Live**: the PC streams commands over serial with ACKs while drawing, so it can pause, resume and show progress. |
-| Closest to ocarina-bot | Setup and flashing copy, in-game preconditions | Live connection status, pause/stop/resume, readiness gating. **This is the closer analogue** to our bridge+controller live link. |
+| Closest to bonooru | Setup and flashing copy, in-game preconditions | Live connection status, pause/stop/resume, readiness gating. **This is the closer analogue** to our bridge+controller live link. |
 
 ## 1. TomodachiDrawer V2
 
@@ -40,7 +40,7 @@ Short refs used below: **TD** = `xoaninc/TomodachiDrawer-V2` (fork of `Lucas7yos
 
 ### Virtual gamepad / manual control
 - `TomodachiDrawer.DebugTools/UI/VirtualGamepadControllerWindow.axaml` is a full on-screen pad (ZL/L/ZR/R, sticks, D-pad, ABXY). It lives in the **debug tools** project and is used to drive the simulator, not the real console.
-- `Docs/POST_0.5.0_IDEAS.md` lists RiiDraw's "**Virtual on-screen gamepad** — manual nudging during setup, without unplugging the board" as a real gap. The same doc credits RiiDraw (closed source, **two RP2040 boards**, one facing the PC and one emulating the Pro Controller, like ocarina-bot) with "automatic cursor calibration".
+- `Docs/POST_0.5.0_IDEAS.md` lists RiiDraw's "**Virtual on-screen gamepad** — manual nudging during setup, without unplugging the board" as a real gap. The same doc credits RiiDraw (closed source, **two RP2040 boards**, one facing the PC and one emulating the Pro Controller, like bonooru) with "automatic cursor calibration".
 
 ### Unknown in-game state
 - The app assumes the start state and documents it as a **precondition checklist**. Help → "In-Game Setup Info": "Navigate to the palette house / Ensure you are on the "advanced" drawing UI / top colour … Black / cursor to the TOP LEFT / … zoomed out" (`.axaml.cs:1783-1794`). The rationale is explained: "If the canvas is zoomed in, it will cause the cursor to desync…".
@@ -107,7 +107,7 @@ Calm, explanatory, and bilingual (a zh/en toggle via i18next). Expectations are 
 - Long runs without resume are the most-complained-about cost (TD). FM's resume point is its strongest UX feature.
 - Status text works best when it **names the fix**: TD's "ESP32 not found — hold BOOT, tap RESET, release BOOT", and FM's connection-timeout message.
 
-## Transferable to ocarina-bot (candidates, not decisions)
+## Transferable to bonooru (candidates, not decisions)
 Context: Rust + egui desktop app, two RP2040 boards (bridge on the PC side, controller on the Switch side, like RiiDraw), live link, playing melodies in OoT free play. Game state cannot be detected. No cursor calibration.
 
 1. **Pre-play confirm checklist, short and specific.** This adapts FM's modal: "Link has the ocarina out (free-play), controller not touched from now on". It could be a checklist modal or an inline checkbox the first time, then an optional "don't ask again". The steps could be restated in one line next to the Play button.

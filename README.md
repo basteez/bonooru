@@ -1,4 +1,4 @@
-# Ocarina Bot
+# Bonooru
 
 Plays arbitrary melodies (MIDI or hand-written scores) on Link's ocarina in
 *The Legend of Zelda: Ocarina of Time* (Switch 2) by emulating a wired controller.
@@ -35,4 +35,3 @@ PC (desktop app) ──USB──▶ bridge (RP2040-Zero) ──UART──▶ con
 This is an unofficial fan project for personal, offline fun. It is not affiliated with,
 endorsed or sponsored by Nintendo. *The Legend of Zelda* and *Nintendo Switch* are
 trademarks of Nintendo. No game code, assets or console modifications are involved.
-"ocarina-bot" is a working name.

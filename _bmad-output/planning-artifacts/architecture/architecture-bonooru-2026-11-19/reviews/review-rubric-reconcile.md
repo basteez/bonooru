@@ -180,7 +180,7 @@ Divergence points that are still open:
 13. The P1 button order becomes the **canonical link state** for every profile (AD-10). Add a note.
 14. The profile interface (AD-12), `INFO.profile` ids, and the debug-build EVENT logging of subcommands.
 
-**`_bmad-output/specs/spec-ocarina-bot/`**
+**`_bmad-output/specs/spec-bonooru/`**
 15. **SPEC Constraints and ADR-005 / architecture.md Stack:** "App: Python 3.12+, PyInstaller" becomes conditional, per AD-18. **ADR-008** must be rewritten: the options are now Rust+egui or PySide6. CustomTkinter, the fallback recorded in decisions.md and the SPEC Open Questions, is dropped without a record.
 16. **NFR-07** needs amending whichever option wins (MPL-2.0 or LGPL). Today the spec says "possible LGPL relaxation" only.
 17. **architecture.md:** "Core 0: TinyUSB…; core 1: UART + scheduler — to decide in implementation" is now decided (AD-11). "Bridge stays a dumb byte pipe" needs the store-and-forward and heartbeat nuance. The SPEC's Open Question on the core split should be closed.

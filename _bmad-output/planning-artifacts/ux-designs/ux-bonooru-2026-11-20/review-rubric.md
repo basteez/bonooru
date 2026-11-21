@@ -1,4 +1,4 @@
-# Spine Pair Review — ocarina-bot
+# Spine Pair Review — bonooru
 
 Reviewed: `DESIGN.md` (542 lines) + `EXPERIENCE.md` (391 lines), against the bmad-ux examples (Quill mobile, Drift shadcn, editorial) and the 11 `sources` in EXPERIENCE.md frontmatter. `.memlog.md` treated as canonical. The prior self-check (`.working/finalize-gaps.md`) was re-verified, not copied: its token, contrast and conflict-resolution claims hold; this review adds findings it missed (countdown contrast, import-failure states, Windows wizard step 1, focus-ring spec, red-usage contradiction, glossary drift).
 

@@ -1,12 +1,12 @@
-# Ocarina Bot: Link protocol (PC, bridge, controller)
+# Bonooru: Link protocol (PC, bridge, controller)
 
 *Converted from the author's org-roam notes on 2026-11-19. This file is now the reference in the repo.*
 
 > In this repo the host app lives in `app/`.
 
-> **Precedence.** The ADs in the architecture spine (`_bmad-output/planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/ARCHITECTURE-SPINE.md`, AD-3 to AD-8 and AD-19) and the conformance vectors in `firmware/common/proto/vectors/` take precedence over this doc. A wire change edits the vectors first (AD-14).
+> **Precedence.** The ADs in the architecture spine (`_bmad-output/planning-artifacts/architecture/architecture-bonooru-2026-11-19/ARCHITECTURE-SPINE.md`, AD-3 to AD-8 and AD-19) and the conformance vectors in `firmware/common/proto/vectors/` take precedence over this doc. A wire change edits the vectors first (AD-14).
 
-Topic: Ocarina Bot (author's notes)
+Topic: Bonooru (author's notes)
 
 ## Layers
 
@@ -22,7 +22,7 @@ So **one** protocol, end to end, between host app and controller board (plus the
 - UART → PC, **best effort**: copies bytes as they come, drops (and counts) them when the CDC IN FIFO is full
 - never blocks on any code path
 - ignores the baud rate the PC sets, **except** 1200 baud = reboot into BOOTSEL (convention used by pico-sdk/Arduino)
-- exposes a unique USB product string (`Ocarina Bot Bridge`) + serial number, so the host finds it without asking
+- exposes a unique USB product string (`Bonooru Bridge`) + serial number, so the host finds it without asking
 
 ### Why 460800 baud **[HYPOTHESIS — unverified]**
 
@@ -186,6 +186,6 @@ Handled by CRC + NAK/resend; keep wires short, shared GND mandatory.
 
 ## Related
 
-- Ocarina Bot: Architecture (author's notes)
-- Ocarina Bot ADR-003: Timing scheduled on the controller board (author's notes)
+- Bonooru: Architecture (author's notes)
+- Bonooru ADR-003: Timing scheduled on the controller board (author's notes)
 - [2wiCC protocol](https://github.com/knflrpn/2wiCC) (ASCII, frame-based queue, 460800 8N1): reference only

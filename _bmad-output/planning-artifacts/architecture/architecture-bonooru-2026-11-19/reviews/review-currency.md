@@ -69,7 +69,7 @@ All of these match the latest stable release on 2026-11-19.
 
 ### F1 (substantive, AD-13 + app-stack "Serial + discovery"): matching by product string does not work on Windows with either library
 
-- **serialport 4.10.1, Windows:** `info.product = self.property(SPDRP_FRIENDLYNAME)` (`src/windows/enumerate.rs`). For a CDC-ACM device bound to the inbox `usbser.sys`, that value is "USB Serial Device (COMn)", not the iProduct string `Ocarina Bot Bridge`. macOS (IOKit "USB Product Name") and Linux (udev `ID_MODEL`) do return iProduct.
+- **serialport 4.10.1, Windows:** `info.product = self.property(SPDRP_FRIENDLYNAME)` (`src/windows/enumerate.rs`). For a CDC-ACM device bound to the inbox `usbser.sys`, that value is "USB Serial Device (COMn)", not the iProduct string `Bonooru Bridge`. macOS (IOKit "USB Product Name") and Linux (udev `ID_MODEL`) do return iProduct.
 - **pyserial 3.5, Windows:** `list_ports_windows.py` sets `description = FriendlyName` and never sets `product`.
 - **Effect:** on Windows the "product string first" rule always falls through to VID:PID. That is exactly the per-OS heuristic split AD-13 says it prevents.
 - **Fix:** make the primary key VID:PID **plus** a unique PID or `serial_number`. Both libraries parse the serial number from the parent instance ID on Windows. Alternatively, read `DEVPKEY_Device_BusReportedDeviceDesc` in the Windows adapter. Update both AD-13 and the app-stack row ("`available_ports()` gives VID/PID/product/serial" holds only on macOS and Linux).

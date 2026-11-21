@@ -1,4 +1,4 @@
-# Adversarial review: ARCHITECTURE-SPINE.md (ocarina-bot, 2026-11-19)
+# Adversarial review: ARCHITECTURE-SPINE.md (bonooru, 2026-11-19)
 
 Reviewer lens: for each hole, two units one level down each follow every AD to the letter and still build incompatibly, or build something unsafe. Sources: `ARCHITECTURE-SPINE.md`, `app-stack-options.md`, `docs/link-protocol.md`, `docs/usb-controller-emulation.md`.
 

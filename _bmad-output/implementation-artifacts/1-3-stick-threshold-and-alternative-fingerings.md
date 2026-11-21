@@ -88,7 +88,7 @@ Order matters. **Part A (tasks 1 to 4) needs no Switch and no hardware.** **Part
   - [x] 6.2 `docs/ocarina-input-mechanics.md`: U6 answer, a new full fingering table (all 45), and **remove or resolve every HYPOTHESIS marker on pitches and modifiers**.
   - [x] 6.3 `docs/test-plan.md` "Spike 1: ocarina mapping" -> "Done when: the mapping profile has no HYPOTHESIS markers left for pitches and modifiers": add a one-line pointer that this is met by Story 1.3 (only when it is true).
   - [x] 6.4 `spikes/README.md` OQ-2 row: replace `[UNVERIFIED]` for Y 0x200 and the 8-bit scaling with the measured result.
-  - [x] 6.5 Close UX Open Question 2 for the chart data: `_bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/EXPERIENCE.md` Open Questions, add "resolved by Story 1.3 (chart data); copy/screenshot check stays with Epic 11 (OQ-2 in `epics.md`)". **Approved by the owner**; do it once the results are recorded. `epics.md` stays unchanged.
+  - [x] 6.5 Close UX Open Question 2 for the chart data: `_bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/EXPERIENCE.md` Open Questions, add "resolved by Story 1.3 (chart data); copy/screenshot check stays with Epic 11 (OQ-2 in `epics.md`)". **Approved by the owner**; do it once the results are recorded. `epics.md` stays unchanged.
 
 - [x] **Task 7: Follow-up round if needed** (AC: #1)
   - [x] 7.1 If the smallest passing value lies between two AC values (for example 0x40 fails and 0x20 passes) or the pitch depends on how far the stick is pushed, regenerate with finer values (`gen_trials_1_3.py --ly 0x38,0x30,...`, `--sweep-step 0x08`, or the raw file of 1.6), run it, record it. If the pitch is graded by deflection (not a step), record Hz against deflection and tell Story 1.5, because `stick_value` then matters beyond a threshold.
@@ -250,7 +250,7 @@ All resolved by the owner on 2026-11-20:
 - [Source: `docs/test-plan.md`#Hardware safety, #Spike 1: ocarina mapping (row 1.6), #Spike 1 results, #Spike sender check (Story 1.2)]
 - [Source: `docs/ocarina-input-mechanics.md`#Pitch modifiers, #Fingering chart, #Unknowns U1 to U11 (U6 open)]
 - [Source: `docs/score-format-and-mapping.md`#Mapping profile] the TOML shape Story 1.5 fills
-- [Source: `_bmad-output/planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/ARCHITECTURE-SPINE.md`#AD-9, #AD-10]
+- [Source: `_bmad-output/planning-artifacts/architecture/architecture-bonooru-2026-11-19/ARCHITECTURE-SPINE.md`#AD-9, #AD-10]
 - External, read only: https://github.com/jiaqhuan/zelda-ocarina-switch2 (`docs/technical-analysis.md`)
 
 ## Dev Agent Record
@@ -330,7 +330,7 @@ Before each file: free play open (D-pad left on the real controller), prompt dis
 - `.gitignore` (modified: `spikes/recordings/`)
 - `docs/test-plan.md` (modified: Story 1.3 field trials, rows 1.6 and 1.9)
 - `docs/ocarina-input-mechanics.md` (modified: U6, tuning, 45 fingerings, HYPOTHESIS cleanup)
-- `_bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/EXPERIENCE.md` (modified: Open Question 2 closed for chart data)
+- `_bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/EXPERIENCE.md` (modified: Open Question 2 closed for chart data)
 - `spikes/send_2wicc.py` (modified: row labels, `--announce`)
 - `spikes/test_send_2wicc.py` (modified: 7 tests for labels and `--announce`)
 - `spikes/README.md` (modified)

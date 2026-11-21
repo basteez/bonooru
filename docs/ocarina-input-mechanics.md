@@ -2,7 +2,7 @@
 
 *Converted from the author's org-roam notes on 2026-11-19. This file is now the reference in the repo.*
 
-Topic: Ocarina Bot (author's notes)
+Topic: Bonooru (author's notes)
 
 *The Legend of Zelda: Ocarina of Time* remake, Switch 2 exclusive, released 2026-11-05. Collected from community sources, then checked by hand in game on 2026-11-20 (Story 1.1; Switch 2 system 23.5.0, OoT 1.1.1, Joy-Con 2, phone tuner). Stick deflection (U6) and all 45 button × modifier combinations measured on 2026-11-20 (Story 1.3; 2wiCC spike sender, pitch from the MacBook microphone with `spikes/listen_trial.py`, cross-checked with a phone tuner). Measured data: [Test plan](test-plan.md), "Spike 1 results" and "Story 1.3 field trials".
 
@@ -123,4 +123,4 @@ Mitigation: mapping lives in a profile file, never in code.
 
 ## Related
 
-- [Ocarina Bot: USB controller emulation](usb-controller-emulation.md)
+- [Bonooru: USB controller emulation](usb-controller-emulation.md)

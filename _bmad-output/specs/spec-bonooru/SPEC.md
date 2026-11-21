@@ -1,5 +1,5 @@
 ---
-id: SPEC-ocarina-bot
+id: SPEC-bonooru
 companions:
   - requirements.md
   - roadmap.md
@@ -7,10 +7,10 @@ companions:
   - architecture.md
   - architecture-diagrams.md
   - risk-register.md
-  - ../../planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/ARCHITECTURE-SPINE.md
-  - ../../planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/app-stack-options.md
-  - ../../planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/DESIGN.md
-  - ../../planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/EXPERIENCE.md
+  - ../../planning-artifacts/architecture/architecture-bonooru-2026-11-19/ARCHITECTURE-SPINE.md
+  - ../../planning-artifacts/architecture/architecture-bonooru-2026-11-19/app-stack-options.md
+  - ../../planning-artifacts/ux-designs/ux-bonooru-2026-11-20/DESIGN.md
+  - ../../planning-artifacts/ux-designs/ux-bonooru-2026-11-20/EXPERIENCE.md
   - ../../../docs/link-protocol.md
   - ../../../docs/usb-controller-emulation.md
   - ../../../docs/ocarina-input-mechanics.md
@@ -39,7 +39,7 @@ sources:
 
 > **Canonical contract.** This SPEC and the files in `companions:` are the complete, preservation-validated contract for what to build, test, and validate. Source documents listed in frontmatter are for traceability — consult them only if you need narrative rationale or prose color this contract intentionally omits.
 
-# Ocarina Bot
+# Bonooru
 
 ## Why
 

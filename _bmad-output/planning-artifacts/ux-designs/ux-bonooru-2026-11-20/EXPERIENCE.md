@@ -1,14 +1,14 @@
 ---
-name: ocarina-bot
+name: bonooru
 status: final
 updated: 2026-11-20
 sources:
-  - _bmad-output/specs/spec-ocarina-bot/SPEC.md
-  - _bmad-output/specs/spec-ocarina-bot/requirements.md
-  - _bmad-output/specs/spec-ocarina-bot/decisions.md
-  - _bmad-output/specs/spec-ocarina-bot/architecture-diagrams.md
-  - _bmad-output/specs/spec-ocarina-bot/risk-register.md
-  - _bmad-output/planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/ARCHITECTURE-SPINE.md
+  - _bmad-output/specs/spec-bonooru/SPEC.md
+  - _bmad-output/specs/spec-bonooru/requirements.md
+  - _bmad-output/specs/spec-bonooru/decisions.md
+  - _bmad-output/specs/spec-bonooru/architecture-diagrams.md
+  - _bmad-output/specs/spec-bonooru/risk-register.md
+  - _bmad-output/planning-artifacts/architecture/architecture-bonooru-2026-11-19/ARCHITECTURE-SPINE.md
   - docs/link-protocol.md
   - docs/usb-controller-emulation.md
   - docs/score-format-and-mapping.md
@@ -16,7 +16,7 @@ sources:
   - docs/test-plan.md
 ---
 
-# Ocarina Bot — Experience Spine
+# Bonooru — Experience Spine
 
 Decisions come from `.memlog.md` (canonical). Anything not backed by the memlog or a source is tagged **[ASSUMPTION]**.
 
@@ -65,7 +65,7 @@ Reading order left to right: song → notes → gamepad → play.
 | # | Step | Done when |
 |---|---|---|
 | 0 | Welcome (short; not a numbered step) | user continues |
-| 1 | Flash the bridge (board 1: hold BOOT, plug into PC) | the RPI-RP2 drive vanishes and a new `2E8A:000A` serial port appears; the product string "Ocarina Bot Bridge" is checked where the OS supplies it (not on Windows). Full confirmation comes with INFO at step 4. |
+| 1 | Flash the bridge (board 1: hold BOOT, plug into PC) | the RPI-RP2 drive vanishes and a new `2E8A:000A` serial port appears; the product string "Bonooru Bridge" is checked where the OS supplies it (not on Windows). Full confirmation comes with INFO at step 4. |
 | 2 | Flash the controller (board 2, on the PC) | drive vanished after copy (verification completes at step 4/6) |
 | 3 | Wire the two boards (wiring diagram + photo + wiring rules 1–4) | user confirms with Next |
 | 4 | Plug the bridge into the PC and the controller into the Switch | PC↔Bridge LED ok; INFO received (Bridge↔Controller ok) |
@@ -112,7 +112,7 @@ Brand posture lives in `DESIGN.md` › Brand & Style. Rules:
 | LED unknown | label only: "Switch" (no detail text) | mock (approved) |
 | LED warning | "Switch – not ready" (tooltip: "Turn on Pro Controller Wired Communication, wake the Switch, check the cable.") | memlog label / draft tooltip |
 | LED error | "Controller – not answering" (tooltip: "Check the three wires between the boards and that the controller is plugged into the Switch.") | draft |
-| Foreign board | "Found a “RiiDraw” board – not an Ocarina Bot bridge." [Set up…] | memlog [ASSUMPTION] |
+| Foreign board | "Found a “RiiDraw” board – not an Bonooru bridge." [Set up…] | memlog [ASSUMPTION] |
 | Flash: no drive | "No RPI-RP2 drive appeared. Unplug the board, hold BOOT, plug it back in." [Retry] | memlog |
 | Flash: two drives | "Two boards are in BOOT mode. Unplug one, then Retry." | draft |
 | Flash: wrong board | "This drive isn't an RP2040 board. Use an RP2040-Zero." | draft |
@@ -201,7 +201,7 @@ Behavioural rules. Visual specs live in `DESIGN.md` › Components.
 | Unsigned app first run | Outside the app | OS gatekeeper | Handled by the README (macOS Open Anyway; Windows SmartScreen More info › Run anyway). The app shows nothing [ASSUMPTION per memlog]. |
 | Cold launch, bridge present | Main | VID:PID + product string, then INFO | LEDs start `unknown` (hollow ring), resolve within ~1 s. Last song reopened. |
 | Bridge not found | Main | no VID:PID match | PC↔Bridge `error` "Bridge – not found"; other two `unknown`. Inline hint in the gamepad panel area [ASSUMPTION placement]: "Plug the bridge into your PC." + "Set up / Reflash…". Song features stay usable (offline preview). Play disabled (gating). |
-| Foreign Pico / RiiDraw | Main / Wizard | VID:PID match, product string ≠ "Ocarina Bot Bridge" | PC↔Bridge `warning`; message names the board when the OS gives a product string, with "Set up…". Never touched over serial; flashing only via BOOT + plug [ASSUMPTION per memlog]. |
+| Foreign Pico / RiiDraw | Main / Wizard | VID:PID match, product string ≠ "Bonooru Bridge" | PC↔Bridge `warning`; message names the board when the OS gives a product string, with "Set up…". Never touched over serial; flashing only via BOOT + plug [ASSUMPTION per memlog]. |
 | Windows, no product string | Wizard | `serialport` gives no string | Step 1 completes on drive-vanish + new port (IA table). A reflash that needs a 1200-baud touch shows the port pick list first (AD-13). Main screen never asks. |
 | Bridge only, no controller | Main | port open, HELLO unanswered, no STATUS | PC↔Bridge `ok` but without version ("Bridge – found") [ASSUMPTION: version needs INFO]; Bridge↔Controller `error` "Controller – not answering"; Switch `unknown`. Wizard offers to reflash the bridge (AD-13). |
 | Controller not ready | Main | STATUS `console_ready` = 0, or NAK NOT_READY | Switch `warning` "Switch – not ready"; tooltip lists fixes (Wired Communication, wake, cable). Gamepad clicks are ignored with an inline hint [ASSUMPTION]. Play disabled. |
@@ -399,7 +399,7 @@ What the UI can know, and when. Sources: `docs/link-protocol.md`, ARCHITECTURE-S
 
 | Signal | Arrives when | UI consequence |
 |---|---|---|
-| USB enumeration (VID:PID `2E8A:000A`, product string) | any time; port rescan every 1 s [ASSUMPTION interval] | PC↔Bridge: none → `error`; foreign product string → `warning`; "Ocarina Bot Bridge" → `ok` (no version yet). |
+| USB enumeration (VID:PID `2E8A:000A`, product string) | any time; port rescan every 1 s [ASSUMPTION interval] | PC↔Bridge: none → `error`; foreign product string → `warning`; "Bonooru Bridge" → `ok` (no version yet). |
 | `INFO` (answer to HELLO, sent every 100 ms) | only when a controller is wired and powered | Confirms the full bridge+controller path. Gives `proto_ver` (mismatch → required update), `fw_ver`, `bridge_ver` (≠ app → recommended update; fills LED labels), `queue_cap`, `app_timeout_ms`, `report_period_us`. Bridge↔Controller → `ok`. |
 | No INFO / no STATUS | bridge alone | Bridge↔Controller `error`, Switch `unknown`; bridge version unknown. |
 | `STATUS.flags.link_ok` | every 50 ms | 0 → Bridge↔Controller `error`; during countdown → cancel. |
@@ -443,7 +443,7 @@ Edits to source documents that this UX implies. Not applied by this pass. Plan: 
 
 | Document | Location | Edit |
 |---|---|---|
-| `_bmad-output/specs/spec-ocarina-bot/decisions.md` | ADR-002, line "the GUI setup wizard shows this step with a screenshot" | Replace "with a screenshot" with "with an original illustration and the exact menu path (System Settings › Controllers & Accessories › Pro Controller Wired Communication › On); no console screenshots in the app or README". |
+| `_bmad-output/specs/spec-bonooru/decisions.md` | ADR-002, line "the GUI setup wizard shows this step with a screenshot" | Replace "with a screenshot" with "with an original illustration and the exact menu path (System Settings › Controllers & Accessories › Pro Controller Wired Communication › On); no console screenshots in the app or README". |
 | `ARCHITECTURE-SPINE.md` | Conventions › UI safety content (the "Pro Controller Wired Communication" step) | Add "shown as an original illustration + menu path, never a console screenshot". |
 | `SPEC.md` / `requirements.md` (FR-01, FR-02, FR-04, FR-12) and epics | Scope | Add: in-app text editor (split view, live note view, inline errors); piano-roll note drawing (add/move/resize/delete, written back to the score); `.mid` → text score conversion on first edit; per-note out-of-range edits (octave move, delete); app-level undo/redo. Also note: Staff view, full gamepad set, Play gated on three LEDs. |
 | `ARCHITECTURE-SPINE.md` | Build / platform (AD-18 or build conventions) | Linux build: eframe without the `wayland` feature (X11/XWayland) so file drag-and-drop works with winit 0.30; add `rfd` for file dialogs and `egui_extras` image loaders for the wiring photo. |

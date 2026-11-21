@@ -1,4 +1,4 @@
-# Spike report: Ocarina Bot app in Rust + egui (ADR-008)
+# Spike report: Bonooru app in Rust + egui (ADR-008)
 
 Date: 2026-11-19. Machine: macOS (Darwin 27.2), Apple Silicon, 120 Hz display. Toolchain: Rust 1.100.0.
 Crates: eframe/egui 0.37.0 (wgpu backend), serialport 4.10.1, rodio 0.23.0 (playback only), sysinfo 0.40.4 (disk only), midly 0.5.3, crossbeam-channel 0.5.17.

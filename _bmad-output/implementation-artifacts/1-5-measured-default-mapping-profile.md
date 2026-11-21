@@ -61,7 +61,7 @@ No Switch is needed for any task: the profile is written from values already mea
   - [x] 5.4 `docs/usb-controller-emulation.md` line 85 ("The game samples input once per frame at 60 fps"): split as described in "HYPOTHESIS markers: what can go". Leave every other marker.
   - [x] 5.5 `app/README.md`: one line saying `profiles/` holds the bundled default mapping profiles (TOML, AD-17), first file from Story 1.5. `spikes/README.md`: add `test_default_profile.py` to the index.
 - [x] Task 6: Roadmap M2 (AC: #3)
-  - [x] 6.1 In `_bmad-output/specs/spec-ocarina-bot/roadmap.md` (the in-repo roadmap; **never touch `~/Documents/org/`**) set M2 State to `DONE 2026-11-21` only after Task 4 shows no HYPOTHESIS on pitches/modifiers and the `[timing]` section has all five keys filled. In the "Done when" cell keep the original sentence and append one clause: timings are measured except `max_sustain_ms` (estimate) and `start_lead_ms` (not measured), both labelled in the profile. If either condition fails, leave M2 TODO and say why in the Completion Notes.
+  - [x] 6.1 In `_bmad-output/specs/spec-bonooru/roadmap.md` (the in-repo roadmap; **never touch `~/Documents/org/`**) set M2 State to `DONE 2026-11-21` only after Task 4 shows no HYPOTHESIS on pitches/modifiers and the `[timing]` section has all five keys filled. In the "Done when" cell keep the original sentence and append one clause: timings are measured except `max_sustain_ms` (estimate) and `start_lead_ms` (not measured), both labelled in the profile. If either condition fails, leave M2 TODO and say why in the Completion Notes.
 - [x] Task 7: Close-out
   - [x] 7.1 Fill the Dev Agent Record (file list, tests run, decisions applied, open questions answered by the owner). Set `1-5-measured-default-mapping-profile` to `review` in `sprint-status.yaml` when done.
   - [x] 7.2 Housekeeping: no temp files, no recordings, no UF2/2wiCC binaries, no game screenshots, nothing under `ux-designs/*/imports/`, `_bmad/` and skill folders untouched. Do not commit or push unless the owner asks.
@@ -143,7 +143,7 @@ Condition for M2 (AC 3): none on pitches/modifiers, `[timing]` filled. Current s
   - `docs/usb-controller-emulation.md:81` Switch 2 polls HID every 1 ms: **keep**, not measured (Epic 2).
   - `docs/usb-controller-emulation.md:85` "The game samples input once per frame at 60 fps": **split, do not delete**. Row 2.5 measured a 16.67 ms frame period when the picture changes (U10) and row 2.4 shows latency clusters one frame apart, consistent with per-frame sampling at 60 Hz. The input sampling rate itself is not directly measured and a sustained 60 images per second is not shown. Suggested text: a measured sentence for the frame period (with pointers to rows 2.5 and 2.4) and the remaining claim "input is sampled once per frame" still marked HYPOTHESIS, noted as "consistent with row 2.4". "Could be 30 fps in some scenes" stays as a caveat (only one scene type tested).
   - `docs/link-protocol.md:27` 460800 baud: **keep** (Epic 3).
-  - `_bmad-output/specs/spec-ocarina-bot/requirements.md:53` (NFR-04 depends on frame rate and input sampling) and `decisions.md` lines 21, 44, 52, 60: **leave unchanged**; they are spec statements outside this story's data, and the input-sampling part is still unproven.
+  - `_bmad-output/specs/spec-bonooru/requirements.md:53` (NFR-04 depends on frame rate and input sampling) and `decisions.md` lines 21, 44, 52, 60: **leave unchanged**; they are spec statements outside this story's data, and the input-sampling part is still unproven.
 - Do not remove a marker because it looks outdated; remove or split only with a pointer to the data row.
 
 ### Developer guardrails
@@ -179,7 +179,7 @@ None added. The test uses the Python standard library (`tomllib`, Python 3.11+) 
 | `docs/ocarina-input-mechanics.md` | UPDATE only if a pointer helps (small) |
 | `docs/usb-controller-emulation.md` | UPDATE (split the line 85 marker) |
 | `app/README.md`, `spikes/README.md` | UPDATE (one line each) |
-| `_bmad-output/specs/spec-ocarina-bot/roadmap.md` | UPDATE (M2) |
+| `_bmad-output/specs/spec-bonooru/roadmap.md` | UPDATE (M2) |
 | `_bmad-output/implementation-artifacts/sprint-status.yaml` | UPDATE (status) |
 
 ### Testing requirements
@@ -253,7 +253,7 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow.
   - `docs/usb-controller-emulation.md` "The game samples input once per frame at 60 fps": **split** into a VERIFIED heading for the measured frame period (16.67 ms when the picture changes, row 2.5, with the sustained-60-images and one-scene caveats) and a remaining HYPOTHESIS "The game samples input once per frame" (consistent with row 2.4, not directly measured; 30 fps caveat kept).
   - Kept unchanged: `docs/score-format-and-mapping.md` live keyboard latency 3 to 6 frames; `docs/usb-controller-emulation.md` Switch 2 polls every 1 ms; `docs/link-protocol.md` 460800 baud; `requirements.md:53` (NFR-04); `decisions.md` lines 21, 44, 52, 60; `architecture.md:77` (marker definition) and `.memlog.md` (history). `docs/test-plan.md:108-109` only mention the marker.
 - Stale profile key `stick_value` in `docs/ocarina-input-mechanics.md` (two places) replaced by the new keys `stick_up_ly` / `stick_down_ly` / `stick_lx` (no change of fact).
-- Roadmap M2 set to `DONE 2026-11-21` in `_bmad-output/specs/spec-ocarina-bot/roadmap.md` only: no HYPOTHESIS on pitches/modifiers and `[timing]` has all five keys; "Done when" keeps the original sentence plus the clause on `max_sustain_ms` (estimate) and `start_lead_ms` (not measured). `~/Documents/org/` not touched.
+- Roadmap M2 set to `DONE 2026-11-21` in `_bmad-output/specs/spec-bonooru/roadmap.md` only: no HYPOTHESIS on pitches/modifiers and `[timing]` has all five keys; "Done when" keeps the original sentence plus the clause on `max_sustain_ms` (estimate) and `start_lead_ms` (not measured). `~/Documents/org/` not touched.
 - Story 1.6 follow-up recorded in "Consumers" (short U1 test, holds of about 4 to 7 s). No Story 1.6 file exists yet; `epics.md` not edited.
 - No Switch used, no serial port opened, no Rust/firmware/app code, no recordings, binaries or screenshots added; no temp files left in the repo. Not committed.
 
@@ -267,9 +267,9 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow.
 - `docs/usb-controller-emulation.md` (modified)
 - `app/README.md` (modified)
 - `spikes/README.md` (modified)
-- `_bmad-output/specs/spec-ocarina-bot/roadmap.md` (modified)
+- `_bmad-output/specs/spec-bonooru/roadmap.md` (modified)
 - `_bmad-output/planning-artifacts/epics.md` (modified: key names `max_sustain_ms` / `start_lead_ms` only, code review fix)
-- `_bmad-output/specs/spec-ocarina-bot/SPEC.md` (modified: frame period measured, input sampling still unverified, code review fix)
+- `_bmad-output/specs/spec-bonooru/SPEC.md` (modified: frame period measured, input sampling still unverified, code review fix)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` (modified)
 - `_bmad-output/implementation-artifacts/1-5-measured-default-mapping-profile.md` (this story file)
 

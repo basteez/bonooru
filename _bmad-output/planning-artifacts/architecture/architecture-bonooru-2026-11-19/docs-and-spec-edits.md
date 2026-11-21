@@ -28,7 +28,7 @@ None of these edits has been applied. The architecture run did not modify docs/ 
 16. **New HIL rows.** Measure the voltage at the bridge's GP1 with the bridge unpowered and the controller on the Switch (expected: TX released). Also check the core-stall reboot. (AD-20, AD-11)
 17. **A.3.** Also check that the controller releases TX. **W.1.** Read the max-gap counter from the debug STATUS. **M7 method.** The ground truth is the CSV timeline export. (AD-19, AD-15)
 
-## _bmad-output/specs/spec-ocarina-bot/
+## _bmad-output/specs/spec-bonooru/
 
 18. **SPEC Constraints, ADR-005 and architecture.md Stack.** The app language becomes conditional per ADR-008 (Rust + egui if the spike passes, otherwise Python 3.12 + PySide6). In decisions.md, mark ADR-005's language part as reopened by ADR-008, and rewrite ADR-008: CustomTkinter is dropped, per the research report. (AD-18)
 19. **SPEC Open Questions.** Close "controller core split" (decided, AD-11). Replace the ADR-008 question with the conditional decision and spike deadline (Q7). Add Q1 (VID:PID) and Q5 (project licence).

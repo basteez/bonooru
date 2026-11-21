@@ -2,18 +2,18 @@
 status: final
 stepsCompleted: [1, 2, 3, 4]
 inputDocuments:
-  - _bmad-output/specs/spec-ocarina-bot/SPEC.md
-  - _bmad-output/specs/spec-ocarina-bot/requirements.md
-  - _bmad-output/specs/spec-ocarina-bot/decisions.md
-  - _bmad-output/specs/spec-ocarina-bot/roadmap.md
-  - _bmad-output/specs/spec-ocarina-bot/risk-register.md
-  - _bmad-output/specs/spec-ocarina-bot/architecture.md
-  - _bmad-output/specs/spec-ocarina-bot/architecture-diagrams.md
-  - _bmad-output/planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/ARCHITECTURE-SPINE.md
-  - _bmad-output/planning-artifacts/architecture/architecture-ocarina-bot-2026-11-19/app-stack-options.md
-  - _bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/DESIGN.md
-  - _bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/EXPERIENCE.md
-  - _bmad-output/planning-artifacts/ux-designs/ux-ocarina-bot-2026-11-20/review-egui-feasibility.md
+  - _bmad-output/specs/spec-bonooru/SPEC.md
+  - _bmad-output/specs/spec-bonooru/requirements.md
+  - _bmad-output/specs/spec-bonooru/decisions.md
+  - _bmad-output/specs/spec-bonooru/roadmap.md
+  - _bmad-output/specs/spec-bonooru/risk-register.md
+  - _bmad-output/specs/spec-bonooru/architecture.md
+  - _bmad-output/specs/spec-bonooru/architecture-diagrams.md
+  - _bmad-output/planning-artifacts/architecture/architecture-bonooru-2026-11-19/ARCHITECTURE-SPINE.md
+  - _bmad-output/planning-artifacts/architecture/architecture-bonooru-2026-11-19/app-stack-options.md
+  - _bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/DESIGN.md
+  - _bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/EXPERIENCE.md
+  - _bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/review-egui-feasibility.md
   - docs/link-protocol.md
   - docs/usb-controller-emulation.md
   - docs/score-format-and-mapping.md
@@ -22,11 +22,11 @@ inputDocuments:
   - spikes/app-egui/SPIKE-REPORT.md
 ---
 
-# ocarina-bot - Epic Breakdown
+# bonooru - Epic Breakdown
 
 ## Overview
 
-This document provides the complete epic and story breakdown for ocarina-bot, decomposing the requirements from the spec (`SPEC.md` + `requirements.md`, used as the PRD), the UX design contract (`DESIGN.md` + `EXPERIENCE.md`) and the architecture spine (`ARCHITECTURE-SPINE.md`, AD-1…AD-21) into implementable stories.
+This document provides the complete epic and story breakdown for bonooru, decomposing the requirements from the spec (`SPEC.md` + `requirements.md`, used as the PRD), the UX design contract (`DESIGN.md` + `EXPERIENCE.md`) and the architecture spine (`ARCHITECTURE-SPINE.md`, AD-1…AD-21) into implementable stories.
 
 Precedence: architecture ADs and `firmware/common/proto/vectors/` win over `docs/link-protocol.md` (AD-14); the UX spines win over the mockups. Game reference screenshots in `ux-designs/*/imports/` are git-ignored and are never committed, embedded or referenced by any story.
 
@@ -106,7 +106,7 @@ Link protocol
 
 Bridge firmware
 - AD-4: `HEARTBEAT` 0x40 COBS+CRC frame, own rolling seq, body `bridge_fw_ver[3], flags` (bit0 DTR), hardware alarm every 20 ms regardless of USB state, wire spacing ≤ 27 ms; PC→UART store-and-forward per frame (never decodes; one app frame in flight + one queued; due heartbeat at next boundary ahead of queued frames; buffering stays in CDC); overlong run dropped and counted; partial frame discarded on DTR fall / CDC unmount; UART→PC best effort, drop and count on full CDC FIFO; no blocking code path.
-- AD-13: VID:PID `2E8A:000A`, product string `Ocarina Bot Bridge`, serial = flash unique ID; 1200-baud touch via pico-sdk `pico_usb_reset` with `PICO_ENABLE_USB_RESET_VIA_BAUD_RATE=1` (no own `tud_cdc_line_coding_cb`); bridge version reaches the app only via `INFO.bridge_ver`.
+- AD-13: VID:PID `2E8A:000A`, product string `Bonooru Bridge`, serial = flash unique ID; 1200-baud touch via pico-sdk `pico_usb_reset` with `PICO_ENABLE_USB_RESET_VIA_BAUD_RATE=1` (no own `tud_cdc_line_coding_cb`); bridge version reaches the app only via `INFO.bridge_ver`.
 - M4 exit: 460800 baud with no byte loss over 10 min (baud is a build constant; 921600 only if loss measured).
 
 Controller firmware
@@ -135,7 +135,7 @@ App architecture
 
 CI, release and test infrastructure
 - GitHub Actions: firmware job (ubuntu: both UF2s, ctest host-tests, pin grep) → app jobs (win/linux/macos: core tests, vectors, licence gate, clippy, headless GUI smoke test, bundle app + both UF2s) → release on tag `vX.Y.Z`.
-- Release assets `ocarina-bot-<ver>-<os>-<arch>.<ext>`, `bridge.uf2`, `controller.uf2`; app bundles embed UF2s built in the same run; macOS universal `.app` (unsigned), Windows `.exe`, Linux AppImage (+ tarball if cheap); `cargo-packager` 0.11.8 or a bundle script.
+- Release assets `bonooru-<ver>-<os>-<arch>.<ext>`, `bridge.uf2`, `controller.uf2`; app bundles embed UF2s built in the same run; macOS universal `.app` (unsigned), Windows `.exe`, Linux AppImage (+ tarball if cheap); `cargo-packager` 0.11.8 or a bundle script.
 - No code signing (Q3); README documents first-run unblock per OS (macOS Open Anyway; Windows SmartScreen More info › Run anyway).
 - App test layers: score parsers, pipeline property tests (sorted, onsets never shifted, min press/gap respected, END last), range-fit, fingering DP, profile validation/migration; golden tests (reference piece → timeline snapshot; text and `.mid` of the same melody → identical note list); sans-IO link tests against an in-test fake controller (HELLO/INFO, version mismatch, go-back-N under injected loss/corruption, credits, PING cadence).
 - Firmware host tests F.1–F.10 (go-back-N, NAK matrix, mode table + abort latch, END/underrun/LATE, HELLO/STOP in PLAYING, allow-list, heartbeat gap ≤ 27 ms under 512-frame burst, bridge framer, shared vectors, `console_ready` with a fake profile).
@@ -654,7 +654,7 @@ So that the controller has a reliable link and a fail-safe signal independent of
 
 **Given** the bridge UF2
 **When** it is plugged into the PC
-**Then** it enumerates as USB CDC with VID:PID `2E8A:000A`, product string `Ocarina Bot Bridge` and the flash unique ID as serial number (AD-13)
+**Then** it enumerates as USB CDC with VID:PID `2E8A:000A`, product string `Bonooru Bridge` and the flash unique ID as serial number (AD-13)
 **And** its WS2812 LED shows the bridge colour from Story 2.1
 
 **Given** bytes from the PC
@@ -870,7 +870,7 @@ So that the UI never freezes and I never pick a serial port (FR-08).
 
 **Given** the worker rescans ports about every 1 s
 **When** ports are listed
-**Then** it matches VID:PID `2E8A:000A`, uses the product string `Ocarina Bot Bridge` as an extra filter where the OS reports it, sends the HELLO probe only to VID:PID matches, and on macOS considers only `/dev/cu.*` (AD-13, AD-18)
+**Then** it matches VID:PID `2E8A:000A`, uses the product string `Bonooru Bridge` as an extra filter where the OS reports it, sends the HELLO probe only to VID:PID matches, and on macOS considers only `/dev/cu.*` (AD-13, AD-18)
 **And** a VID:PID match with a different product string is reported as a foreign board and is never written to
 
 **Given** Linux without serial permission
@@ -1652,7 +1652,7 @@ So that updates are quick, and never reboot someone else's board.
 
 **Acceptance Criteria:**
 
-**Given** a bridge confirmed by product string `Ocarina Bot Bridge`
+**Given** a bridge confirmed by product string `Bonooru Bridge`
 **When** the user starts a bridge reflash from the wizard
 **Then** the serial worker sends the 1200-baud touch, the flasher waits for the new `RPI-RP2` drive and copies the bridge UF2 (AD-13, AD-16)
 
@@ -1930,7 +1930,7 @@ So that every version ships the same way with matching app and firmware.
 
 **Given** a pushed tag `vX.Y.Z`
 **When** `release.yml` runs
-**Then** the firmware job builds `bridge.uf2` and `controller.uf2`, the app jobs build pre-built binaries for Windows, Linux and macOS (NFR-01, no toolchain for users) embedding those UF2s from the same run, and a GitHub Release is created with `ocarina-bot-<ver>-<os>-<arch>.<ext>`, `bridge.uf2` and `controller.uf2` (AD-14)
+**Then** the firmware job builds `bridge.uf2` and `controller.uf2`, the app jobs build pre-built binaries for Windows, Linux and macOS (NFR-01, no toolchain for users) embedding those UF2s from the same run, and a GitHub Release is created with `bonooru-<ver>-<os>-<arch>.<ext>`, `bridge.uf2` and `controller.uf2` (AD-14)
 **And** firmware and app report the same version from the tag
 
 **Given** packaging
