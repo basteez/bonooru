@@ -21,6 +21,7 @@ Throwaway experiments, mainly for milestone M2 (ocarina mechanics and timing on 
 | `samples/story-1-4-ext/` | Generated inputs of extra Story 1.4 trials (committed, checked against their generator command) |
 | `count_frames.py` | Counts distinct images per second in a screen video (Story 1.4, U10) |
 | `test_count_frames.py` | Tests for `count_frames.py` with synthetic frames (one optional ffmpeg test) |
+| `test_default_profile.py` | Consistency checks on the bundled profile `app/profiles/oot-switch2-1.1.1.toml` (Story 1.5; not a profile loader, replaced by Story 5.1). Python 3.11+: `uv run --python 3.12 --with pytest pytest spikes/test_default_profile.py` |
 | `recordings/` | Git-ignored output of `listen_trial.py` and the U10 videos (WAV, CSV, Markdown, video); never committed |
 
 ## `send_2wicc.py`: 2wiCC queue sender

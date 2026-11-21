@@ -64,7 +64,7 @@ Priority in brackets (MoSCoW). FR-16…FR-25 come from the UX session; owner con
 
 Derived pipeline requirements (from CAP-3 / AD-15 / R2, stated in the spec but not numbered as FRs):
 
-- FR-05a: Timing rules: snap to the profile frame grid; enforce min press, min gap on same button, modifier lead; steal time from the previous note, never shift onsets; reject min press/gap below `2 × max(report_period_us, frame time)`; at most one note button pressed in any state (U3: releasing a later button brings back a still-held one); a note longer than the profile `max_sustain` is re-pressed (release for the min gap, press again) before the game cuts it (U1, ~6 s), and the count is reported.
+- FR-05a: Timing rules: snap to the profile frame grid; enforce min press, min gap on same button, modifier lead; steal time from the previous note, never shift onsets; reject min press/gap below `2 × max(report_period_us, frame time)`; at most one note button pressed in any state (U3: releasing a later button brings back a still-held one); a note longer than the profile `max_sustain_ms` is re-pressed (release for the min gap, press again) before the game cuts it (U1, ~6 s), and the count is reported.
 - FR-05b: Official-song detection (R2): detect pitch sequences of the 12 official songs and warn (the game matches by pitch, so no fingering avoids it; Spike 1.8).
 - FR-05c: Timeline export to CSV (`t_us`, pitch, fingering) as the M7 ground truth (not user-facing in v1).
 
@@ -223,7 +223,7 @@ Bottom bar and play sequence
 - UX-DR40: Play gating: both Play actions (and Resume) disabled unless all three LEDs are ok, and also while a required update is pending, no song is loaded, notes are too short, the text score is invalid [ASSUMPTION], or during Play; disabled tooltip names only the first blocking reason + fix in order Bridge › Controller › Switch › firmware update › no song › too-short › invalid score, with the Voice-table strings; preview always available; revisit after H.3 (OQ-4).
 - UX-DR41: STOP: always enabled, Esc anywhere (read at frame start, not consumed, before any Modal consumes it) sends STOP and releases every input.
 - UX-DR42: Readiness confirm modal: title "Ready to play?", checklist "The ocarina is out in free play." · "Don't touch the controller until the song ends." · "Don't dock the Switch.", [Cancel] [Play] (Play focused; Enter = Play; Esc = Cancel + harmless STOP), "Don't ask again" checkbox; shown on every Play/Resume unless suppressed; reset from Settings.
-- UX-DR43: Countdown: 3·2·1 default (Settings 0–5 s), 80 % veil over the note view only, 128 px cream numerals with 2 px frame outline and amber halo, sub-line "Starting from 0:12 · hands off the controller", original wood-block tick per number; STOP live, Esc cancels; link/console drop or port loss cancels it with no START sent and shows the interruption banner; separate from the technical `start_lead` (500 ms).
+- UX-DR43: Countdown: 3·2·1 default (Settings 0–5 s), 80 % veil over the note view only, 128 px cream numerals with 2 px frame outline and amber halo, sub-line "Starting from 0:12 · hands off the controller", original wood-block tick per number; STOP live, Esc cancels; link/console drop or port loss cancels it with no START sent and shows the interruption banner; separate from the technical `start_lead_ms` (500 ms).
 - UX-DR44: Playing state: playhead and time interpolate locally from the last STATUS `now_us` and resync each STATUS (0 during lead); song panel locked, note view read-only (scroll allowed) [ASSUMPTION]; drop and Open… ignored, Cmd/Ctrl+O disabled [ASSUMPTION]; gear disabled.
 - UX-DR45: Interruption banner (dialogue style: translucent fill, cream-40 % border, name tab, centred actions, ▾ chevron, Details link): causes UNDERRUN, LATE, LINK_LOST, USB_SUSPENDED, bridge unplugged, semantic NAK ("Playback couldn't start" [ASSUMPTION]) with the Voice/State strings; actions Resume from <time> (= Play from cursor through confirm + countdown, gated), Dismiss, Details (log view at the entry); cursor stays at the stop point; persists until acted on; app sends STOP to clear the latch.
 - UX-DR46: End-of-song card on PLAYBACK_DONE: parchment card ~440 px with corner brackets and frame ring, "You played <Song>!" (song name amber-ink), detail "1:48 · 62 notes · on time" (actual vs expected), Play again (ink fill) / Close (ink outline); auto-dismiss after 6 s, timer paused on hover; silent.
@@ -1110,7 +1110,7 @@ So that the app produces the exact timeline the controller will play (FR-05, FR-
 **When** the `pipeline` compiles it
 **Then** fingering picks the lowest-cost sequence over all profile fingerings (Viterbi/DP with the profile's cost weights)
 **And** timing rules snap to the profile frame grid, enforce min press, min gap on the same button and modifier lead, steal time from the previous note and never shift onsets
-**And** no state holds two note buttons (U3), and a note longer than the profile `max_sustain` is re-pressed after the min gap before the game cuts it (U1); the number of re-pressed notes is reported
+**And** no state holds two note buttons (U3), and a note longer than the profile `max_sustain_ms` is re-pressed after the min gap before the game cuts it (U1); the number of re-pressed notes is reported
 
 **Given** the compiled result
 **When** it is returned
@@ -1119,7 +1119,7 @@ So that the app produces the exact timeline the controller will play (FR-05, FR-
 
 **Given** property tests
 **When** they run
-**Then** they confirm: events sorted, onsets never shifted, min press/gap respected, END last, only allow-list inputs used, at most one note button per state, no press longer than `max_sustain`
+**Then** they confirm: events sorted, onsets never shifted, min press/gap respected, END last, only allow-list inputs used, at most one note button per state, no press longer than `max_sustain_ms`
 
 **Given** the reference piece (all 19 pitches)
 **When** it compiles
@@ -1305,7 +1305,7 @@ So that the song I loaded actually plays on the ocarina (FR-07).
 
 **Given** a streamer in the services layer on top of the `ocb-core` link session
 **When** playback starts
-**Then** the worker prefills the queue up to the available credit, sends `START` with the profile's `start_lead` as `lead_us`, then sends the remaining `QUEUE_EVENT`s greedily whenever there is credit, never editing, dropping or reordering events (AD-15, AD-6)
+**Then** the worker prefills the queue up to the available credit, sends `START` with the profile's `start_lead_ms` as `lead_us`, then sends the remaining `QUEUE_EVENT`s greedily whenever there is credit, never editing, dropping or reordering events (AD-15, AD-6)
 
 **Given** the bottom bar
 **When** a song is loaded and all three LEDs are ok
@@ -1386,7 +1386,7 @@ So that I can take my eyes to the console in time.
 **Given** `link_ok` or `console_ready` drops, or the port vanishes, during the countdown
 **When** detected
 **Then** the countdown is cancelled, no START is sent, and the cause is logged (shown in the banner from Story 6.6)
-**And** the countdown is separate from the technical `start_lead`
+**And** the countdown is separate from the technical `start_lead_ms`
 
 ### Story 6.5: Playing state and live gamepad view
 

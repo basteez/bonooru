@@ -1,0 +1,430 @@
+# Ocarina Bot: bundled default mapping profile (AD-17), Story 1.5.
+#
+# Game: The Legend of Zelda: Ocarina of Time (Switch 2), game version 1.1.1 ONLY.
+# Tested environment: Switch 2 system 23.5.0, OoT 1.1.1 (docs/test-plan.md, "Test environment";
+# Story 1.4 field trials, "Environment and capture"). Other game versions need their own profile.
+# Read-only default: a user copy with the same `name` and `game_version` overrides it (AD-17).
+# Loading, validation and migration belong to Story 5.1 (ocb-core `profile` module); this file is data.
+#
+# Pitches are MIDI numbers of the SOUNDING pitch: the game sounds one octave above the community chart
+# (A = 81 = A5, chart name A4). docs/ocarina-input-mechanics.md, "Note buttons".
+#
+# Tags used in the comments (every measured or tunable value carries one; labels such as schema and name do not):
+#   MEASURED        value measured on the console; the comment names the test plan row / U-item.
+#   MARGIN          measured limit plus a safety margin: "measured X, profile Y, margin Z".
+#   OWNER CHOICE    value chosen by the owner; it is NOT a measured limit.
+#   ESTIMATE        based on a rough observation (no tool, no error bar); to be confirmed.
+#   DESIGN DEFAULT  not measured at all; a starting value for the design, to be tuned later.
+#
+# Caveats:
+# - Timing analysis: the analyser definitions behind the 1-frame U7 counts, U2 at 2 to 3 frames and the
+#   jitter sigma were revised after seeing the Story 1.4 recordings (docs/test-plan.md, Story 1.4,
+#   "Lessons"). Confirm on fresh recordings in Epic 7; Story 7.4 updates the timing margins from data.
+# - Onset jitter (test plan row 2.4: IOI error sigma 0.48 to 0.70 frame through 2wiCC) is not a profile
+#   key; it is the basis for the Epic 2 / Epic 7 timing targets.
+# - Allow-listed inputs only (AD-9): L, R, A, Y, X, D-pad up/down, left stick. No ZL (opens the song
+#   menu, U11), no ZR, no right stick.
+
+schema = 1  # integer schema version (AD-17); Story 5.1 owns the schema and bumps it on shape changes
+
+[profile]
+name = "OoT Switch 2"  # label, not data; with game_version, the identity a user copy overrides (AD-17)
+game_version = "1.1.1"  # MEASURED environment: OoT 1.1.1 on Switch 2 system 23.5.0 (test plan, "Test environment")
+# MEASURED: frame period 16.67 ms (60 Hz) when the picture changes, 240 fps video (test plan row 2.5, U10).
+# Caveat: 60 distinct images every second is not shown (the scene did not move continuously); the per-note
+# latency clusters one frame apart (row 2.4) are consistent with input sampled at 60 Hz, not a proof of it.
+frame_rate = 60
+
+[buttons]  # MEASURED: natural sounding pitches (MIDI), test plan rows 1.1 and 1.9; mechanics doc "Note buttons"
+L = 74  # D5, measured 596.6 Hz (row 1.9)
+R = 77  # F5, measured 702.6 Hz (row 1.9)
+A = 81  # A5, measured 894.3 Hz (row 1.9); the game sounds about +27 c sharp of A4 = 440 Hz
+Y = 83  # B5, measured 1003.7 Hz (row 1.9)
+X = 86  # D6, measured 1190.1 Hz (row 1.9)
+
+[modifiers]  # MEASURED: semitone offsets, test plan rows 1.2 and 1.9; mechanics doc "Pitch modifiers"
+dpad_up = 1  # MEASURED +1 semitone (rows 1.2, 1.9). On X it shifts about +115 c, not 100 c (row 1.9), still the right note
+dpad_down = -1  # MEASURED -1 semitone (rows 1.2, 1.9). On X it shifts about -115 c (row 1.9), still the right note
+stick_up = 2  # MEASURED +2 semitones only at full travel, stick_up_ly below (rows 1.6, 1.9; U6)
+stick_down = -2  # MEASURED -2 semitones only at full travel, stick_down_ly below (rows 1.6, 1.9; U6)
+# Stick values are canonical state bytes (AD-10: ly 0x00 = up, centre 0x80). The stick is a graded bend,
+# not a switch (test plan row 1.6, U6): only full travel gives the full +-2 (50 % about +-105 c, 75 % about
+# +-160 c); up and down are mirrored within a few cents. The bend still glides at the note start (Y + stick
+# up: first 30 ms about -29 c, row 2.3), which is why stick modifiers keep the modifier lead below.
+stick_up_ly = 0x00  # MEASURED: full travel up, wire Y 0xE00, A5 -> 1002 Hz, +199 c (row 1.6, U6)
+stick_down_ly = 0xFF  # MEASURED: full travel down, wire Y 0x20C, A5 -> 797 Hz, -197 c (row 1.6, U6)
+stick_lx = 0x80  # MEASURED: X centred; any X component reduces the bend (diagonals and corners about +-142 c, row 1.6)
+
+[range]  # MEASURED: sounding range B4-F6, chromatic, all 19 pitches verified (test plan rows 1.2 and 1.9)
+low = 71  # B4 (L + D-down + stick down, measured 499.9 Hz, row 1.9)
+high = 89  # F6 (X + D-up + stick up, measured 1428.2 Hz, row 1.9)
+
+# Timing. *_frames are integer frames at frame_rate (16.67 ms each; the pipeline snaps to this grid),
+# *_ms are milliseconds (not on the frame grid). Measured values: test plan "Story 1.4 field trials" >
+# "Values for Story 1.5" (rows 2.1 to 2.3). AD-15: min press and min gap must not fall below
+# 2 x max(report_period_us, frame time); the frame-time part is 2 frames, the report period is measured in
+# Epic 2 and Story 5.1 enforces the full rule.
+[timing]
+# MARGIN: measured 2 frames (33.3 ms), profile 3 frames (50 ms), margin +1 frame (test plan row 2.1, U7).
+# 2 frames sounded 20/20 on A, L, R, X, Y; 1 frame only 16 to 18/20. 3 frames and longer were run on A only
+# (20/20 each); 3 frames on L, R, X, Y was not run, the margin assumes longer presses do not sound worse.
+min_press_frames = 3
+# OWNER CHOICE: 5 frames (83.3 ms), NOT a measured limit (test plan row 2.2, U2). Measured 20/20 at
+# 4 frames on A, L, Y; R 5 frames 19/20 pooled (20/20 with its own file's threshold); X unresolved (mic
+# level, best 4 frames 18/20); R and X not run above 5 frames. No margin added on top: 5 is already 1 frame
+# above the A, L, Y limit, and "retrigger" is a threshold on a continuous dip (definition-dependent).
+min_gap_same_button_frames = 5
+# MARGIN: measured 0 frames, profile 1 frame (16.7 ms), margin +1 frame (test plan row 2.3, U5). Lead 0 gave
+# no wrong pitch longer than about 35 ms (2 frames) for D-up, D-down, stick up, stick down: 20/20 at every
+# lead 0 to 5 on A; at lead 0 on L, R, X, Y 20/20 except X + stick down 19/20 and Y + stick up 19/20.
+# A 1 to 2 frame lateness is not resolvable by audio, so Story 1.4 asks for at least 1 frame. One value for
+# all four modifiers: all measured 0, no per-type split.
+modifier_lead_frames = 1
+# ESTIMATE: profile 5000 ms. U1 hand-timed with no tool and no error bar: the held note wavers from about
+# 2 s and stops by itself at about 6 s while still held (test plan row 1.3, U1). Margin about 1 s (17 %)
+# below the ~6 s to absorb hand-timing error and possible per-note variation. Notes longer than this are
+# re-pressed after min_gap_same_button_frames (FR-05a). A short U1 test (holds of about 4 to 7 s, microphone
+# onset and offset) is deferred to the owner's Story 1.6 Switch session and may revise this value.
+max_sustain_ms = 5000
+# DESIGN DEFAULT (not measured): lead before the first event of a timeline (START lead_us, AD-15; Stories
+# 2.5 / 6.x), carried over from the placeholder in docs/score-format-and-mapping.md. The countdown the user
+# sees is separate.
+start_lead_ms = 500
+
+# Fingering cost weights (fingering step, docs/score-format-and-mapping.md "Fingering cost (first idea)").
+# DESIGN DEFAULT (not measured), all of them. "No modifier change" costs 0 and has no key.
+# What the data supports: only the order no change < D-pad change < stick change. The D-pad steps at once,
+# the stick glides (U4, test plan row 1.5) and a stick note's first 30 ms read about -29 c (row 2.3).
+# What it does not support: the numbers themselves; no test compares two fingerings of the same note for
+# audible quality. Possible later refinement, not encoded here: on X the D-pad shifts about +-115 c, so two
+# X fingerings of C#6 / D#6 differ by about 30 c in tune (row 1.9). Tuning: Story 1.6 listening, Story 5.5
+# golden tests, Epic 7.
+[cost]
+dpad_change = 1  # DESIGN DEFAULT (not measured): D-pad state changes between two notes
+stick_change = 2  # DESIGN DEFAULT (not measured): stick state changes between two notes
+stick_through_centre = 1  # DESIGN DEFAULT (not measured): extra when the stick passes through centre (up <-> down)
+same_button_retrigger = 1  # DESIGN DEFAULT (not measured): extra when the same button is re-pressed (needs min_gap_same_button_frames)
+non_natural = 0.1  # DESIGN DEFAULT (not measured): tie breaker against a fingering with chart = false
+
+# Fingerings: all 45 button x modifier combinations (5 buttons x D-pad none/up/down x stick none/up/down),
+# MEASURED in free play with the stick at full travel and lx centred, one press each, pitch from the
+# microphone (test plan row 1.9; docs/ocarina-input-mechanics.md, "Alternative fingerings (all 45
+# combinations)"). Transcribed from that table, not derived. All 45 sound the model pitch
+# (button + D-pad offset + stick offset) by nearest note. chart = true marks the 19 chart fingerings
+# ("Fingering chart", measured with a tuner in row 1.2 and again with the microphone in row 1.9).
+# The Hz in each header comment is the measured median from the 45-combination table.
+
+[[fingerings]]  # B4, measured 499.9 Hz (chart)
+button = "L"
+dpad = "down"
+stick = "down"
+pitch = 71
+chart = true
+
+[[fingerings]]  # C5, measured 530.1 Hz (chart)
+button = "L"
+dpad = "none"
+stick = "down"
+pitch = 72
+chart = true
+
+[[fingerings]]  # C#5, measured 560.9 Hz (chart)
+button = "L"
+dpad = "down"
+stick = "none"
+pitch = 73
+chart = true
+
+[[fingerings]]  # C#5, measured 564.2 Hz
+button = "L"
+dpad = "up"
+stick = "down"
+pitch = 73
+chart = false
+
+[[fingerings]]  # D5, measured 596.6 Hz (chart)
+button = "L"
+dpad = "none"
+stick = "none"
+pitch = 74
+chart = true
+
+[[fingerings]]  # D5, measured 592.8 Hz
+button = "R"
+dpad = "down"
+stick = "down"
+pitch = 74
+chart = false
+
+[[fingerings]]  # D#5, measured 633.3 Hz (chart)
+button = "L"
+dpad = "up"
+stick = "none"
+pitch = 75
+chart = true
+
+[[fingerings]]  # D#5, measured 628.9 Hz
+button = "L"
+dpad = "down"
+stick = "up"
+pitch = 75
+chart = false
+
+[[fingerings]]  # D#5, measured 624.4 Hz
+button = "R"
+dpad = "none"
+stick = "down"
+pitch = 75
+chart = false
+
+[[fingerings]]  # E5, measured 668.6 Hz
+button = "L"
+dpad = "none"
+stick = "up"
+pitch = 76
+chart = false
+
+[[fingerings]]  # E5, measured 665.2 Hz (chart)
+button = "R"
+dpad = "down"
+stick = "none"
+pitch = 76
+chart = true
+
+[[fingerings]]  # E5, measured 663.5 Hz
+button = "R"
+dpad = "up"
+stick = "down"
+pitch = 76
+chart = false
+
+[[fingerings]]  # F5, measured 710.6 Hz
+button = "L"
+dpad = "up"
+stick = "up"
+pitch = 77
+chart = false
+
+[[fingerings]]  # F5, measured 702.6 Hz (chart)
+button = "R"
+dpad = "none"
+stick = "none"
+pitch = 77
+chart = true
+
+[[fingerings]]  # F#5, measured 743.5 Hz (chart)
+button = "R"
+dpad = "up"
+stick = "none"
+pitch = 78
+chart = true
+
+[[fingerings]]  # F#5, measured 744.6 Hz
+button = "R"
+dpad = "down"
+stick = "up"
+pitch = 78
+chart = false
+
+[[fingerings]]  # F#5, measured 752.1 Hz
+button = "A"
+dpad = "down"
+stick = "down"
+pitch = 78
+chart = false
+
+[[fingerings]]  # G5, measured 788.0 Hz (chart)
+button = "R"
+dpad = "none"
+stick = "up"
+pitch = 79
+chart = true
+
+[[fingerings]]  # G5, measured 797.4 Hz
+button = "A"
+dpad = "none"
+stick = "down"
+pitch = 79
+chart = false
+
+[[fingerings]]  # G#5, measured 834.3 Hz
+button = "R"
+dpad = "up"
+stick = "up"
+pitch = 80
+chart = false
+
+[[fingerings]]  # G#5, measured 843.5 Hz (chart)
+button = "A"
+dpad = "down"
+stick = "none"
+pitch = 80
+chart = true
+
+[[fingerings]]  # G#5, measured 845.5 Hz
+button = "A"
+dpad = "up"
+stick = "down"
+pitch = 80
+chart = false
+
+[[fingerings]]  # G#5, measured 845.5 Hz
+button = "Y"
+dpad = "down"
+stick = "down"
+pitch = 80
+chart = false
+
+[[fingerings]]  # A5, measured 894.3 Hz (chart)
+button = "A"
+dpad = "none"
+stick = "none"
+pitch = 81
+chart = true
+
+[[fingerings]]  # A5, measured 893.6 Hz
+button = "Y"
+dpad = "none"
+stick = "down"
+pitch = 81
+chart = false
+
+[[fingerings]]  # A#5, measured 950.1 Hz (chart)
+button = "A"
+dpad = "up"
+stick = "none"
+pitch = 82
+chart = true
+
+[[fingerings]]  # A#5, measured 946.8 Hz
+button = "A"
+dpad = "down"
+stick = "up"
+pitch = 82
+chart = false
+
+[[fingerings]]  # A#5, measured 951.3 Hz
+button = "Y"
+dpad = "down"
+stick = "none"
+pitch = 82
+chart = false
+
+[[fingerings]]  # A#5, measured 949.7 Hz
+button = "Y"
+dpad = "up"
+stick = "down"
+pitch = 82
+chart = false
+
+[[fingerings]]  # B5, measured 1001.9 Hz
+button = "A"
+dpad = "none"
+stick = "up"
+pitch = 83
+chart = false
+
+[[fingerings]]  # B5, measured 1003.7 Hz (chart)
+button = "Y"
+dpad = "none"
+stick = "none"
+pitch = 83
+chart = true
+
+[[fingerings]]  # B5, measured 992.3 Hz
+button = "X"
+dpad = "down"
+stick = "down"
+pitch = 83
+chart = false
+
+[[fingerings]]  # C6, measured 1067.5 Hz
+button = "A"
+dpad = "up"
+stick = "up"
+pitch = 84
+chart = false
+
+[[fingerings]]  # C6, measured 1065.9 Hz (chart)
+button = "Y"
+dpad = "up"
+stick = "none"
+pitch = 84
+chart = true
+
+[[fingerings]]  # C6, measured 1066.4 Hz
+button = "Y"
+dpad = "down"
+stick = "up"
+pitch = 84
+chart = false
+
+[[fingerings]]  # C6, measured 1061.7 Hz
+button = "X"
+dpad = "none"
+stick = "down"
+pitch = 84
+chart = false
+
+[[fingerings]]  # C#6, measured 1124.2 Hz
+button = "Y"
+dpad = "none"
+stick = "up"
+pitch = 85
+chart = false
+
+[[fingerings]]  # C#6, measured 1113.5 Hz (chart)
+button = "X"
+dpad = "down"
+stick = "none"
+pitch = 85
+chart = true
+
+[[fingerings]]  # C#6, measured 1135.2 Hz
+button = "X"
+dpad = "up"
+stick = "down"
+pitch = 85
+chart = false
+
+[[fingerings]]  # D6, measured 1194.3 Hz
+button = "Y"
+dpad = "up"
+stick = "up"
+pitch = 86
+chart = false
+
+[[fingerings]]  # D6, measured 1190.1 Hz (chart)
+button = "X"
+dpad = "none"
+stick = "none"
+pitch = 86
+chart = true
+
+[[fingerings]]  # D#6, measured 1273.2 Hz (chart)
+button = "X"
+dpad = "up"
+stick = "none"
+pitch = 87
+chart = true
+
+[[fingerings]]  # D#6, measured 1251.8 Hz
+button = "X"
+dpad = "down"
+stick = "up"
+pitch = 87
+chart = false
+
+[[fingerings]]  # E6, measured 1338.1 Hz (chart)
+button = "X"
+dpad = "none"
+stick = "up"
+pitch = 88
+chart = true
+
+[[fingerings]]  # F6, measured 1428.2 Hz (chart)
+button = "X"
+dpad = "up"
+stick = "up"
+pitch = 89
+chart = true

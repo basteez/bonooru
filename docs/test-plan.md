@@ -106,7 +106,7 @@ Uses spike 0 or 0b in real-time mode (terminal or GLaMS web UI). Rows 1.1–1.5,
 | 1.9 | 45 fingerings: 5 buttons × 9 modifier states (D-pad none/up/down × stick none/up/down), alternative fingerings | one file per button, stick at full deflection, `lx` centred; pitch from `listen_trial.py` | all 45 run: 45/45 match the model (button + D-pad ±1 + stick ±2) by nearest note; 19 pitches, 1 to 4 fingerings each; on X the D-pad shifts about ±115 c (repeated, confirmed). See Story 1.3 field trials below |
 
 Done when: the mapping profile has no `HYPOTHESIS` markers left for pitches and modifiers.
-Met for the measured data by Story 1.3 (2026-11-20): `docs/ocarina-input-mechanics.md` has no `HYPOTHESIS` marker left on pitches or modifiers; the profile itself is written in Story 1.5.
+Met for the measured data by Story 1.3 (2026-11-20): `docs/ocarina-input-mechanics.md` has no `HYPOTHESIS` marker left on pitches or modifiers. The profile was written in Story 1.5 (2026-11-21): `app/profiles/oot-switch2-1.1.1.toml` (buttons, modifiers, stick bytes, range and all 45 fingerings, each with its row in a comment); no `HYPOTHESIS` marker on pitches or modifiers.
 
 ### Spike 1 results (by hand, 2026-11-20)
 
@@ -471,6 +471,7 @@ Needs a scripted sender (any tiny script over the serial port is fine for a spik
 | 2.5 | U10 frame rate                      | count frames in a 60 fps capture                           | –                   | **frame period 16.67 ms (60 Hz)** from a 240 fps phone video; sustained 60 distinct images per second not shown (the scene did not move continuously) |
 
 Done when: the `[timing]` section of the profile is filled with measured values + safety margin. The measured values are in "Story 1.4 field trials" below ("Values for Story 1.5"); Story 1.5 adds the safety margin and fills the profile.
+Story 1.5 (2026-11-21): `[timing]` in `app/profiles/oot-switch2-1.1.1.toml` is filled: `min_press_frames = 3` (measured 2 + 1 frame margin), `min_gap_same_button_frames = 5` (owner choice, not a measured limit), `modifier_lead_frames = 1` (measured 0 + 1 frame margin). `max_sustain_ms = 5000` is an **estimate** (U1 hand-timed at about 6 s, row 1.3; a short U1 test is deferred to the Story 1.6 Switch session) and `start_lead_ms = 500` is a design default, not measured. The profile targets OoT 1.1.1 on Switch 2 system 23.5.0 (see "Test environment").
 
 ### Story 1.4 field trials (2026-11-21)
 
