@@ -246,7 +246,10 @@ The firmware's `controller/core` (`ocb_core`) implements the table above. The ru
   - `QUEUE_EVENT` with END on a state that is not the neutral pose;
   - `QUEUE_EVENT` while an END is already queued (nothing may follow END; reset on entering IDLE);
   - `START` with an empty queue (nothing would ever end PLAYING; prefill first).
-- **Never refused:** `STOP` and `HELLO` act whatever their body length (`HELLO`'s `proto_ver` is checked by the link layer, AD-7). `PING` is ACKed in every mode, also while `aborted`, and changes nothing. An unassigned app type (`0x07`–`0x3F`) gets `NAK UNKNOWN_TYPE`.
+
+  The last two (`QUEUE_EVENT` after a queued END → `NAK BAD_STATE`, `START` on an empty queue → `NAK BAD_STATE`) are refusals AD-8 does not list; the app's link layer (Story 3.3) must mirror them.
+- **Never refused:** `STOP` and `HELLO` act whatever their body length. `PING` is ACKed in every mode, also while `aborted`, and changes nothing. An unassigned app type (`0x07`–`0x3F`) gets `NAK UNKNOWN_TYPE`.
+- **HELLO version check comes first.** The core never reads `proto_ver`: every HELLO it is given is a sync point (enter IDLE, clear the latch, `expected = seq+1`). The controller's link layer (Story 2.6) must therefore check `proto_ver` (AD-7) **before** passing a HELLO to the core, and answer a mismatch itself; whether a mismatched HELLO should still force NEUTRAL (fail safe) is decided there.
 - **Abort causes**, every one in any mode; each enters IDLE (NEUTRAL, queue cleared, ordering reset) and sets `aborted`:
 
   | Cause | EVENT |

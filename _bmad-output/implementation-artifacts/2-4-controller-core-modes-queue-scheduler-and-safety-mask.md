@@ -338,6 +338,18 @@ No `project-context.md` exists in the repo. Project rules that apply, from the o
 - D6: the last non-END note before an underrun is zero-length (AD-8's rule); the 8000 µs LATE fallback is a hypothesis until 2.3 measures the IN interval.
 - The risk register row C6 (still "open") can move to "mitigated in code, hardware proof pending" after this story; left untouched here (`_bmad-output/specs/` is not edited by this story).
 
+## Review Findings
+
+Code review of commit `3664f57`: APPROVE, no important findings; CI green on `3664f57`. Minor findings:
+
+- [x] **M1 (fixed)** `check-core-pure.sh` scanned only `*.c`/`*.h` and missed some I/O and clock names. Now it also scans `*.cpp *.cc *.S *.inc`, bans `clock_gettime`, `gettimeofday`, `stdio_`, `puts`, `putchar` (word-bounded), and fails when a `CMakeLists.txt` in the tree names `pico_*`, `hardware_*` or `ocb_hw` on a non-comment line. 11 new bad fixtures (18 in all) and a good `CMakeLists.txt` fixture (the comment may name them, the link line may not); red proven on the real tree, real tree green.
+- [x] **M2 (fixed)** The static hot-path helpers of `modes.c` (`out_reset`, `cause_event`, `reply_ack`, `reply_nak`, `hat_ok`, `sync_point`, `handle_set_state`, `handle_start`, `handle_queue_event`) are now `static OCB_CORE_RAMFUNC`; `queue.c`, `mask.c`, `sched.c` have no static helpers. `ramfunc.h` and `firmware/controller/README.md` state that Story 2.5 must review the RAM placement of the `ocb_proto` functions the core calls, of `OCB_NEUTRAL` and of compiler-generated read-only tables.
+- [x] **M3 (fixed, doc)** `docs/link-protocol.md` states explicitly that `START` on an empty queue and `QUEUE_EVENT` after a queued END are `NAK BAD_STATE`, refusals AD-8 does not list, which Story 3.3 must mirror.
+- [x] **M4 (fixed, doc)** `docs/link-protocol.md` and the `ocb_core_frame` header comment state that the link layer (Story 2.6) checks HELLO's `proto_ver` **before** passing HELLO to `ocb_core_frame`, because the core resets on every HELLO (D22).
+- [ ] **M5 (deferred)** The 8000 µs LATE fallback is a hypothesis (D6); re-measure the IN interval in Story 2.3/2.5 on hardware and feed `report_period_us`. Not fixable on the host.
+- [ ] **M6 (deferred)** `ready()` is sampled only at `START` / `SET_STATE` (AD-8); losing readiness mid-PLAYING is handled by the USB abort causes. To be confirmed against Story 2.6/2.3's bus-reset / suspend abort wiring; no core change needed if those call `ocb_core_abort`.
+- [ ] **M7 (deferred)** `ocb_core_status_view.now_us` is a u32 and wraps after about 71 minutes of one piece. It is the wire width of `STATUS.now_us` (no wire change allowed, D11), and pieces are minutes long; documented in `core.h`.
+
 ## Dev Agent Record
 
 ### Agent Model Used
@@ -351,6 +363,7 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow, 2026-11-22.
 - **D18. The aborted cells of the F.3 matrix.** An aborted core is always IDLE (every abort enters IDLE, and the latch NAKs the frames that leave it), so the cells "aborted × DIRECT/PLAYING" are set up by entering that mode and then aborting (`LINK_LOST`); their expected rows are the aborted behaviour, resulting mode IDLE. The precedence pair `ABORTED` over `BUSY` is unreachable in a consistent core; F.12 pins it white-box by forcing `mode = PLAYING` with the latch set, and `ABORTED` still wins. Rationale: covers the spec's 96 cells without inventing an impossible state in the black-box test.
 - **D19. Fail-safe handling of impossible inputs.** An abort cause outside the enum is handled like `CORE_STALL` (latched, no EVENT); a scheduler pass in PLAYING with an empty queue (unreachable: START needs a queued event and an empty queue after an apply is an underrun) aborts with `UNDERRUN`. Rationale: any unexpected path ends neutral, never stuck.
 - **D20. Gate details.** `check-core-pure.sh` spells the word boundary out (`(^|[^A-Za-z0-9_])`, POSIX ERE has no `\b`), so `ocb_queue_free(` is legal while a bare `free(` is not; the `printf` rule covers the whole `*printf` family (`snprintf`, `fprintf`). The good fixture contains an identifier with `free` in its name to pin this.
+- **D22. HELLO's version is checked by the link layer before the core (review M4).** The core treats every HELLO as a sync point and never reads `proto_ver`; Story 2.6 checks the version first and answers a mismatch itself, deciding there whether a mismatched HELLO still forces NEUTRAL. Rationale: keeps the core free of session state (D2, D14) and makes the order explicit for 2.6 and 3.3.
 - **D21. `ocb_test.h` helpers are `static inline`.** Including `ocb_test.h` from a test that does not use `OCB_CHECK_MEM` made Apple clang fail with `-Wunused-function` under `-Werror`; `ocb_test_hexdump` and `ocb_test_failures` became `static inline` (no behaviour change; Story 2.2's tests unaffected).
 
 ### Debug Log References
@@ -365,6 +378,8 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow, 2026-11-22.
   - (e) HELLO path without `enter_idle`: `test_core_sync.c:31: FAIL: HELLO from PLAYING mid-piece seq 0: mode PLAYING` (also not NEUTRAL, queue not cleared).
   - (f) LATE `>=`: `test_core_end_late.c:149: FAIL: overdue by exactly late_us must apply (event 3)` and the 8000 µs fallback case.
   - (g) latch cleared on PING: `test_core_modes.c:215: FAIL: cell 66 PING/IDLE/ab1/rdy1: aborted 0, wanted 1`.
+- Review fixes (M1): with `pico_stdlib` added to the real `controller/core/CMakeLists.txt`, an `extra.cpp` including `pico/stdlib.h` and a `gettimeofday(` call in `sched.c`, the gate printed `controller/core/CMakeLists.txt:9:target_link_libraries(ocb_core PUBLIC ocb_proto pico_stdlib)`, `controller/core/extra.cpp:1:#include "pico/stdlib.h"` and `controller/core/sched.c:57:...gettimeofday(0, 0);`, rc=1; reverted (tree `diff -r` identical), gate `ok (11 files)`. Each of the 18 bad fixtures exits 1 with output; `core_pure_selftest: ok (18 bad fixtures)`.
+- Review fixes (M2): `modes.c` compiled by hand for ARM with `-DOCB_CORE_RAMFUNC=__attribute__((section(".time_critical.ocb_core")))`: every function of the frame path, static helpers included, is in `.time_critical.ocb_core` (0x59c bytes); only `ocb_core_init`, `ocb_core_set_report_period` and `ocb_core_status` stay in `.text`.
 - Sanitizers: the host-tests compile command of the core and tests contains `-fsanitize=address,undefined` (checked with `ninja -t commands`); no sanitizer report in any run.
 
 ### Completion Notes List
@@ -377,6 +392,7 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow, 2026-11-22.
 - `arm-none-eabi-size` of the `ocb_core` objects (fw-release, informational for Story 2.5): `queue.c.o` 204, `mask.c.o` 28, `modes.c.o` 913, `sched.c.o` 188 bytes text; total 1333 text, 0 data, 0 bss. The queue storage (512 × 12 = 6 KB) is not allocated by this story.
 - CI: **unverified until pushed** (new step "Controller core is pico-sdk free (AD-2)" and the six new ctest entries run in "Host tests").
 - Suggestions for the owner (not done here, per Task 8.4): the risk-register row C6 (`_bmad-output/specs/`) can move to "mitigated in code, hardware proof pending"; the open points of the story (D4 extra refusals, D7 hat not narrowed, D5 END counted in `abort_count`, D6 8000 µs fallback) stand as written.
+- After the review fixes (M1 to M4), re-run from `firmware/`: `fw-release`, `fw-debug`, `host-tests` with `--clean-first`: rc 0, 0 warnings each; `ctest --preset host-tests`: `100% tests passed out of 14`; `check-pins`, `check-proto-version`, `check-proto-pure`, `check-core-pure`: ok; `shellcheck` and `actionlint` clean; UF2s produced; `ocb_core` text unchanged at 1333 bytes (default empty `OCB_CORE_RAMFUNC`). CI for these fixes: unverified until pushed.
 - Not touched: `common/proto/**` (vectors and `consts.h` unchanged, no wire change), `common/hw/**`, `bridge/**`, `docs/ocarina-input-mechanics.md`, `_bmad/**`, `_bmad-output/specs/**`. No 2wiCC or third-party code.
 
 ### File List
@@ -408,6 +424,18 @@ Added:
 - `firmware/tests/core_pure_fixtures/bad/reads_clock.c`
 - `firmware/tests/core_pure_fixtures/bad/allocates.c`
 - `firmware/tests/core_pure_fixtures/good/allowed.c`
+- `firmware/tests/core_pure_fixtures/bad/calls_puts.c` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/calls_putchar.c` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/calls_stdio_init.c` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/reads_clock_gettime.c` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/reads_gettimeofday.c` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/ext_cpp/sdk.cpp` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/ext_cc/sdk.cc` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/ext_asm/sdk.S` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/ext_inc/table.inc` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/cmake_links_sdk/CMakeLists.txt` (review M1)
+- `firmware/tests/core_pure_fixtures/bad/cmake_links_board/CMakeLists.txt` (review M1)
+- `firmware/tests/core_pure_fixtures/good/CMakeLists.txt` (review M1)
 - `firmware/tools/check-core-pure.sh`
 
 Modified:
@@ -427,3 +455,4 @@ Modified:
 ### Change Log
 
 - 2026-11-22: Story 2.4 implemented: `ocb_core` library (modes, queue, scheduler, abort latch, safety mask), host tests F.3 to F.6, F.12, F.13, purity gate `check-core-pure.sh` with CI step, docs (test plan, link protocol rules, READMEs, notices). Decisions D16 to D21 recorded. Status: review.
+- 2026-11-22: Addressed code review findings - 4 items resolved (M1 to M4: gate extended to more file types, names and CMake links; static hot-path helpers carry `OCB_CORE_RAMFUNC`; link-protocol text on the two extra refusals and the HELLO version order). M5 to M7 deferred with reasons. Decision D22 added. Status stays review.

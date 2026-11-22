@@ -6,7 +6,13 @@
  * including any SDK header. Empty by default; a build may define it, for
  * example with a section attribute, through a compile definition on the
  * ocb_core target. It precedes the return type of every hot function, in
- * both the declaration and the definition.
+ * both the declaration and the definition, and follows `static` on the
+ * private helpers of the hot path.
+ *
+ * Not covered by this macro (Story 2.5 must review their placement when it
+ * runs the core from RAM): the ocb_proto functions the core calls (message
+ * decoders, state predicates), the OCB_NEUTRAL constant, and any constant
+ * table the compiler emits for a switch (read-only data, in flash).
  */
 #ifndef OCB_CORE_RAMFUNC_H
 #define OCB_CORE_RAMFUNC_H

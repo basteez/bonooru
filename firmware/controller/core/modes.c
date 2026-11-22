@@ -54,7 +54,7 @@ OCB_CORE_RAMFUNC void ocb_core_enter_idle_(ocb_core *core)
     core->mode = OCB_MODE_IDLE;
 }
 
-static void out_reset(ocb_core_out *out)
+static OCB_CORE_RAMFUNC void out_reset(ocb_core_out *out)
 {
     out->kind = OCB_CORE_REPLY_NONE;
     out->nak_reason = 0u;
@@ -62,7 +62,7 @@ static void out_reset(ocb_core_out *out)
 }
 
 /* EVENT per cause (D5); OCB_EVT_NONE = latched without an EVENT. */
-static uint8_t cause_event(ocb_core_abort_cause cause)
+static OCB_CORE_RAMFUNC uint8_t cause_event(ocb_core_abort_cause cause)
 {
     switch (cause) {
     case OCB_ABORT_LINK_LOST:
@@ -102,32 +102,32 @@ OCB_CORE_RAMFUNC void ocb_core_abort(ocb_core *core, ocb_core_abort_cause cause,
     }
 }
 
-static void reply_ack(ocb_core_out *out)
+static OCB_CORE_RAMFUNC void reply_ack(ocb_core_out *out)
 {
     out->kind = OCB_CORE_REPLY_ACK;
 }
 
-static void reply_nak(ocb_core_out *out, uint8_t reason)
+static OCB_CORE_RAMFUNC void reply_nak(ocb_core_out *out, uint8_t reason)
 {
     out->kind = OCB_CORE_REPLY_NAK;
     out->nak_reason = reason;
 }
 
-static bool hat_ok(const ocb_state *s)
+static OCB_CORE_RAMFUNC bool hat_ok(const ocb_state *s)
 {
     return s->hat <= OCB_HAT_NEUTRAL;
 }
 
 /* HELLO and STOP: sync points, never refused, any body length (D4). */
-static void sync_point(ocb_core *core, const ocb_frame *frame)
+static OCB_CORE_RAMFUNC void sync_point(ocb_core *core, const ocb_frame *frame)
 {
     ocb_core_enter_idle_(core);
     core->aborted = false;
     core->expected = (uint8_t)(frame->seq + 1u);
 }
 
-static void handle_set_state(ocb_core *core, const ocb_core_env *env, const ocb_frame *frame,
-                             ocb_core_out *out)
+static OCB_CORE_RAMFUNC void handle_set_state(ocb_core *core, const ocb_core_env *env,
+                                              const ocb_frame *frame, ocb_core_out *out)
 {
     ocb_msg_set_state m;
     if (core->aborted) {
@@ -147,7 +147,8 @@ static void handle_set_state(ocb_core *core, const ocb_core_env *env, const ocb_
     }
 }
 
-static void handle_start(ocb_core *core, const ocb_core_env *env, const ocb_frame *frame, ocb_core_out *out)
+static OCB_CORE_RAMFUNC void handle_start(ocb_core *core, const ocb_core_env *env, const ocb_frame *frame,
+                                          ocb_core_out *out)
 {
     ocb_msg_start m;
     if (core->aborted) {
@@ -168,7 +169,8 @@ static void handle_start(ocb_core *core, const ocb_core_env *env, const ocb_fram
     }
 }
 
-static void handle_queue_event(ocb_core *core, const ocb_frame *frame, ocb_core_out *out)
+static OCB_CORE_RAMFUNC void handle_queue_event(ocb_core *core, const ocb_frame *frame,
+                                                ocb_core_out *out)
 {
     ocb_msg_queue_event m;
     if (core->aborted) {

@@ -119,7 +119,8 @@ void ocb_core_set_report_period(ocb_core *core, uint16_t report_period_us);
 /* Handles one app frame that the link layer accepted (seq == expected, or a
  * sync point HELLO / STOP). Sets *out to the reply. HELLO and STOP are
  * never refused; types outside 0x01..0x3F give OCB_CORE_REPLY_NONE and
- * change nothing. */
+ * change nothing. HELLO's proto_ver is not read here: every HELLO resets
+ * the core, so the link layer checks the version (AD-7) before calling. */
 OCB_CORE_RAMFUNC void ocb_core_frame(ocb_core *core, const ocb_core_env *env, const ocb_frame *frame,
                                      ocb_core_out *out);
 

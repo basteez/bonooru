@@ -15,3 +15,9 @@ headers on its allow-list, `ocb_proto/` and `ocb_core/` (`tools/check-core-pure.
 the host preset: `cmake --preset host-tests && cmake --build --preset host-tests && ctest --preset host-tests`.
 The firmware links it, but `main.c` still only blinks the LED; Stories 2.5 to 2.7 wire it to the
 timer, USB and the link.
+
+RAM placement (for Story 2.5): the hot functions of the core, including its private helpers, carry
+the `OCB_CORE_RAMFUNC` macro (empty by default, `ocb_core/ramfunc.h`). It does not cover the
+`ocb_proto` functions the core calls (message decoders, state predicates), the `OCB_NEUTRAL`
+constant or compiler-generated read-only tables; Story 2.5 must review where those live before
+claiming the hot path runs from RAM.
