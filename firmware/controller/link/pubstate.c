@@ -23,6 +23,8 @@ void ocb_pubstate_init(ocb_pubstate *ps)
     ps->b[5] = OCB_NEUTRAL.flags;
     ocb_pubstate_write_end(ps);
     ps->seq = 0u;
+    ps->written_count = 0u;
+    ps->written = false;
 }
 
 void ocb_pubstate_write_begin(ocb_pubstate *ps)
@@ -50,6 +52,17 @@ void ocb_pubstate_write(ocb_pubstate *ps, const ocb_state *s)
     ocb_pubstate_write_end(ps);
 }
 
+bool ocb_pubstate_publish(ocb_pubstate *ps, const ocb_state *s, uint32_t publish_count)
+{
+    if (ps->written && publish_count == ps->written_count) {
+        return false;
+    }
+    ocb_pubstate_write(ps, s);
+    ps->written_count = publish_count;
+    ps->written = true;
+    return true;
+}
+
 bool ocb_pubstate_read(const ocb_pubstate *ps, ocb_state *out)
 {
     for (uint32_t t = 0u; t < OCB_PUBSTATE_TRIES; t++) {
@@ -72,6 +85,5 @@ bool ocb_pubstate_read(const ocb_pubstate *ps, ocb_state *out)
             return true;
         }
     }
-    *out = OCB_NEUTRAL;
-    return false;
+    return false; /* *out keeps the caller's last good state */
 }

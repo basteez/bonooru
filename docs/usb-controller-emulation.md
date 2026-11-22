@@ -45,7 +45,7 @@ Choice: **P2** (ADR-002 (author's notes), accepted 2026-11-18). Every input the 
 - Interface: descriptors, a control/OUT-report handler (the handshake), `build_report(const ocb_state*)`, `tick()` and `ready()`. P2 (story 2.3, `firmware/controller/profile_p2/`, library `ocb_p2`, pure C99): `ocb_p2/desc.h` (descriptors), `ocb_p2_on_output()` (OUT reports; `ocb_p2_on_feature()` refuses every feature report), `ocb_p2_next_in()` / `ocb_p2_build_report()` (take a `const ocb_state *`), `ocb_p2_tick()`, `ocb_p2_ready()`. The TinyUSB glue is `firmware/controller/platform/usb_p2.c`, core 0 only.
 - `ready()` is true once the console handshake is complete (P1: `SET_CONFIGURATION` and the first IN poll; P2: the host asked for the input stream, USB command `80 04` or subcommand `03 30`, whichever comes first; cleared by `80 05` and by a restart; story 2.3 D5); until then `START` and `SET_STATE` get `NAK NOT_READY` (AD-8). It is also reported passively as `STATUS.flags.console_ready` (AD-19).
 - `ready()` returns to false on USB suspend, unmount or bus reset, and when no IN report has been taken for more than 100 ms (covers "Wired Communication" switched off without a bus event; flag only, not an abort cause).
-- A profile reads only the published state; it never reaches into the scheduler. P2 (story 2.3 D12, D35): `ocb_ctrl_published_read()` returns core 1's published state through a sequence lock in debug builds (3 tries, then NEUTRAL; `ocb_link/pubstate.h`) and NEUTRAL in release builds until Story 2.5.
+- A profile reads only the published state; it never reaches into the scheduler. P2 (story 2.3 D12, D35): `ocb_ctrl_published_read()` returns core 1's published state through a sequence lock in debug builds (written only when the core publishes a new state; a reader that finds no consistent copy in 3 tries keeps its last good one; `ocb_link/pubstate.h`) and NEUTRAL in release builds until Story 2.5.
 - P2 refuses firmware-update subcommands (C7) and restarts its handshake after a bus reset. Debug builds only: subcommands are logged through the SPSC ring (they reach the app in the debug `STATUS` v3 tail, [link protocol](link-protocol.md)).
 - `INFO.report_period_us` is the median IN interval measured on the device (P2: the interval between `0x30` report completions; handshake replies are not counted) (0 if unknown, AD-7). It answers the polling-rate hypothesis below without a sniffer.
 
@@ -170,17 +170,17 @@ Canonical state to report: Y `[3] 01`, X `[3] 02`, B `[3] 04`, A `[3] 08`, R `[3
 
 ## Measured on the Switch 2
 
-Filled by the owner's bench session (story 2.3 Task 11: H.15, H.16, H.17). Empty until then.
+Owner's bench session of 2026-11-22 (story 2.3 Task 11; Switch 2 system 23.5.0, top USB-C port, Wired Communication ON).
 
 | What | Value | Source |
 |---|---|---|
-| VID:PID listed by the console | | H.15 |
-| Handshake sequence the console sends (P2 debug log) | attempt 1 (stalled, before D34): restart bus-reset, restart mount, report 00 ×2, `80 05`, report 00, `80 01`, `80 02`, sub `03` (stream on), `80 04`, sub `02`, `08`, `10`, `10`, `01`, then `01` repeated (each NACKed) | H.15 `p2check` |
-| Median IN interval, `bInterval` 1 (`report_period_us`) | | H.15 |
-| Median IN interval, `bInterval` 8 | | H.17 |
+| VID:PID listed by the console | `057E:2009` accepted; nothing visible (no icon, no Controllers-menu entry) until the controller's **first input**, which the console then acts on (the first A launched the game from HOME) | H.15 attempt 3 |
+| Handshake sequence the console sends (P2 debug log) | after D34 (attempts 2 and 3): restart bus-reset, restart mount, report 00 ×2, `80 05`, report 00, `80 01`, `80 02`, sub `03` arg `30` (stream on), `80 04`, sub `02`, `08`, `10` ×2, `01` arg `01`, `03` arg `30`, `04`, `10` ×5, `40`, (`48` in attempt 3), `30`, then rumble only: the S12 Switch 1 order. Before D34, attempt 1 (stalled, before D34): restart bus-reset, restart mount, report 00 ×2, `80 05`, report 00, `80 01`, `80 02`, sub `03` (stream on), `80 04`, sub `02`, `08`, `10`, `10`, `01`, then `01` repeated (each NACKed) | H.15 `p2check` |
+| Median IN interval, `bInterval` 1 (`report_period_us`) | **8000 µs**: the console polls every 8 ms although we declare 1 ms (the Mac polls the same build at about 2 ms, H.14) | H.15 attempts 2 and 3 |
+| Median IN interval, `bInterval` 8 | not run: the console already polls at 8 ms with `bInterval` 1 | H.17 skipped |
 | Report period jitter | | Story 2.5 |
-| Sleep: USB suspend or port power cut | | H.16 |
-| Wake, Wired Communication off / on, dock: re-enumeration | | H.16 |
+| Sleep: USB suspend or port power cut | **port power cut**: STATUS stops, the controller is off until the console wakes | H.16 |
+| Wake, Wired Communication off / on, dock: re-enumeration | wake: ready 1.7 s after the console's first request, new handshake; Wired Communication OFF: ready fell within one STATUS period, no abort; ON: ready 0.0 s after the first request; dock not run | H.16 |
 
 ## Timing chain
 
@@ -193,7 +193,9 @@ Filled by the owner's bench session (story 2.3 Task 11: H.15, H.16, H.17). Empty
 
 Constant parts don't matter (the whole piece shifts); variable parts set the jitter.
 
-### Switch 2 polls a full-speed HID device every 1 ms **[HYPOTHESIS — unverified]** (measured by H.15 and H.17, story 2.3: see "Measured on the Switch 2")
+### Switch 2 polls a full-speed HID device every 1 ms **[REFUTED 2026-11-22]**
+
+Measured on the device (H.15, story 2.3): the Switch 2 polls the wired Pro Controller every **8 ms** (`INFO.report_period_us` 8000) although the descriptor asks for 1 ms. Story 2.5 sets the LATE threshold and measures the jitter with this number (issue #21). The original hypothesis text follows.
 
 bInterval 1 asks for 1 ms; the host may poll slower (8 ms is common on Switch 1 for the Pro Controller). Measured on the device: the controller reports the median IN interval as `INFO.report_period_us` (AD-7, AD-12); a USB sniffer or a debug-build GPIO toggle on every IN transfer is a cross-check.
 

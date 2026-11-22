@@ -47,7 +47,7 @@ ocb_dbglog_ring *ocb_ctrl_dbglog(void);
 
 /* The state the USB profile reports (AD-12 build_report input, story 2.3
  * D12, D35): in debug builds core 1's published state through a sequence
- * lock (NEUTRAL when no consistent copy in 3 tries); in release builds
+ * lock (the last good copy when none is consistent in 3 tries); in release builds
  * NEUTRAL until Story 2.5. Core 0. */
 void ocb_ctrl_published_read(ocb_state *out);
 

@@ -50,6 +50,7 @@ static ocb_dbglog_ring s_dbglog;
  * builds only, so the bench can prove a state reaches the console before
  * Story 2.5 owns the real seqlock). */
 static ocb_pubstate s_pub;
+static ocb_state s_pub_last; /* core 0 only: the last consistent copy read */
 #endif
 
 typedef char ocb_queue_cap_fits_u16[(OCB_QUEUE_CAP_DEFAULT <= 0xFFFF) ? 1 : -1];
@@ -60,6 +61,7 @@ void ocb_ctrl_usb_mailbox_init(void)
 #ifdef OCB_DEBUG_BUILD
     ocb_dbglog_ring_init(&s_dbglog);
     ocb_pubstate_init(&s_pub);
+    s_pub_last = OCB_NEUTRAL;
 #endif
 }
 
@@ -143,9 +145,10 @@ void __not_in_flash_func(ocb_ctrl_link_step)(void)
      * pass then sees the closed gate and returns the pad to high-Z above. */
     ocb_link_tx_settled(&s_link, now, ocb_uart_link_tx_idle());
 #ifdef OCB_DEBUG_BUILD
-    /* Story 2.3 D35: the state the core published in this pass (SET_STATE
-     * in DIRECT, the scheduler in PLAYING), for the USB report on core 0. */
-    ocb_pubstate_write(&s_pub, &s_core.published);
+    /* Story 2.3 D35: a newly published state (SET_STATE in DIRECT, the
+     * scheduler in PLAYING), for the USB report on core 0; written only
+     * when publish_count moved, so core 0 rarely meets a write. */
+    (void)ocb_pubstate_publish(&s_pub, &s_core.published, s_core.publish_count);
 #endif
 }
 
@@ -167,12 +170,13 @@ ocb_dbglog_ring *ocb_ctrl_dbglog(void)
 #endif
 
 /* Story 2.3 D12, D35: debug builds read core 1's published state through
- * the sequence lock (3 tries, then NEUTRAL); release builds report NEUTRAL
+ * the sequence lock (3 tries, else the last good copy); release builds report NEUTRAL
  * until Story 2.5 makes the seqlock the real path for every build. */
 void ocb_ctrl_published_read(ocb_state *out)
 {
 #ifdef OCB_DEBUG_BUILD
-    (void)ocb_pubstate_read(&s_pub, out);
+    (void)ocb_pubstate_read(&s_pub, &s_pub_last); /* unchanged when no consistent copy */
+    *out = s_pub_last;
 #else
     *out = OCB_NEUTRAL;
 #endif

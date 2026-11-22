@@ -4,7 +4,7 @@ baseline_commit: 9af451e7027804e86cc8800c7a897931eba7fd64
 
 # Story 2.3: Controller enumerates as a wired Pro Controller
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -138,16 +138,16 @@ Local build, as in Story 2.7: from `firmware/`, `export OCB_PICOTOOL_DIR=firmwar
     - the STATUS decoder learns the v3 window (D14) and prints it in `watch`.
   - [x] 9.3 `tests/test_p2_probe.py` (**F.32**, ctest `p2_probe_selftest`, `python3 -I`): `p2_probe.py`'s own expected bytes, its `enum` parser on three captured-shape JSON fixtures (SPUSBHostDataType, SPUSBDataType, a bounce where the device vanishes once; hand-written fixtures in `tests/fixtures/`), and its `handshake` logic run against the real `ocb_p2` through a ctypes shared module built like `ocb_link_sim` (`ocb_p2_sim`, without sanitizers) with a fake HID transport, a fake clock, a lossy variant that drops one reply (the resend path) and negative controls (a reply with one wrong byte must make it print FAIL). The `link_probe.py` side: `p2check` and `p2watch` run unmodified against `ocb_link_sim` extended with the v3 window and a scripted "console" (sleep, wake, wired off and on), with negative controls (no `console_ready` within the budget, an interval of 100 µs, a missing handshake record). Registered in `tests/CMakeLists.txt`; update the existing F.19, F.20, F.23 fixtures only as far as the removal of the bench build requires (the fake "ready console for the bench build" of the model becomes "a host that completed the handshake").
 
-- [ ] **Task 10: Documentation** (D22) — 10.1 to 10.4 and 10.6 done; 10.5 waits for the bench evidence (by design)
+- [x] **Task 10: Documentation** (D22)
   - [x] 10.1 `docs/test-plan.md` (UPDATE): rows **F.24 to F.32** (Firmware host tests table), rows **H.13 to H.17** and the changed **H.11** (Hardware table), a "Bench rig for the P2 profile (Story 2.3)" block (Mac-only part, console part, the commands with `"$P"`, the recorded fields), and the Watchdog tests untouched. Update F.10 text (now fed by the real profile as well), F.15, F.16, F.17 (STATUS tail), F.19 to F.23 where the bench build is named. Test environment table: no value changes (system 23.5.0, OoT 1.1.1 are read, not asked); add the line "Console USB: top USB-C port, Pro Controller Wired Communication ON".
   - [x] 10.2 `docs/usb-controller-emulation.md`: finish Task 1.2; update "Profile interface (AD-12)" with the final function names and the D5 ready rule; the IN-interval hypothesis header gets the measured number only after Task 11.
   - [x] 10.3 `docs/link-protocol.md` (UPDATE, small): the STATUS debug counters list gets "v3, bytes 21 and on (Story 2.3 D14)": the P2 log window; "Rules the controller link applies" gets a "Story 2.3" paragraph: mailbox `report_period_us`, INFO reflects the measured value once known (0 before, and again after a USB-down event), the LATE threshold follows it (Story 2.5 confirms or replaces the fallback). No wire value changes, no `PROTO_VERSION` bump, no vector edit (D24). Keep `test_docs_constants.py` (F.22) green; extend it with the new values only if a docs table is added (VID, PID, descriptor length, default `bInterval`, STATUS tail layout) so the doc and `ocb_p2/config.h` cannot drift.
   - [x] 10.4 `firmware/README.md`, `firmware/controller/README.md` (new paragraphs for `profile_p2/` and the USB glue, the `OCB_P2_BINTERVAL` and `OCB_PROFILE` options, the removal of the bench build, the gate), `firmware/THIRD_PARTY_NOTICES.md` (TinyUSB now "linked into the controller UF2"; a line for `ocb_p2`: "written from public reverse-engineering documentation (list), no third-party code"; one sentence that the USB identifiers 057E:2009 and the strings are those of the device the console expects, used for interoperability with the owner's console, no third-party code or assets).
-  - [ ] 10.5 `_bmad-output/specs/spec-bonooru/risk-register.md` (UPDATE, status column only, and only after Task 11): C7 (refusal implemented and observed), R13 (re-enumeration result). Do not edit before the evidence exists. **Pending the owner's bench (Task 11.4): deliberately not edited.**
+  - [x] 10.5 `_bmad-output/specs/spec-bonooru/risk-register.md` (UPDATE, status column only, and only after Task 11): C7 (refusal implemented and observed), R13 (re-enumeration result). Do not edit before the evidence exists. Done after the bench (2026-11-22): C7 "mitigated (Story 2.3)" with what was and was not observed; R13 evidence added to its mitigation cell (that table has no status column; dock and undock not run).
   - [x] 10.6 Remove every offer of the bench build: Story 2.7's text stays as history; `docs/test-plan.md` H.11, `firmware/controller/README.md`, `link_probe.py` docstring and help, `CMakePresets.json`, `.github/workflows/firmware.yml`.
 
-- [ ] **Task 11: Owner's bench session** (AC: #1, #3, #4, #5; D19). Rows in "Hardware checks" below. Needs: controller Zero, the Apple USB-C cable (reference cable), the Switch 2 (top USB-C port), the second Zero with 2wiCC_Comms wired as in Spike 0b (the Story 2.6 rig, wiring not rechecked) for H.15 to H.17, `pip install pyserial hidapi` in the bench venv.
-  - [ ] 11.1 H.13, H.14 on the Mac (no console). 11.2 H.15 on the console, then H.16, then H.17 (optional second flash). 11.3 Re-run H.11 on the real stack. 11.4 Fill the test plan rows, the "Measured on the Switch 2" table in `docs/usb-controller-emulation.md` (AC5b), then risk-register C7 and R13. 11.5 Mark the story done only when H.13 to H.16 are PASS or each FAIL has an explained decision.
+- [x] **Task 11: Owner's bench session** (AC: #1, #3, #4, #5; D19). Rows in "Hardware checks" below. Needs: controller Zero, the Apple USB-C cable (reference cable), the Switch 2 (top USB-C port), the second Zero with 2wiCC_Comms wired as in Spike 0b (the Story 2.6 rig, wiring not rechecked) for H.15 to H.17, `pip install pyserial hidapi` in the bench venv.
+  - [x] 11.1 H.13, H.14 on the Mac (no console). 11.2 H.15 on the console, then H.16, then H.17 (optional second flash). 11.3 Re-run H.11 on the real stack. 11.4 Fill the test plan rows, the "Measured on the Switch 2" table in `docs/usb-controller-emulation.md` (AC5b), then risk-register C7 and R13. 11.5 Mark the story done only when H.13 to H.16 are PASS or each FAIL has an explained decision.
 
 ## Dev Notes
 
@@ -582,27 +582,62 @@ Claude (Opus), gds-dev-story workflow, run autonomously on 2026-11-22.
 
 ### Completion Notes List
 
-- Tasks 1 to 10 done except 10.5 (risk register, after the bench by design). Task 11 (owner's bench) is pending: every hardware AC is **unverified on hardware** (H.13 to H.17 pending, H.11 re-run pending).
-- **CI verified on the pushed commit `f8900f1`**: run https://github.com/basteez/bonooru/actions/runs/45039970542 = success, artifact `firmware-uf2` present. Earlier run 45039390009 on the same branch also success. Exact bench commands are in `docs/test-plan.md` (H.13 to H.17, changed H.11, the "Bench rig for the P2 profile (Story 2.3)" block) and summarised below.
-- AC1 [HOST]: `ocb_p2` implements the five AD-12 parts; the glue reads only `ocb_ctrl_published_read()` (NEUTRAL until 2.5, D12). Both UF2s build with 0 warnings; the console's acceptance is H.15.
-- AC2 [HOST + review]: clean-room from S1 to S9, every constant cited by S-number, sources table in `docs/usb-controller-emulation.md`; `grep 2wiCC` in the new code finds only the "no 2wiCC code" sentences.
-- AC3 [HOST]: F.26 proves every refusal leaves the state byte-for-byte unchanged and counts it; H.15 prints any refusal the console triggers.
-- AC4 [HOST]: restart on mount, unmount, suspend and bus reset (F.25, glue per D28); re-enumeration is H.16.
-- AC5a [HOST + CI]: debug log through the SPSC ring into the STATUS v3 tail (F.31, F.32); absent from release builds, proven by `check-release-nolog.sh` (new CI step, both modes run locally).
-- AC5b [HOST]: the median is measured on core 0 (F.29), crosses the mailbox into INFO and the LATE threshold (F.31); the number itself comes from H.15 / H.17 and goes into "Measured on the Switch 2" (empty rows written). Issue #21 stays open.
-- D15 done: `OCB_BENCH_FAKE_READY`, the `fw-debug-bench` presets, the CI step and every doc offer removed; history kept in the test plan's 2.7 records. `firmware/build/fw-debug-bench/` (untracked build output) left untouched.
-- Optional `tests/fuzz/fuzz_p2.c` (libFuzzer, `-DOCB_FUZZ=ON`, clang only) written and syntax-checked; not built by a preset and not run in CI (Apple clang has no libFuzzer runtime). CI coverage is the deterministic `test_p2_fuzz` (F.28) under ASan and UBSan.
-- Local random-input fuzz of the `ocb_p2` entry point under ASan and UBSan (outside the repo, story lead's run): 6,000,000 inputs, no sanitizer report.
-- Local verification at `f8900f1`: `ctest --preset host-tests` 100% passed out of 34 (25 old + 9 new, 0 warnings); `fw-release` and `fw-debug` build with 0 warnings; `check-pins`, `check-proto-version`, `check-proto-pure` (14), `check-core-pure` (11), `check-link-pure` (18), `check-p2-pure` (9) and `check-release-nolog` ok. Each new gate was shown red once by injection (`check-p2-pure`: F.30; `check-release-nolog`: the debug push in the release glue; see Debug Log).
-- Not done on purpose: risk register (10.5), the "Measured on the Switch 2" values, the ADR-002 hypothesis status (all need Task 11).
+- **Status: done (2026-11-22).** All tasks complete, Task 11 included. Every AC has host evidence and bench evidence; see "Acceptance criteria: evidence" below.
+- **Tests:** `ctest --preset host-tests` reports 100% passed out of 35 (25 before the story, plus F.24 to F.33), under ASan and UBSan.
+- **Builds and gates:** fw-release and fw-debug build with 0 warnings. All gates are green: `check-pins`, `check-proto-version`, `check-proto-pure` (14), `check-core-pure` (11), `check-link-pure` (20), `check-p2-pure` (9), `check-release-nolog` (release ELF, and `--expect-present` on the debug ELF).
+- **CI:** the last green run on the branch is on `573630f`: https://github.com/basteez/bonooru/actions/runs/45043965394. The final run, on the commit that records the bench, is added by the story lead. Earlier green runs: `f8900f1` (45039970542) and 45039390009.
+- **Bench on the owner's Switch 2** (system 23.5.0, top USB-C port, Wired Communication ON; bridge 2wiCC_Comms v1.1 on `/dev/cu.usbmodem1101`), all recorded in `docs/test-plan.md`:
 
-**Bench steps for the owner (Task 11).** From the repo root, bench venv with `pip install pyserial hidapi`. Build: `cd firmware && export OCB_PICOTOOL_DIR=$PWD/.tools/picotool-2.3.1 OCB_ARM_TOOLCHAIN=$PWD/.tools/arm-gnu-toolchain-15.2.Rel1 && cmake --preset fw-debug && cmake --build --preset fw-debug && cd ..`. Only the controller Zero is ever put in BOOTSEL (`firmware/build/fw-debug/controller/controller.uf2`); the bridge Zero keeps 2wiCC_Comms v1.1.
-1. H.13: flash the controller Zero, unplug it; `python3 firmware/tools/p2_probe.py enum --wait-s 90`; at the prompt plug it into the Mac. Expect `PASS` (one `SKIP` line allowed for the descriptor); LED still amber 2 Hz.
-2. H.14: `python3 firmware/tools/p2_probe.py handshake --seconds 10` (allow Input Monitoring once if asked, rerun). Expect `PASS`.
-3. H.11: bridge wired, `export P=/dev/cu.usbmodemXXXX`; one line: `python3 firmware/tools/p2_probe.py handshake --hold 120 & python3 firmware/tools/link_probe.py --port "$P" linkup --seconds 5 --expect-ready yes && python3 firmware/tools/link_probe.py --port "$P" direct && python3 firmware/tools/link_probe.py --port "$P" playing; wait`. Expect `PASS` three times.
-4. H.15: console on, Wired Communication ON; `python3 firmware/tools/link_probe.py --port "$P" p2check --wait-s 120`; at the prompt plug the controller into the console's top USB-C port; glance for the controller icon. Expect `PASS` and the line `H.15 median IN interval: N us`; record the printed sequence.
-5. H.16: `python3 firmware/tools/link_probe.py --port "$P" p2watch`; one action per prompt (sleep, wake, Wired Communication OFF, ON), 90 s each. Expect `PASS`. Optional `--dock`.
-6. H.17 (optional): `cmake --preset fw-debug -DOCB_P2_BINTERVAL=8 && cmake --build --preset fw-debug` in `firmware/`, flash, plug into the console, `p2check`, then rebuild with `-DOCB_P2_BINTERVAL=1` and re-flash.
+| Check | Result |
+|---|---|
+| H.13 | PASS |
+| H.14 | PASS |
+| H.11 | PASS ×3, on the real `ready()` |
+| H.15 | attempt 1 FAILED (the pairing loop, fixed by D34); attempt 2 nothing visible (the report was always NEUTRAL, D12); attempt 3 PASS (the first input acted on, D35) |
+| H.16 | PASS |
+| H.17 | skipped |
+
+- **Risk register:** C7 and R13 updated with the bench evidence.
+- **Optional libFuzzer target** `tests/fuzz/fuzz_p2.c` (`-DOCB_FUZZ=ON`, Homebrew LLVM): not run in CI. The deterministic F.28 fuzz covers CI. The story lead also ran a local random-input fuzz of 6,000,000 inputs with no sanitizer report.
+- **D15 done:** the `fw-debug-bench` build is gone. The untracked `firmware/build/fw-debug-bench/` directory was left as it was.
+
+### Acceptance criteria: evidence
+
+- [x] **AC1** (a wired Pro Controller on a stock Switch 2; the AD-12 interface).
+  - Host: F.24 (descriptors), F.25 (handshake), F.27 (report).
+  - Bench: H.13 (the Mac sees `057E:2009` with the right strings), H.14 (host handshake byte-exact), H.15 attempt 3 (the Switch 2 accepts the controller; the first A launched the game from HOME).
+- [x] **AC2** (clean-room, sources cited).
+  - Every constant cites S1 to S13. The sources table is in `docs/usb-controller-emulation.md`.
+  - No 2wiCC or GPL code. A review found no IMPORTANT issue.
+- [x] **AC3** (firmware update refused, C7).
+  - Host: F.26 and F.28. Every refusal leaves the state byte-for-byte unchanged.
+  - Bench: no update was offered in the whole session; the logged console sequences had no refused request.
+- [x] **AC4** (`ready()` false and a new handshake after reset, suspend or unmount; clean re-enumeration).
+  - Host: F.25 (restart), F.10 and F.31.
+  - Bench: H.16. Sleep cuts USB power; wake gives a new handshake with ready 1.7 s after the console's first request; Wired Communication off and on recovers. Dock was not run (R13 notes it).
+- [x] **AC5a** (debug log through the SPSC ring, absent in release).
+  - Host: F.31, F.32.
+  - CI: `check-release-nolog`.
+  - Bench: the console's real sequence was read from the debug STATUS on every H.15 attempt.
+- [x] **AC5b** (median IN interval in `INFO.report_period_us`; the polling rate recorded).
+  - Host: F.29, F.31.
+  - Bench: H.15 measured **8000 µs**, recorded in `docs/usb-controller-emulation.md`, where the ADR-002 1 ms hypothesis is now marked refuted.
+
+### Learnings
+
+- **macOS "Allow accessory to connect".** With the setting on "Ask", a pending prompt left the controller suspended and gone from the USB tree. That made the first H.11 attempt fail until a replug. Bench setup: "Allow accessories to connect: Always". The `p2_probe.py` failure messages now hint at it.
+- **The Switch 2 shows a wired controller only after its first input.** Before it there is no icon and no Controllers-menu entry, even though the console assigned a player slot (`30`). The H.15 criterion is now "first input acted on".
+- **The Switch 2 cuts USB power in sleep.** The controller board is off while the console sleeps and boots again on wake. "Sleep" is therefore a power cycle for the controller, not a USB suspend.
+- **The Switch 2 polls at 8 ms** whatever `bInterval` says (our descriptor asks for 1 ms; the Mac polls the same build at about 2 ms).
+- **The console's own init needs two answers a refusal policy would block.** The pairing request `01` needs `81 01 03` (a NACK makes the console repeat it forever), and the MCU configuration `21` needs `A0 21` with the standby state report. Both come from a real capture (S12) and change nothing. The rest of the init matches S12's Switch 1 order.
+- **The published-state handoff needs care.** A reader with a short retry budget against a writer that rewrites on every pass produced a NEUTRAL blip. Writing only on change, and keeping the last good copy on the reader, fixed it.
+
+### Hand-off to Story 2.5
+
+- **`report_period_us`:** 8000 µs measured on the Switch 2 (H.15). Issue #21 stays open: Story 2.5 sets the LATE threshold against it, replaces or confirms `OCB_CORE_LATE_FALLBACK_US`, measures the jitter, and re-measures the core 1 stack (debug STATUS path: `ocb_link_tx_status_debug_` 248 bytes + `ocb_link_status_body_` 80).
+- **The published-state path** (`controller/link/pubstate.c`, D35) is debug-only today. Story 2.5 keeps it or replaces it with its seqlock, and makes it the release path; release builds still report NEUTRAL.
+- **Barriers:** `OCB_LINK_BARRIER()` is empty on the target. The handoff relies on volatile accesses and the in-order Cortex-M0+. Story 2.5 should define it as `__dmb()` for the firmware (compile definition) when it owns the seqlock.
+- **The S12 data rows left unaligned:** device-info firmware version `04 00`, byte 10 `01`, colour flag `00`, the serial at `0x6000`, colours, the stick parameters at `0x6086` and `0x6098`, the stick calibration values. The console accepts us as we are; align them only if a later story finds a reason.
 
 ### Review follow-ups (code review, no IMPORTANT findings; MINOR fixes applied 2026-11-22)
 
@@ -759,6 +794,48 @@ The P2 log held 77 records: restart bus-reset, restart mount, report 00, report 
 - `check-release-nolog: ok, no debug-log symbol in build/fw-release/controller/controller.elf`; `--expect-present: ok (7 symbols)`.
 - `nm` shows no `ocb_pubstate_*` symbol in the release ELF; the debug ELF has `ocb_pubstate_init`, `_read`, `_write`, `_write_begin`, `_write_end`.
 
+### Bench complete (2026-11-22) and the H.15 attempt 3 blip
+
+**Results** (owner's bench; full rows in `docs/test-plan.md`):
+- **H.13 PASS** on the first build (the enumeration code is unchanged since). `057E:2009`, manufacturer, product, serial and `bcdDevice` 2.10 ok. SKIP for the report descriptor, because ioreg does not expose it.
+- **H.14 PASS** on `c020514`. `01` → `81 01 03`; `21` → `A0 21` + standby report. 5452 `0x30` reports, 0 timer discontinuities, host-side median 1994 µs.
+- **H.11 PASS ×3** on the real `ready()`, held by `p2_probe.py handshake --hold`. `playing` saw `LINK_LOST` at 81.5 ms. The first attempt failed on the macOS accessory prompt (see Learnings).
+- **H.15:**
+  - Attempt 1 FAILED: the pairing loop, fixed by D34.
+  - Attempt 2: nothing visible, because the report was always NEUTRAL (D12).
+  - **Attempt 3 PASS** on `573630f`.
+    - Mac pre-check: `watch --expect Down` with `press --hat down --count 5` PASS, 16356 reports, Down seen 5 times.
+    - Console: `p2check` PASS, `console_ready` 1 after 9.2 s, `report_period_us` 8000, 27 records including sub `48`.
+    - No icon and no Controllers-menu entry before the first input. The first `press --button A` launched Zelda from HOME, and `press --hat right --count 5` was all ACKed. The owner confirmed.
+- **H.16 PASS.** Sleep cuts USB power. Wake: ready 1.7 s after the console's first request, with a new handshake. Wired Communication OFF: ready fell within one STATUS period, `abort_count` 0. ON: ready 0.0 s after the first request.
+- **H.17** skipped: the console polls at 8 ms regardless of the 1 ms `bInterval`.
+
+**The press-4 blip** (found by code reading, then fixed and host-tested). The `watch` stream during press 4 showed:
+
+| Time | Report |
+|---|---|
+| 5.051 s | Down |
+| 5.172 s | (nothing) |
+| 5.174 s | Down |
+| 5.205 s | (nothing) |
+| 5.710 s | Down (press 5) |
+
+Reading it: one NEUTRAL report about 121 ms into a 150 ms press. The next report, 2 ms later, was Down again, and the press ended on time. So it is about 2 ms of NEUTRAL, not 30 ms.
+
+Causes ruled out:
+- **A watch-tool artefact.** `run_watch` skips timeouts and non-`0x30` reads. "(nothing)" is printed only for a real `0x30` report with no button.
+- **The link or DIRECT path.** An app timeout (1000 ms; PINGs every ≤ 50 ms) or any abort latches the core. It publishes NEUTRAL and stays NEUTRAL until STOP or HELLO, so Down could not come back 2 ms later.
+
+The cause: the `573630f` handoff. Core 1 rewrote the state on every link pass, a few microseconds apart, so the sequence counter was odd for a noticeable share of the time. Core 0's reader gave up after 3 consecutive odd or changed reads and returned NEUTRAL. With about 75 Mac polls per press, a fallback rate below 1% gives about one blip in 5 presses, which matches what was seen.
+
+**Fix (D35 amended):**
+- The writer publishes only when the core's `publish_count` moves (`ocb_pubstate_publish`), so a held state is written once.
+- A reader that gets no consistent copy keeps the last good state it read (`ocb_ctrl_published_read` keeps it on core 0) instead of NEUTRAL. It is still never torn and at most one report old.
+- F.33 extended. Shown failing once each:
+  - the old NEUTRAL fallback: `test_link_pubstate.c:57: FAIL: read during a write: false, last good state kept`;
+  - a writer rewriting every pass: `test_link_pubstate.c:67: FAIL: same count rewrote at pass 0`.
+- Not re-run on hardware. It needs no bench step before Story 2.5, which owns this path.
+
 ### File List
 
 New:
@@ -794,6 +871,7 @@ New:
 - `firmware/tests/p2_pure_fixtures/` (bad: `includes_sdk.c`, `includes_tusb.c`, `includes_hid_device.c`, `includes_stdio.c`, `includes_stdlib.c`, `includes_core.c`, `includes_link.c`, `reads_clock.c`, `allocates.c`, `multicore.c`, `cmake_links_tinyusb/CMakeLists.txt`, `cmake_links_link/CMakeLists.txt`; good: `allowed.c`, `CMakeLists.txt`)
 - `firmware/tests/fixtures/` (`sp_usbhost_p2.json`, `sp_usb_p2.json`, `sp_usbhost_empty.json`, `ioreg_usb_p2.txt`, `ioreg_hid_p2.txt`)
 - `firmware/tests/fuzz/fuzz_p2.c`
+- `firmware/controller/link/include/ocb_link/pubstate.h`, `firmware/controller/link/pubstate.c`, `firmware/tests/test_link_pubstate.c` (D35)
 
 Modified:
 - `.github/workflows/firmware.yml`
@@ -806,6 +884,8 @@ Modified:
 - `firmware/tools/link_probe.py`
 - `firmware/README.md`, `firmware/controller/README.md`, `firmware/THIRD_PARTY_NOTICES.md`
 - `docs/usb-controller-emulation.md`, `docs/link-protocol.md`, `docs/test-plan.md`
+- `firmware/tests/p2_sim_shim.c`, `firmware/tests/test_p2_probe.py` (D35 watch)
+- `_bmad-output/specs/spec-bonooru/risk-register.md` (C7, R13 after the bench)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`, this story file
 
 ## Change Log
@@ -816,3 +896,4 @@ Modified:
 - 2026-11-22: Review follow-ups: 7 MINOR fixes (no effect for dropped requests plus a test, median fed by 0x30 completions only, notices and docs consistency, fuzz note, MAC comment); 34 ctest tests green.
 - 2026-11-22: Bench H.15 attempt 1 FAILED (the console repeated the refused pairing request 01 forever). D34: `01` and `21` get the real controller's replies from the S12 capture and change nothing; the log records arguments and counts repeats; `p2_probe.py` checks the new replies and hints at the macOS accessory prompt. 34 ctest tests green. H.15 attempt 2 pending.
 - 2026-11-22: Bench H.15 attempt 2: handshake as S12, player slot assigned (`30`), but no icon; inputs could not reach the report (D12). D35: debug builds report the published state through a sequence lock (F.33); `link_probe.py press` and `p2_probe.py watch` added; S12 reply comparison recorded. 35 ctest tests green. Attempt 3 pending.
+- 2026-11-22: Bench complete. H.13, H.14, H.11 ×3 PASS; H.15 attempt 3 PASS (first input acted on, new criterion); H.16 PASS; H.17 skipped (the console polls at 8 ms). The press-4 blip was fixed: publish on change, reader keeps its last good copy (D35 amended, F.33). Measured values recorded; risk register C7 and R13 updated. 35 ctest tests green. Status done.
