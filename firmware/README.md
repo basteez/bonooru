@@ -110,7 +110,7 @@ codec is written from `docs/link-protocol.md` and checked against the shared vec
 Story 2.7 adds the emulated bridge heartbeat (`--heartbeat`, `--no-heartbeat`,
 `--hb-period-ms`) and one subcommand per bench step, each one process and one session ending
 in `PASS` / `FAIL`: `linkup` (H.8), `silence` (H.9), `direct` and `playing` (H.11, bench
-build), `breaks` (H.12); `soak --heartbeat` is H.10. ctest runs them against the real link on a
+build), `breaks` (H.12); `--heartbeat soak` is H.10 (global options go before the subcommand). ctest runs them against the real link on a
 fake clock (F.23).
 
 ## CI

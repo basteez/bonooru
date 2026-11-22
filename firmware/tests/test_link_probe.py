@@ -13,7 +13,7 @@ firmware sources, loaded with ctypes) through a model of the 2wiCC_Comms
 bridge used at the H.5 bench (no flow control, 1 KB USB-to-UART ring that
 drops on overflow, UART at 460800 baud both ways).
 F.23 (story 2.7 D16): the one-command bench steps (linkup, silence, direct,
-playing, breaks, soak --heartbeat) run unmodified against the real link
+playing, breaks, --heartbeat soak) run unmodified against the real link
 through the same bridge model, extended with the probe's heartbeat path,
 the TX gate (the controller's bytes stop while it is released; the RX level
 follows the model's "wire plugged" flag), a ready console when the bench
@@ -36,6 +36,7 @@ import unittest
 
 FW_DIR = None
 SIM_LIB = None
+TMP_DIR = None  # a scratch directory for files a test writes (the build tree)
 probe = None
 
 
@@ -412,6 +413,8 @@ class Bridge2wiCCPort:
         self.lib = lib
         self.usb_ready = usb_ready  # the bench build of story 2.7 D17
         self.plugged = True         # the bridge-TX -> controller-GP1 wire
+        self.replug_garbage = b""   # bytes a bouncing contact leaves at the replug (no error flags)
+        self.flip_after_replug = False  # corrupt the first byte forwarded after a replug
         self.actions = []           # [(time, fn)]: the scripted user
         self.gate_closed_ticks = 0
         probe.HeartbeatService._hb_init(self)
@@ -466,7 +469,13 @@ class Bridge2wiCCPort:
         self.lib.sim_break(self._us())
 
     def replug(self):
+        """The wire is back. A bouncing contact can leave a few clean data
+        bytes with no delimiter (a partial run the next frame lands on), or
+        hit the first byte that follows (story 2.7 D40, bench H.12 step 3)."""
         self.plugged = True
+        if self.replug_garbage:
+            self.lib.sim_rx(self.replug_garbage, len(self.replug_garbage), self._us())
+        self.flip_pending = self.flip_after_replug
 
     def gate_open(self):
         return self.lib.sim_counter(9) != 0
@@ -524,6 +533,9 @@ class Bridge2wiCCPort:
             del self.ring[:n]
             self.credit_fwd -= n
             if self.plugged:
+                if getattr(self, "flip_pending", False):
+                    chunk = bytes([chunk[0] ^ 0x01]) + chunk[1:]
+                    self.flip_pending = False
                 lib.sim_rx(chunk, len(chunk), now)
         if not self.ring:
             self.credit_fwd = min(self.credit_fwd, 1.0)
@@ -693,7 +705,7 @@ def cmd_args(**kw):
     a = dict(port="sim", baud=probe.DEFAULT_BAUD, seed=1, no_pace=False, pace_share=probe.PACE_SHARE,
              max_inflight=probe.MAX_INFLIGHT, hb_enabled=True, hb_period_ms=probe.HEARTBEAT_PERIOD_MS,
              seconds=2.0, expect_fresh=False, expect_ready="auto", keepalive_seconds=2.0, rounds=3, mode="idle",
-             no_heartbeat=False, meter_seconds=1.0, count=5)
+             no_heartbeat=False, meter_seconds=1.0, count=5, trace=None)
     a.update(kw)
     return argparse.Namespace(**a)
 
@@ -894,6 +906,62 @@ class BenchSteps(unittest.TestCase):
             if kw.get("no_heartbeat"):
                 self.assertEqual(self.lib.sim_counter(7), 0, "unarmed: the core was aborted")
 
+    def test_breaks_unarmed_bouncing_replug(self):
+        """Story 2.7 D40 (bench H.12 step 3, rounds 3 to 5 failed): with no
+        heartbeat, nothing flushes the controller's receiver after a replug.
+        (a) clean garbage bytes left by the contact make the first frame a
+        CRC drop; (b) the first byte after the replug is hit. The controller
+        answers with one NAK CRC (got = 0) and, by the shared transport-NAK
+        budget, nothing to the frames after it: only a resend of the lost
+        frame (AD-6) recovers. Every round must still PASS."""
+        for garbage, flip in ((b"\x55\xaa\x13", False), (b"", True), (b"\x41" * 7, True)):
+            port = Bridge2wiCCPort(self.lib)
+            port.replug_garbage = garbage
+            port.flip_after_replug = flip
+            user = ScriptedUser(port)
+            path = os.path.join(TMP_DIR, "breaks-trace.log") if TMP_DIR else None
+            rc, text = run_cmd(port, probe.cmd_breaks, user=user, rounds=3, no_heartbeat=True, trace=path)
+            self.assertEqual((rc, last_line(text)), (0, "PASS"), "garbage %r flip %s: %s" % (garbage, flip, text))
+            self.assertEqual(self.lib.sim_counter(0), 15, "15 events must be queued exactly once")
+            if path and not flip:
+                # The delimiter written after each replug ends the partial run,
+                # so no resend is even needed (the resend is the second guard).
+                with open(path, "r", encoding="ascii") as f:
+                    trace = f.read()
+                self.assertEqual(trace.count("0x00 (delimiter)"), 3, "no delimiter after a replug")
+                self.assertNotIn("(resend)", trace, "the garbage run cost a frame: delimiter missing?")
+        # The armed case through the same bouncing contact.
+        port = Bridge2wiCCPort(self.lib)
+        port.replug_garbage = b"\x55\xaa\x13"
+        port.flip_after_replug = True
+        rc, text = run_cmd(port, probe.cmd_breaks, user=ScriptedUser(port), rounds=2)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+
+    def test_trace(self):
+        """--trace: every frame sent and received, with a timestamp; breaks
+        prints the tail of it when it fails."""
+        port = Bridge2wiCCPort(self.lib)
+        path = os.path.join(TMP_DIR, "trace.log") if TMP_DIR else None
+        if path is None:
+            self.skipTest("no scratch directory")
+        rc, text = run_cmd(port, probe.cmd_silence, trace=path)
+        self.assertEqual(rc, 0, text)
+        with open(path, "r", encoding="ascii") as f:
+            lines = f.read().splitlines()
+        self.assertTrue(any(" TX QUEUE_EVENT seq=" in x for x in lines), lines[:5])
+        self.assertTrue(any(" RX EVENT LINK_LOST" in x for x in lines), lines[:5])
+        port = Bridge2wiCCPort(self.lib)
+        saved = probe.BREAKS_REPLUG_TIMEOUT_S
+        probe.BREAKS_REPLUG_TIMEOUT_S = 1.0
+        try:
+            rc, text = run_cmd(port, probe.cmd_breaks, user=ScriptedUser(port, replug=False), rounds=1,
+                               no_heartbeat=True)
+        finally:
+            probe.BREAKS_REPLUG_TIMEOUT_S = saved
+        self.assertEqual(rc, 1)
+        self.assertIn("trace (last", text)
+        self.assertIn(" TX HELLO seq=", text)
+
     def test_breaks_never_replugged(self):
         saved = probe.BREAKS_REPLUG_TIMEOUT_S
         probe.BREAKS_REPLUG_TIMEOUT_S = 2.0
@@ -922,5 +990,7 @@ if __name__ == "__main__":
     FW_DIR = sys.argv.pop(1)
     if len(sys.argv) >= 2:
         SIM_LIB = sys.argv.pop(1)
+    if len(sys.argv) >= 2:
+        TMP_DIR = sys.argv.pop(1)
     probe = load_probe(FW_DIR)
     unittest.main(verbosity=1)

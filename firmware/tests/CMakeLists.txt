@@ -129,7 +129,7 @@ set_target_properties(ocb_link_sim PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
 ocb_strict_warnings(link_sim_shim.c)
 add_test(NAME link_probe_selftest
     COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_link_probe.py" "${OCB_FW_DIR}"
-            "$<TARGET_FILE:ocb_link_sim>")
+            "$<TARGET_FILE:ocb_link_sim>" "${CMAKE_CURRENT_BINARY_DIR}")
 
 # F.22 (story 2.7 D18): the watchdog values written in docs/link-protocol.md
 # (timing table and prose) equal constants.txt and ocb_link/config.h.
