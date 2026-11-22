@@ -4,7 +4,7 @@ baseline_commit: 75e138208a308614c82018c211d8008572440910
 
 # Story 2.2: Protocol library and conformance vectors
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
