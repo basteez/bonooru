@@ -38,7 +38,9 @@ one open session, prints one line per check and ends with `PASS` or
 the bench build). Where the owner must act it prints one prominent line and
 waits for the evidence (an EVENT, a counter, STATUS stopping or resuming).
 Their requests are resent with the same seq every 50 ms until answered (a
-stop-and-wait AD-6 sender); `breaks` writes one 0x00 after each replug.
+stop-and-wait AD-6 sender); `breaks` writes one 0x00 after each replug and
+waits for the line to settle (1 s with no new break, framing error, link
+loss or STATUS gap) before it checks the round and prompts the next unplug.
 --trace FILE (those five subcommands only; the 2.6 ones ignore it) writes
 every frame sent and received with a timestamp; `breaks` prints the tail of
 the trace when it fails.
@@ -988,6 +990,9 @@ def cmd_loopback(port, args):
 # ------------------------------------------------- story 2.7 bench steps
 BREAKS_UNPLUG_TIMEOUT_S = 60.0  # breaks: wait for the unplug evidence
 BREAKS_REPLUG_TIMEOUT_S = 30.0  # breaks: wait for STATUS to resume after REPLUG
+BREAKS_SETTLE_S = 1.0           # breaks: a quiet line this long after a replug = settled (D42)
+BREAKS_SETTLE_TIMEOUT_S = 15.0  # breaks: give up if the line never settles
+STATUS_GAP_S = 0.2              # breaks, settling: no STATUS for this long = TX released again
 LOSS_WINDOW_MS = (80.0, 120.0)  # H.9: EVENT LINK_LOST after the last heartbeat written
 STATUS_SILENT_S = 0.3           # breaks, unarmed: STATUS silent this long = TX released
 TRACE_TAIL = 120                # breaks: trace lines printed when it fails
@@ -1537,6 +1542,59 @@ def cmd_breaks(port, args):
     return link.close(rc)
 
 
+def _settle(link, armed):
+    """Waits until the line has been quiet for BREAKS_SETTLE_S: STATUS keeps
+    arriving (no gap above STATUS_GAP_S, i.e. TX was not released again),
+    the break and framing-error counters do not move, no new EVENT
+    LINK_LOST, and (armed) STATUS link_ok 1. Returns (seconds it took, a
+    description of what was absorbed) or None after BREAKS_SETTLE_TIMEOUT_S
+    (story 2.7 D42)."""
+    port = link.port
+    t0 = port.now()
+    end = t0 + BREAKS_SETTLE_TIMEOUT_S
+
+    def counters():
+        d = (link.status or {}).get("dbg") or {}
+        return d.get("rx_be"), d.get("rx_fe")
+
+    first = last = counters()
+    n_ev = len(link.events)
+    lost = 0
+    gaps = 0
+    quiet_since = port.now()
+    in_gap = False
+    while port.now() < end:
+        link.wait(0.01)
+        now = port.now()
+        disturbed = False
+        gap = link.status_t is None or now - link.status_t > STATUS_GAP_S
+        if gap:
+            disturbed = True
+            if not in_gap:
+                gaps += 1
+        in_gap = gap
+        k = counters()
+        if k != last:
+            disturbed = True
+            last = k
+        new = link.events[n_ev:]
+        if new:
+            lost += sum(1 for _, code in new if code == EVT_LINK_LOST)
+            disturbed = disturbed or any(code == EVT_LINK_LOST for _, code in new)
+            n_ev = len(link.events)
+        if armed and not (link.status and link.status["flags"] & STATUS_LINK_OK):
+            disturbed = True
+        if disturbed:
+            quiet_since = now
+        elif now - quiet_since >= BREAKS_SETTLE_S:
+            parts = []
+            if first[0] is not None and last[0] is not None:
+                parts.append("rx_be %d -> %d, rx_fe %d -> %d while settling" % (first[0], last[0], first[1], last[1]))
+            parts.append("%d STATUS gap(s), %d extra LINK_LOST absorbed" % (gaps, lost))
+            return now - t0, "; ".join(parts)
+    return None
+
+
 def _breaks(port, args, link):
     c = Checks(link)
     armed = getattr(args, "hb_enabled", True) and not args.no_heartbeat
@@ -1600,6 +1658,17 @@ def _breaks(port, args, link):
             rnd, (link.status_t - t_replug) * 1000.0, _status_str(st)))
         # D40: a bouncing contact can leave a partial run in the receiver.
         link.delimiter()
+        # D42: a replugged contact bounces for a while; every break in that
+        # time belongs to this round, never to the next one.
+        settled = _settle(link, armed)
+        if settled is None:
+            c.check(False, "round %d: the line settled after the replug" % rnd)
+            link.out("FAIL round %d: the line did not settle within %.0f s after the replug (breaks kept coming: "
+                     "a loose contact? press the wire in and re-run)" % (rnd, BREAKS_SETTLE_TIMEOUT_S))
+            return 1
+        c.note("round %d: line settled %.0f ms after STATUS resumed (%s)" % (rnd, settled[0] * 1000.0, settled[1]))
+        link.delimiter()
+        st = link.next_status(0.5, want) or link.status
         bd, sd = base.get("dbg") or {}, st.get("dbg") or {}
         if bd and sd:
             c.note("round %d: rx_be %d -> %d, rx_fe %d -> %d" % (rnd, bd["rx_be"], sd["rx_be"], bd["rx_fe"],

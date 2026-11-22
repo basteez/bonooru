@@ -415,6 +415,9 @@ class Bridge2wiCCPort:
         self.plugged = True         # the bridge-TX -> controller-GP1 wire
         self.replug_garbage = b""   # bytes a bouncing contact leaves at the replug (no error flags)
         self.flip_after_replug = False  # corrupt the first byte forwarded after a replug
+        self.bounce_after_replug = ()   # seconds after a replug at which the contact bounces (a break)
+        self.bounce_low_ticks = 0
+        self.bounces = 0
         self.actions = []           # [(time, fn)]: the scripted user
         self.gate_closed_ticks = 0
         probe.HeartbeatService._hb_init(self)
@@ -476,6 +479,17 @@ class Bridge2wiCCPort:
         if self.replug_garbage:
             self.lib.sim_rx(self.replug_garbage, len(self.replug_garbage), self._us())
         self.flip_pending = self.flip_after_replug
+        for dt in self.bounce_after_replug:
+            self.at(self.clock.t + dt, self._bounce)
+
+    def _bounce(self):
+        """A contact bounce once the wire is back (story 2.7 D42, bench
+        h12d / h12e): the line drops for 300 us, the UART sees a break."""
+        if not self.plugged:
+            return
+        self.bounces += 1
+        self.lib.sim_break(self._us())
+        self.bounce_low_ticks = 3
 
     def gate_open(self):
         return self.lib.sim_counter(9) != 0
@@ -532,14 +546,17 @@ class Bridge2wiCCPort:
             chunk = bytes(self.ring[:n])
             del self.ring[:n]
             self.credit_fwd -= n
-            if self.plugged:
+            if self.plugged and self.bounce_low_ticks == 0:
                 if getattr(self, "flip_pending", False):
                     chunk = bytes([chunk[0] ^ 0x01]) + chunk[1:]
                     self.flip_pending = False
                 lib.sim_rx(chunk, len(chunk), now)
         if not self.ring:
             self.credit_fwd = min(self.credit_fwd, 1.0)
-        lib.sim_rx_level(1 if self.plugged else 0, now)
+        low = not self.plugged or self.bounce_low_ticks > 0
+        if self.bounce_low_ticks > 0:
+            self.bounce_low_ticks -= 1
+        lib.sim_rx_level(0 if low else 1, now)
         lib.sim_poll(now)
         if not self.gate_open():
             # Released: the pad is high-Z, the driver ring is emptied.
@@ -982,7 +999,8 @@ class BenchSteps(unittest.TestCase):
                 # so no resend is even needed (the resend is the second guard).
                 with open(path, "r", encoding="ascii") as f:
                     trace = f.read()
-                self.assertEqual(trace.count("0x00 (delimiter)"), 3, "no delimiter after a replug")
+                # One right after the replug, one after the line settled (D42).
+                self.assertEqual(trace.count("0x00 (delimiter)"), 6, "no delimiter after a replug")
                 self.assertNotIn("(resend)", trace, "the garbage run cost a frame: delimiter missing?")
         # The armed case through the same bouncing contact.
         port = Bridge2wiCCPort(self.lib)
@@ -1015,6 +1033,41 @@ class BenchSteps(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("trace (last", text)
         self.assertIn(" TX HELLO seq=", text)
+
+    def test_breaks_bounce_after_replug(self):
+        """Story 2.7 D42 (bench h12d, h12e): the contact bounces 50 to 150 ms
+        after the replug (and twice more, up to 1.25 s). The bounce must be absorbed while the line settles
+        and never be taken as the next round's unplug, armed and unarmed;
+        the last round settles too. Every round PASS, each bounce absorbed."""
+        for kw in (dict(), dict(no_heartbeat=True)):
+            port = Bridge2wiCCPort(self.lib)
+            # A burst 50 to 150 ms after the reconnect (the bench pattern), then
+            # two late bounces, so a settle window that ignores a break ends
+            # too early.
+            port.bounce_after_replug = (0.05, 0.09, 0.15, 0.7, 1.25)
+            user = ScriptedUser(port)
+            rc, text = run_cmd(port, probe.cmd_breaks, user=user, rounds=3, **kw)
+            self.assertEqual((rc, last_line(text)), (0, "PASS"), "%s: %s" % (kw, text))
+            self.assertEqual(len(re.findall(r"^round \d: PASS$", text, re.M)), 3, text)
+            self.assertEqual(port.bounces, 15, "%s: the model did not bounce 5 times per round" % kw)
+            self.assertEqual(text.count("UNPLUG the bridge-TX wire"), 3, kw)
+            self.assertEqual(len(re.findall(r"round \d: line settled", text)), 3, text)
+            if kw.get("no_heartbeat"):
+                self.assertEqual(self.lib.sim_counter(7), 0, "unarmed: the core was aborted")
+                self.assertEqual(self.lib.sim_counter(0), 15, "unarmed: 15 events queued exactly once")
+
+    def test_breaks_line_never_settles(self):
+        """A contact that keeps bouncing: breaks fails with its settle message."""
+        saved = probe.BREAKS_SETTLE_TIMEOUT_S
+        probe.BREAKS_SETTLE_TIMEOUT_S = 2.0
+        try:
+            port = Bridge2wiCCPort(self.lib)
+            port.bounce_after_replug = tuple(0.05 + 0.3 * k for k in range(20))
+            rc, text = run_cmd(port, probe.cmd_breaks, user=ScriptedUser(port), rounds=1)
+        finally:
+            probe.BREAKS_SETTLE_TIMEOUT_S = saved
+        self.assertEqual(rc, 1, text)
+        self.assertIn("the line did not settle", text)
 
     def test_breaks_never_replugged(self):
         saved = probe.BREAKS_REPLUG_TIMEOUT_S
