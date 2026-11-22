@@ -294,8 +294,21 @@ static void test_one_event_per_tick(void)
     OCB_CHECK(o.event == OCB_EVT_PLAYBACK_DONE, "last tick: event %u", o.event);
 }
 
+/* Story 2.5 D14 (issue #21): the fallback LATE threshold stays one report
+ * period of the Switch 2, 8000 us (measured median, Story 2.3 H.15); pinned
+ * by a hand-written number so it never changes by accident. */
+static void test_late_fallback_pinned(void)
+{
+    OCB_CHECK(OCB_CORE_LATE_FALLBACK_US == 8000u, "OCB_CORE_LATE_FALLBACK_US %u, pinned at 8000 (story 2.5 D14)",
+              (unsigned)OCB_CORE_LATE_FALLBACK_US);
+    harness h;
+    h_init(&h, 8u, 0u); /* period unknown */
+    OCB_CHECK(h.core.late_us == 8000u, "unknown period: late_us %u, wanted 8000", h.core.late_us);
+}
+
 int main(void)
 {
+    test_late_fallback_pinned();
     test_end_applied();
     test_end_on_non_neutral();
     test_reserved_flags();

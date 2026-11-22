@@ -12,7 +12,15 @@ Run by ctest as `python3 -I test_p2_probe.py FIRMWARE_DIR P2_SIM_LIB`.
    the firmware sources, loaded with ctypes) through a fake HID transport on
    a fake clock: a clean run, a lossy one that drops one reply (the resend
    path), and negative controls (a reply with one wrong byte, a refusal
-   switched off) that must make it print FAIL.
+   switched off) that must make it print FAIL;
+ - story 2.5 (Task 10.4): its `stall` command against the real ocb_p2
+   through a scripted hang on the same fake transport: a note pressed, then
+   (core 0) the reports stop and the device vanishes 20 ms later, or (core
+   1) the reports turn NEUTRAL 20 ms after the hang and the device vanishes
+   60 ms after that; the board comes back neutral; --drive runs the two
+   link_probe.py steps through a fake. Negative controls: the device never
+   vanishing, vanishing 160 ms after the hang, coming back with a note
+   pressed, core 1's reports never turning NEUTRAL, hangcheck failing.
 """
 
 import argparse
@@ -317,6 +325,180 @@ class Handshake(unittest.TestCase):
                 with self.assertRaises(SystemExit) as cm:
                     p2.main(argv)
             self.assertEqual(cm.exception.code, 2, argv)
+
+
+NEUTRAL8 = bytes([0x00, 0x00, 0x08, 0x80, 0x80, 0x80, 0x80, 0x00])
+NOTE_Y8 = bytes([0x01, 0x00, 0x08, 0x80, 0x80, 0x80, 0x80, 0x00])  # AD-10: Y
+
+
+class HangBoard:
+    """A hang flavour on the Mac, on a fake clock (story 2.5 D6, D18): the
+    melody's first note at t_press; the hang `delay` later. core0: the
+    reports stop, core 1 sees core 0 stale 20 ms later and reboots at once;
+    core1: the reports go on, NEUTRAL 20 ms after the hang (core 0 sees core
+    1 stale), the watchdog resets 60 ms after that. The device is absent
+    for `absent_s`, then a fresh board (NEUTRAL, or `back_pressed`)."""
+
+    def __init__(self, lib, clock, expect, delay_s=0.050, gone_after_s=None, absent_s=1.5, back_pressed=False,
+                 neutral_after_s=0.020, never_gone=False, never_neutral=False):
+        self.lib = lib
+        self.clock = clock
+        self.t_press = clock.t + 0.5
+        self.t_hang = self.t_press + delay_s
+        if gone_after_s is None:
+            gone_after_s = 0.020 if expect == "core0" else 0.020 + 0.060
+        self.t_gone = None if never_gone else self.t_hang + gone_after_s
+        self.t_back = None if never_gone else self.t_gone + absent_s
+        self.expect = expect
+        self.neutral_after_s = neutral_after_s
+        self.never_neutral = never_neutral
+        self.back_pressed = back_pressed
+        self.spawned = []
+        self.ran = []
+        self.run_rc = 0
+
+    def gone(self):
+        return self.t_gone is not None and self.t_gone <= self.clock.t < self.t_back
+
+    def present(self):
+        return not self.gone()
+
+    def rebooted(self):
+        return self.t_back is not None and self.clock.t >= self.t_back
+
+    def state(self):
+        t = self.clock.t
+        if self.rebooted():
+            return NOTE_Y8 if self.back_pressed else NEUTRAL8
+        if t < self.t_press:
+            return NEUTRAL8
+        if self.expect == "core1" and not self.never_neutral and t >= self.t_hang + self.neutral_after_s:
+            return NEUTRAL8
+        return NOTE_Y8
+
+    def reporting(self):
+        if self.gone():
+            return False
+        if self.expect == "core0" and not self.rebooted() and self.clock.t >= self.t_hang:
+            return False
+        return True
+
+    # The backend interface of p2_probe.run_stall.
+    def open(self):
+        if self.gone():
+            raise OSError("no device")
+        return HangHid(self)
+
+    def spawn(self, argv):
+        self.spawned.append(argv)
+        return FakeChild()
+
+    def run(self, argv):
+        self.ran.append(argv)
+        return self.run_rc
+
+
+class FakeChild:
+    def terminate(self):
+        pass
+
+    def communicate(self):
+        return ("selfplay output", None)
+
+
+class HangHid:
+    """The HID transport of one boot of a HangBoard (the real ocb_p2)."""
+
+    def __init__(self, board):
+        self.board = board
+        self.boot_gone = board.t_gone if not board.rebooted() else None
+        self.buf = ctypes.create_string_buffer(64)
+        board.lib.p2sim_init(bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55]))
+
+    def write(self, data):
+        data = p2.pad(data)
+        self.board.lib.p2sim_out(data, len(data))
+
+    def read(self, timeout_ms):
+        b = self.board
+        end = b.clock.t + timeout_ms / 1000.0
+        while True:
+            b.clock.t += 0.002  # the Mac polls every 2 ms
+            if self.boot_gone is not None and b.clock.t >= self.boot_gone:
+                raise OSError("read error")  # hidapi: the device went away
+            if b.reporting():
+                b.lib.p2sim_set_state(b.state())
+                n = b.lib.p2sim_in(self.buf, 64)
+                if n:
+                    return self.buf.raw[:n]
+            if b.clock.t >= end:
+                return None
+
+
+def stall_args(**kw):
+    a = dict(expect="core0", hang_delay_ms=50, wait_s=10.0, drive=False, port=None)
+    a.update(kw)
+    return argparse.Namespace(**a)
+
+
+class Stall(unittest.TestCase):
+    """Story 2.5 F.32 extension: `stall` against a scripted hang."""
+
+    def setUp(self):
+        if SIM_LIB is None:
+            self.skipTest("no p2 simulation library")
+        self.lib = load_sim()
+
+    def stall(self, expect="core0", args=None, **kw):
+        clock = FakeClock()
+        board = HangBoard(self.lib, clock, expect, **kw)
+        with fake_time(clock):
+            rc, text = run(p2.run_stall, board, args or stall_args(expect=expect))
+        return rc, text, board
+
+    def test_core0(self):
+        rc, text, _ = self.stall("core0")
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("first note seen: Y", text)
+        self.assertIn("core 0 hung: the reports stopped", text)
+        self.assertIn("host tolerance", text)
+        self.assertIn("after the reboot:", text)
+
+    def test_core1(self):
+        rc, text, _ = self.stall("core1")
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("turned NEUTRAL before the reset", text)
+        self.assertIn("press to NEUTRAL", text)
+
+    def test_drive(self):
+        rc, text, board = self.stall("core1", args=stall_args(expect="core1", drive=True, port="/dev/cu.test"))
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertEqual(board.spawned[0][2:5], ["--port", "/dev/cu.test", "selfplay"])
+        self.assertEqual(board.ran[0][2:], ["--port", "/dev/cu.test", "hangcheck", "--expect", "core1"])
+        rc, text, board = self.stall("core0", args=stall_args(drive=True, port=None))
+        self.assertEqual(rc, 1, text)
+        self.assertIn("--drive needs --port", last_line(text))
+
+    def test_negative_controls(self):
+        rc, text, _ = self.stall("core0", never_gone=True)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("vanished within", last_line(text))
+        rc, text, _ = self.stall("core0", gone_after_s=0.160)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("stall to gone", last_line(text))
+        rc, text, _ = self.stall("core1", back_pressed=True)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("no note pressed (pressed: Y)", last_line(text))
+        rc, text, _ = self.stall("core1", never_neutral=True)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("turned NEUTRAL", last_line(text))
+        clock = FakeClock()
+        board = HangBoard(self.lib, clock, "core0")
+        board.run_rc = 1
+        with fake_time(clock):
+            rc, text = run(p2.run_stall, board, stall_args(drive=True, port="/dev/cu.test"))
+        self.assertEqual(rc, 1, text)
+        self.assertIn("hangcheck --expect core0: FAIL", last_line(text))
 
 
 if __name__ == "__main__":

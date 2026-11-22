@@ -13,12 +13,19 @@
  * Story 2.3 (F.32): every USB mailbox post one by one (a scripted console),
  * the measured report period, and the P2 debug log ring that sim_poll
  * drains into the debug STATUS window, as the firmware's core 1 does.
+ * Story 2.5 (F.19/F.23 style, Task 10.4): the timeline flavour's loader
+ * (the firmware's rule: session open, IDLE, unlatched, empty queue; a
+ * failed load is retried only once the core left that state), the
+ * built-in table or a short table for fast tests, the debug STATUS v4 inputs (core 0's IN interval
+ * spread, pass maximum and handoff counters through the mailbox, the
+ * runner's loop maximum and stack mark, the boot cause in the config).
  */
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "ocb_core/ocb_core.h"
+#include "ocb_core/testtl.h"
 #include "ocb_link/ocb_link.h"
 #include "ocb_proto/ocb_proto.h"
 
@@ -40,6 +47,24 @@ void sim_usb_ready(uint64_t now_us);
 void sim_usb_event(int which);
 void sim_report_period(uint32_t us);
 int sim_dbglog(uint8_t kind, uint8_t id);
+void sim_timeline(int mode);
+void sim_in_spread(uint32_t min_us, uint32_t p95_us, uint32_t max_us, uint32_t slow);
+void sim_core0(uint32_t pass_max_us, uint32_t seq_retries, uint32_t seq_fallbacks);
+void sim_self_timing(uint32_t loop_max_us, uint32_t stack_used);
+void sim_set_boot(uint8_t cause, uint8_t count);
+
+/* Story 2.5: a short table for fast probe tests (6 events, 0.5 s): the
+ * matching expected-notes file is written by tests/test_link_probe.py. */
+static const ocb_testtl_event k_short_table[] = {
+    {0u, OCB_NEUTRAL_INIT},
+    {100000u, {OCB_BTN_Y, OCB_HAT_NEUTRAL, 0x80u, 0x80u, 0x80u, 0x80u, 0u}},
+    {200000u, OCB_NEUTRAL_INIT},
+    {300000u, {OCB_BTN_X, OCB_HAT_NEUTRAL, 0x80u, 0x80u, 0x80u, 0x80u, 0u}},
+    {400000u, OCB_NEUTRAL_INIT},
+    {500000u, {0x0000u, OCB_HAT_NEUTRAL, 0x80u, 0x80u, 0x80u, 0x80u, OCB_STATE_FLAG_END}},
+};
+static int s_timeline;   /* 0 off, 1 built-in table, 2 short table */
+static int s_tl_tried;
 
 static int s_handshake_posted;
 static uint32_t s_hat_seen; /* story 2.3 D35: bit per published hat value seen at a poll */
@@ -59,6 +84,8 @@ void sim_init(uint16_t cap, uint64_t now_us)
     cfg.debug_counters = true;
     s_handshake_posted = 0;
     s_hat_seen = 0u;
+    s_timeline = 0;
+    s_tl_tried = 0;
     ocb_dbglog_ring_init(&s_dbglog);
     ocb_link_init(&s_link, &s_core, &s_mailbox, &cfg, now_us);
     (void)ocb_txgate_sample(ocb_link_gate(&s_link), true, now_us);
@@ -72,10 +99,36 @@ void sim_rx(const uint8_t *bytes, size_t n, uint64_t now_us)
     }
 }
 
+/* The runner's timeline loader (controller/platform/link_runner.c). */
+static void timeline_loader(uint64_t now_us)
+{
+    const int loadable = ocb_link_session_open(&s_link) && s_core.mode == OCB_MODE_IDLE && !s_core.aborted &&
+                         ocb_queue_count(&s_core.queue) == 0u;
+    if (!loadable) {
+        s_tl_tried = 0;
+        return;
+    }
+    if (s_tl_tried || s_timeline == 0) {
+        return;
+    }
+    ocb_core_env env;
+    env.now_us = now_us;
+    env.ready = ocb_link_console_ready(&s_link, now_us);
+    env.link_ok = ocb_link_link_ok(&s_link);
+    int rc;
+    if (s_timeline == 2) {
+        rc = ocb_testtl_load_table(&s_core, &env, k_short_table, sizeof k_short_table / sizeof k_short_table[0]);
+    } else {
+        rc = ocb_testtl_load(&s_core, &env);
+    }
+    s_tl_tried = rc != 0; /* as the firmware: only a failed load is remembered */
+}
+
 void sim_poll(uint64_t now_us)
 {
     ocb_link_poll(&s_link, now_us);
     (void)ocb_dbglog_drain(ocb_link_dbglog_window(&s_link), &s_dbglog);
+    timeline_loader(now_us);
     if (s_core.published.hat < 32u) {
         s_hat_seen |= 1u << s_core.published.hat;
     }
@@ -151,6 +204,38 @@ void sim_report_period(uint32_t us)
 int sim_dbglog(uint8_t kind, uint8_t id)
 {
     return ocb_dbglog_push(&s_dbglog, kind, id) ? 1 : 0;
+}
+
+/* Story 2.5: 0 off, 1 the built-in timeline, 2 the short test table. */
+void sim_timeline(int mode)
+{
+    s_timeline = mode;
+    s_tl_tried = 0;
+}
+
+/* Story 2.5 D12, D13: what core 0 posts to the mailbox. */
+void sim_in_spread(uint32_t min_us, uint32_t p95_us, uint32_t max_us, uint32_t slow)
+{
+    ocb_usb_mailbox_set_in_spread(&s_mailbox, min_us, p95_us, max_us, slow);
+}
+
+void sim_core0(uint32_t pass_max_us, uint32_t seq_retries, uint32_t seq_fallbacks)
+{
+    ocb_usb_mailbox_set_core0(&s_mailbox, pass_max_us, seq_retries, seq_fallbacks);
+}
+
+/* Story 2.5 D13: the runner's loop maximum and stack mark. */
+void sim_self_timing(uint32_t loop_max_us, uint32_t stack_used)
+{
+    ocb_link_set_self_timing(&s_link, loop_max_us, stack_used);
+}
+
+/* Story 2.5 D7: the boot cause and reboot count the firmware reads at boot
+ * (call right after sim_init, as ocb_ctrl_link_init does). */
+void sim_set_boot(uint8_t cause, uint8_t count)
+{
+    s_link.cfg.boot_cause = cause;
+    s_link.cfg.reboot_count = count;
 }
 
 /* 0 queue count, 1 dropped_bytes, 2 COBS+CRC drops, 3 overlong runs,

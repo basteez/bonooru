@@ -83,6 +83,15 @@ typedef struct {
     bool have_last;
     bool dirty;
     uint32_t median_us;      /* 0 until OCB_P2_IV_MIN_SAMPLES */
+    /* Story 2.5 D12: the spread over the same window (bin centres, 0 until
+     * OCB_P2_IV_MIN_SAMPLES), recomputed with the median. */
+    uint32_t min_us;
+    uint32_t p95_us;         /* the k-th smallest, k = ceil(0.95 * count) */
+    uint32_t max_us;
+    /* Intervals longer than 1.5 x the published median since the last
+     * restart (a missed poll is one interval near two periods); counted
+     * only while a median is published; saturates. */
+    uint32_t slow;
     uint32_t ops_note;       /* work of the last note (test: bounded cost) */
     uint32_t ops_median;     /* work of the last median computation */
 } ocb_p2_interval;
@@ -157,5 +166,14 @@ bool ocb_p2_reply_pending(const ocb_p2 *p);
  * 64 are in (after ocb_p2_tick), else 0; saturated to 65535 by the caller. */
 void ocb_p2_interval_note(ocb_p2 *p, uint64_t now_us);
 uint32_t ocb_p2_report_period_us(const ocb_p2 *p);
+
+/* Story 2.5 D12: the spread of the same window (us, bin centres, 0 until
+ * 64 samples, after ocb_p2_tick) and the count of slow intervals (more
+ * than 1.5 x the median) since the last restart. All reset by
+ * ocb_p2_restart. */
+uint32_t ocb_p2_interval_min_us(const ocb_p2 *p);
+uint32_t ocb_p2_interval_p95_us(const ocb_p2 *p);
+uint32_t ocb_p2_interval_max_us(const ocb_p2 *p);
+uint32_t ocb_p2_interval_slow(const ocb_p2 *p);
 
 #endif /* OCB_P2_P2_H */

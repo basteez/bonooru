@@ -19,6 +19,9 @@ Usage: uv run spikes/listen_trial.py --port /dev/cu.usbmodem101 spikes/samples/s
        uv run spikes/listen_trial.py --list-devices
        uv run spikes/listen_trial.py --port PORT --backend sounddevice --mode melody spikes/samples/story-1-6/ode-to-joy-90bpm.txt
        uv run spikes/listen_trial.py --port PORT --backend sounddevice --mode sustain spikes/samples/story-1-6/u1-sustain-A-part1.txt
+       uv run spikes/listen_trial.py --backend sounddevice --mode melody \
+           --driver 'python3 firmware/tools/link_probe.py --port "$P" selfplay --lead-ms 3000' \
+           spikes/samples/story-1-6/ode-to-joy-90bpm.txt      (Story 2.5 H.19: the firmware plays, not 2wiCC)
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ import os
 import pathlib
 import queue
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -1319,9 +1323,49 @@ def make_recorder(backend: str, device: str, sr: int, wav_path: pathlib.Path, ff
 
 def run_sender(port: str, trial: pathlib.Path, extra: Sequence[str]) -> tuple[int, list[tuple[float, str]], bool]:
     """Run the unchanged sender with --announce; echo and timestamp its stdout. Returns (code, lines, interrupted)."""
-    cmd = [sys.executable, "-u", str(SENDER), "--port", port, "--announce", *extra, str(trial)]
-    # Same process group: a real terminal Ctrl+C reaches the sender directly (its own stop sequence).
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1)
+    return run_streaming([sys.executable, "-u", str(SENDER), "--port", port, "--announce", *extra, str(trial)])
+
+
+# Story 2.5 D16: the firmware's selfplay as the driver of a live run (instead of the 2wiCC sender).
+_T0_RE = re.compile(r"T0_HOST_MONO=([0-9]+(?:\.[0-9]+)?)")
+_PASTE_RE = re.compile(r"PASTE_LINE: run \d+ \| late max (\d+) us.*?\| IN median (\d+),")
+
+
+def driver_argv(cmd: str) -> list[str]:
+    """The driver command line: environment variables expanded (so '"$P"' inside single quotes works), then
+    split as a shell would."""
+    return shlex.split(os.path.expandvars(cmd))
+
+
+def run_driver(cmd: str) -> tuple[int, list[tuple[float, str]], bool]:
+    """Run the driver (e.g. link_probe.py selfplay); echo and timestamp its output."""
+    return run_streaming(driver_argv(cmd), stderr_too=True)
+
+
+def driver_t0(lines: Sequence[tuple[float, str]]) -> float | None:
+    """Host monotonic time of the controller's t0, from the driver's first T0_HOST_MONO= line. The recorder
+    stamps its chunks with the same clock (time.monotonic), so `alignment` turns it into a WAV offset."""
+    for _arr, text in lines:
+        m = _T0_RE.search(text)
+        if m:
+            return float(m.group(1))
+    return None
+
+
+def driver_self_timing(lines: Sequence[tuple[float, str]]) -> tuple[float, float] | None:
+    """(late_max_us, report_period_us) from the driver's first PASTE_LINE, or None."""
+    for _arr, text in lines:
+        m = _PASTE_RE.search(text)
+        if m:
+            return float(m.group(1)), float(m.group(2))
+    return None
+
+
+def run_streaming(cmd: Sequence[str], stderr_too: bool = False) -> tuple[int, list[tuple[float, str]], bool]:
+    """Run `cmd`, echo and timestamp its stdout. Returns (code, lines, interrupted)."""
+    # Same process group: a real terminal Ctrl+C reaches the child directly (its own stop sequence).
+    proc = subprocess.Popen(list(cmd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT if stderr_too else None,
+                            text=True, bufsize=1)
     lines: list[tuple[float, str]] = []
 
     def pump():
@@ -1666,8 +1710,117 @@ def melody_summary_lines(results: Sequence[MelodyResult], p: Params, mp: MelodyP
     return out
 
 
+# ---- Story 2.5: inter-onset statistics of a melody, and the explanation of AC3
+
+
+ONSET_WIN = 0.020   # tone envelope window for onsets (the Spike 2.4 jitter definition)
+ONSET_HOP = 0.001
+ONSET_BEFORE = 0.070  # an onset is searched in [heard - 70 ms, heard + 100 ms] (as analyse_jitter)
+ONSET_AFTER = 0.100
+# Story 2.5 D16, D26: the allowance for the analyser's own noise in an IOI p95. The Spike 2.4 onset method
+# recovers a known onset sigma within 1 ms on synthetic notes (test_jitter_recovers_known_sigma); 1 ms per
+# onset gives an IOI sigma of 1.4 ms and a p95 of |error| of about 2.8 ms; rounded up to 4 ms (one bin of the
+# Spike 2.4 latency histogram).
+ANALYSER_NOISE_MS = 4.0
+GAME_FLOOR_FACTOR = 1.0 - math.sqrt(0.05)  # p95 of |U1 - U2| for U1, U2 uniform on [0, F]: 0.776 F
+
+
+def melody_onsets(x: np.ndarray, sr: int, notes: Sequence[MelodyNote], offset: float, p: Params,
+                  audible: Sequence[bool]) -> list[float | None]:
+    """Onset of every audible note, WAV s: the -6 dB crossing before the peak of the tone envelope at the
+    expected pitch within [heard - 70 ms, heard + 100 ms] (the Spike 2.4 jitter definition, per note pitch).
+    None for a note that is not audible or has no peak in its window."""
+    xb = bandpass(x, sr, *p.band)
+    out: list[float | None] = []
+    for n, ok in zip(notes, audible):
+        if not ok:
+            out.append(None)
+            continue
+        h = wav_time(n.t, offset, p)
+        t, e = tone_env_db(xb, sr, expected_hz(n.midi), h - ONSET_BEFORE - ONSET_WIN, h + ONSET_AFTER + ONSET_WIN,
+                           ONSET_WIN, ONSET_HOP)
+        sel = np.flatnonzero((t >= h - ONSET_BEFORE) & (t <= h + ONSET_AFTER))
+        if sel.size < 3:
+            out.append(None)
+            continue
+        k = int(sel[0] + np.argmax(e[sel]))
+        out.append(half_crossing(t, e, k))
+    return out
+
+
+@dataclass(frozen=True)
+class IoiStats:
+    """IOI error of consecutive heard notes (measured onset gap minus scheduled gap), the Spike 2.4 definitions."""
+    pairs: int
+    mean_ms: float
+    sigma_ms: float
+    p95_ms: float      # of |error|
+    max_ms: float      # of |error|
+    drift_ms_per_s: float
+    missing: tuple[int, ...]  # note indices with no onset (excluded from the pairs)
+
+
+def ioi_stats(onsets: Sequence[float | None], sched: Sequence[float], offset: float, p: Params,
+              indices: Sequence[int] | None = None) -> IoiStats:
+    """Pairs of consecutive notes that both have an onset; the error is independent of `offset` (it only
+    locates windows) and of a constant latency; `p.scale` maps WAV s to schedule s."""
+    idx = list(indices) if indices is not None else list(range(1, len(sched) + 1))
+    sch = np.asarray(sched, dtype=float)
+    pairs = [(i, i + 1) for i in range(len(sch) - 1) if onsets[i] is not None and onsets[i + 1] is not None]
+    err = np.array([((onsets[j] - onsets[i]) / p.scale - (sch[j] - sch[i])) * 1000.0 for i, j in pairs])
+    keep = [i for i in range(len(sch)) if onsets[i] is not None]
+    missing = tuple(idx[i] for i in range(len(sch)) if onsets[i] is None)
+    lag = np.array([((onsets[i] - offset - p.latency) / p.scale - sch[i]) * 1000.0 for i in keep])
+    drift = float(np.polyfit(sch[keep], lag, 1)[0]) if len(keep) >= 3 else math.nan
+    if err.size == 0:
+        return IoiStats(0, math.nan, math.nan, math.nan, math.nan, drift, missing)
+    a = np.abs(err)
+    return IoiStats(int(err.size), float(np.mean(err)), float(np.std(err, ddof=1)) if err.size > 1 else math.nan,
+                    float(np.percentile(a, 95)), float(np.max(a)), drift, missing)
+
+
+def ioi_lines(st: IoiStats) -> list[str]:
+    if st.pairs == 0:
+        return ["IOI error: no pair of consecutive notes with onsets"]
+    out = [f"IOI error (heard onset gap minus scheduled gap, {st.pairs} pairs): mean {st.mean_ms:+.2f} ms, "
+           f"sigma {st.sigma_ms:.2f} ms ({st.sigma_ms / FRAME_MS:.3f} frames), p95 {st.p95_ms:.2f} ms "
+           f"({st.p95_ms / FRAME_MS:.3f} frames), max {st.max_ms:.2f} ms ({st.max_ms / FRAME_MS:.3f} frames), "
+           f"drift {st.drift_ms_per_s:+.3f} ms per s"]
+    if st.missing:
+        out.append("no onset (excluded from the pairs): " + ", ".join(f"{i:02d}" for i in st.missing))
+    return out
+
+
+def explain_ioi(ioi_p95_ms: float, late_max_us: float, in_period_us: float, frame_ms: float = FRAME_MS,
+                analyser_noise_ms: float = ANALYSER_NOISE_MS) -> dict[str, object]:
+    """AC3's second branch as a computation (Story 2.5 D16). firmware bound = the scheduler's largest
+    lateness plus one whole polling window; game floor = the p95 of the difference of two onsets each
+    quantised to the game's frame (two independent uniform errors: triangular, p95 = 0.776 frame); residual =
+    the measured p95 minus the root-sum-square of the two. Verdict MET (p95 <= 1 frame), EXPLAINED (above,
+    with the firmware bound <= half a frame and the residual within the analyser noise) or UNEXPLAINED."""
+    fw = late_max_us / 1000.0 + in_period_us / 1000.0
+    floor = GAME_FLOOR_FACTOR * frame_ms
+    residual = ioi_p95_ms - math.sqrt(fw * fw + floor * floor)
+    if ioi_p95_ms <= frame_ms:
+        verdict = "MET"
+    elif fw <= frame_ms / 2.0 and residual <= analyser_noise_ms:
+        verdict = "EXPLAINED"
+    else:
+        verdict = "UNEXPLAINED"
+    return {"firmware_bound_ms": fw, "game_floor_ms": floor, "residual_ms": residual, "verdict": verdict}
+
+
+def explain_lines(ex: dict[str, object], ioi_p95_ms: float, late_max_us: float, in_period_us: float) -> list[str]:
+    return [f"AC3 (Story 2.5 D16): IOI p95 {ioi_p95_ms:.2f} ms vs 1 frame {FRAME_MS:.2f} ms; firmware bound "
+            f"{ex['firmware_bound_ms']:.2f} ms (late max {late_max_us:.0f} us + IN period {in_period_us:.0f} us), "
+            f"game floor {ex['game_floor_ms']:.2f} ms (0.776 frame), residual {ex['residual_ms']:+.2f} ms "
+            f"(allowance {ANALYSER_NOISE_MS:g} ms): {ex['verdict']}"
+            + ("" if ex["verdict"] != "UNEXPLAINED" else " (a follow-up for Epic 7, not hidden)")]
+
+
 def report_melody(x: np.ndarray, sr: int, notes: Sequence[MelodyNote], offset: float, p: Params,
-                  mp: MelodyParams, base: pathlib.Path, meta: dict[str, str]) -> int:
+                  mp: MelodyParams, base: pathlib.Path, meta: dict[str, str],
+                  self_timing: tuple[float, float] | None = None) -> int:
     meta = {**meta, "mode": "melody", "offset_s": f"{offset:.3f}", "scale": f"{p.scale:.4f}",
             "latency_s": f"{p.latency:.3f}", "min_snr_db": f"{p.min_snr_db:g}"}
     results = melody_analyse(x, sr, notes, offset, p, mp)
@@ -1681,6 +1834,15 @@ def report_melody(x: np.ndarray, sr: int, notes: Sequence[MelodyNote], offset: f
         print(f"{r['n']:>3} {r['t_s']:>7}  {r['expected']:<4} {r['fingering']:<12} {r['snr_db']:>5} {r['hz']:>7} "
               f"{r['note']:<4} {r['cents']:>4} {r['dev_cents']:>4} {r['onsets']:>3} {r['sounded_ms']:>5}  {r['verdict']}")
     summary = melody_summary_lines(results, p, mp, meta)
+    # Story 2.5 D16: inter-onset statistics of the heard notes, and the AC3 explanation when the firmware's
+    # self-timing is known (selfplay's PASTE_LINE through --driver, or --late-max-us and --period-us).
+    done = [r.note for r in results]
+    onsets = melody_onsets(x, sr, done, offset, p, [r.audible for r in results])
+    st = ioi_stats(onsets, [n.t for n in done], offset, p, [n.index for n in done])
+    summary += ioi_lines(st)
+    if self_timing is not None and st.pairs > 0:
+        late_max_us, period_us = self_timing
+        summary += explain_lines(explain_ioi(st.p95_ms, late_max_us, period_us), st.p95_ms, late_max_us, period_us)
     print("\n".join(summary))
     if len(results) < len(notes):
         print(f"note: {len(notes) - len(results)} note(s) not analysed (recording ends before them)")
@@ -1942,6 +2104,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="detect/lead: level at the expected pitch above the same band before the press (8)")
     p.add_argument("--report-tag", default="",
                    help="with --analyse: suffix for the report names (keeps the reports of the live run)")
+    # Story 2.5 D16
+    p.add_argument("--driver", metavar="CMD",
+                   help="live run without 2wiCC: start CMD (e.g. 'python3 firmware/tools/link_probe.py --port \"$P\" "
+                        "selfplay --lead-ms 3000') instead of the sender; the offset comes from its T0_HOST_MONO= line, "
+                        "the AC3 explanation from its PASTE_LINE")
+    p.add_argument("--late-max-us", type=float, help="melody, with --analyse: the firmware's late_max_us (selfplay)")
+    p.add_argument("--period-us", type=float, help="melody, with --analyse: the console's report_period_us (selfplay)")
     return p
 
 
@@ -1959,10 +2128,14 @@ def melody_params_from(a: argparse.Namespace) -> MelodyParams:
 
 
 def report_any(x: np.ndarray, sr: int, a: argparse.Namespace, rows_: Sequence, presses: Sequence[Press],
-               offset: float, p: Params, tp_: TimingParams, base: pathlib.Path, meta: dict[str, str]) -> int:
+               offset: float, p: Params, tp_: TimingParams, base: pathlib.Path, meta: dict[str, str],
+               self_timing: tuple[float, float] | None = None) -> int:
     """Run the analysis of `--mode` on a recording and write its reports."""
     if a.mode == "melody":
-        return report_melody(x, sr, melody_notes_from_rows(rows_), offset, p, melody_params_from(a), base, meta)
+        if self_timing is None and getattr(a, "late_max_us", None) is not None and getattr(a, "period_us", None):
+            self_timing = (a.late_max_us, a.period_us)
+        return report_melody(x, sr, melody_notes_from_rows(rows_), offset, p, melody_params_from(a), base, meta,
+                             self_timing)
     if a.mode == "sustain":
         return report_sustain(x, sr, attempts_from_rows(rows_), offset, p, SustainParams(), base, meta)
     if a.mode != "pitch":
@@ -2178,8 +2351,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             base = base.with_name(f"{base.name}-{a.report_tag}")
         return report_any(x, sr, a, rows_, presses, a.offset, p, tp_, base, meta)
 
-    if not a.port:
-        print("error: --port is required (or --analyse WAV --offset S)", file=sys.stderr)
+    if not a.port and not a.driver:
+        print("error: --port is required (or --driver CMD, or --analyse WAV --offset S)", file=sys.stderr)
         return 1
     out = pathlib.Path(a.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -2195,8 +2368,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     code, lines, interrupted = 1, [], False
     try:
         time.sleep(0.3)  # let the input settle; it also gives a noise floor before the lead-in
-        extra = ["--max-lead-frames", str(a.max_lead_frames)] if a.max_lead_frames else []
-        code, lines, interrupted = run_sender(a.port, trial, extra)
+        if a.driver:
+            code, lines, interrupted = run_driver(a.driver)
+        else:
+            extra = ["--max-lead-frames", str(a.max_lead_frames)] if a.max_lead_frames else []
+            code, lines, interrupted = run_sender(a.port, trial, extra)
         try:
             time.sleep(a.tail)
         except KeyboardInterrupt:
@@ -2212,9 +2388,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     overflows = getattr(rec, "overflows", None)
     if overflows:
         print(f"INVALID RUN: {overflows} PortAudio input overflow(s), samples were lost", file=sys.stderr)
-    print(f"sender exit {code}{' (interrupted)' if interrupted else ''}; recorded {rec.total / a.sample_rate:.1f} s")
-    rows = s.parse_lines(trial.read_text(encoding="utf-8-sig").splitlines())
-    t_send = sender_start(lines, s.announcements(rows, FRAME_RATE))
+    who = "driver" if a.driver else "sender"
+    print(f"{who} exit {code}{' (interrupted)' if interrupted else ''}; recorded {rec.total / a.sample_rate:.1f} s")
+    self_timing = None
+    if a.driver:
+        t_send = driver_t0(lines)
+        self_timing = driver_self_timing(lines)
+        if t_send is None:
+            print("error: the driver printed no T0_HOST_MONO= line (it never started the piece); the WAV is kept: "
+                  f"{wav}", file=sys.stderr)
+            return code or 1
+    else:
+        rows = s.parse_lines(trial.read_text(encoding="utf-8-sig").splitlines())
+        t_send = sender_start(lines, s.announcements(rows, FRAME_RATE))
     if t_send is None or not rec.chunks:
         print("error: cannot align (no --announce lines matched the file, or no audio); the WAV is kept: "
               f"{wav}", file=sys.stderr)
@@ -2228,11 +2414,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = Params(p.attack, p.release_guard, p.min_dbfs, p.min_snr_db, p.min_voiced, p.latency, scale, p.band)
     x, sr = read_wav(wav)
     meta = {"trial": str(trial), "wav": str(wav), "device": a.device, "backend": a.backend,
-            "sender_exit": str(code), "interrupted": str(interrupted)}
+            f"{who}_exit": str(code), "interrupted": str(interrupted)}
+    if a.driver:
+        meta["driver"] = a.driver
     if overflows is not None:
         meta["input_overflows"] = str(overflows)
         meta["valid"] = "no (input overflow)" if overflows else "yes"
-    report_any(x, sr, a, rows_, presses, offset, p, tp_, wav.with_suffix(""), meta)
+    if self_timing is not None:
+        print(f"re-analyse with the AC3 explanation: add --late-max-us {self_timing[0]:.0f} --period-us "
+              f"{self_timing[1]:.0f}")
+    report_any(x, sr, a, rows_, presses, offset, p, tp_, wav.with_suffix(""), meta, self_timing)
     return code
 
 

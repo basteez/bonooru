@@ -52,7 +52,7 @@ add_test(NAME test_proto_api COMMAND test_proto_api)
 # Controller core (story 2.4, D10): one executable per test-plan block, so a
 # failure names the rule. F.3 modes and latch, F.4 END/underrun/LATE/order,
 # F.5 sync points, F.6 safety mask, F.12 edge cases and property test.
-set(OCB_CORE_TESTS test_core_modes test_core_end_late test_core_sync test_core_mask test_core_edge)
+set(OCB_CORE_TESTS test_core_modes test_core_end_late test_core_sync test_core_mask test_core_edge test_live test_core_timing)
 foreach(_t IN LISTS OCB_CORE_TESTS)
     add_executable(${_t} ${_t}.c)
     target_link_libraries(${_t} PRIVATE ocb_core)
@@ -98,6 +98,16 @@ foreach(_t IN LISTS OCB_LINK_TESTS)
 endforeach()
 if(OCB_TEST_ENV)
     set_tests_properties(${OCB_LINK_TESTS} PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
+endif()
+
+# F.37 (story 2.5 D8, D10): the built-in test timeline, its loader through
+# the real link and core, the melody played on a fake clock.
+add_executable(test_testtl test_testtl.c)
+target_link_libraries(test_testtl PRIVATE ocb_link ocb_core_testtl)
+ocb_strict_warnings(test_testtl.c)
+add_test(NAME test_testtl COMMAND test_testtl)
+if(OCB_TEST_ENV)
+    set_tests_properties(test_testtl PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
 endif()
 
 # F.18: ocb_link includes only the allowed headers and uses no heap, I/O or
@@ -176,6 +186,12 @@ ocb_strict_warnings(p2_sim_shim.c)
 add_test(NAME p2_probe_selftest
     COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_p2_probe.py" "${OCB_FW_DIR}"
             "$<TARGET_FILE:ocb_p2_sim>")
+
+# F.38 (story 2.5 D8): the generated table does not drift from its source
+# (regenerated in a temporary directory, compared byte for byte), and the
+# generator's own rules hold on hand-written bad inputs.
+add_test(NAME testtl_drift
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_gen_test_timeline.py" "${OCB_FW_DIR}")
 
 # Optional (story 2.3 D17): a libFuzzer entry over ocb_p2_on_output, only
 # with -DOCB_FUZZ=ON and clang; never in a preset or in CI.

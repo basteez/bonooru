@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  *
  * Controller link runner (story 2.6 D3): connects the pure ocb_link and
- * ocb_core to the UART driver of ocb_hw, on core 1. Story 2.5's core 1
- * super-loop keeps calling ocb_ctrl_link_step() once per pass.
+ * ocb_core to the UART driver of ocb_hw, on core 1. The core 1 super-loop
+ * of story 2.5 (main.c) calls ocb_ctrl_link_step() once per pass.
  */
 #ifndef OCB_CTRL_LINK_RUNNER_H
 #define OCB_CTRL_LINK_RUNNER_H
@@ -31,8 +31,20 @@ void ocb_ctrl_link_start_rx(void);
  * link, then at most one frame into the UART TX ring and a FIFO top-up. */
 void ocb_ctrl_link_step(void);
 
-/* The core, for Story 2.5 (core->published is read after each step). */
+/* The core (core->published is read after each step). */
 const ocb_core *ocb_ctrl_core(void);
+
+/* Core 1, story 2.5 D6: core 0 is stale. Aborts the core with
+ * OCB_ABORT_CORE_STALL (NEUTRAL, latch, no EVENT) and publishes NEUTRAL. */
+void ocb_ctrl_link_abort_stall(void);
+
+#ifdef OCB_DEBUG_BUILD
+/* Core 1, debug builds, at the end of each super-loop pass (story 2.5
+ * Task 11, D13, D15): the pass time since pass_start_us (a 32-bit
+ * microsecond read at the start of the pass) into the loop maximum (reset
+ * at START), one step of the stack mark scan, both into the STATUS v4. */
+void ocb_ctrl_link_pass_end(uint32_t pass_start_us);
+#endif
 
 /* The USB mailbox: core 0 (the P2 glue, story 2.3) posts to it with the
  * ocb_usb_mailbox_* functions, any time after ocb_ctrl_usb_mailbox_init()
@@ -45,10 +57,14 @@ ocb_usb_mailbox *ocb_ctrl_usb_mailbox(void);
 ocb_dbglog_ring *ocb_ctrl_dbglog(void);
 #endif
 
-/* The state the USB profile reports (AD-12 build_report input, story 2.3
- * D12, D35): in debug builds core 1's published state through a sequence
- * lock (the last good copy when none is consistent in 3 tries); in release builds
- * NEUTRAL until Story 2.5. Core 0. */
+/* The state the USB profile reports (AD-12 build_report input; story 2.3
+ * D12; story 2.5 D4): core 1's published state through the seqlock double
+ * buffer, NEUTRAL when no consistent copy was read in 3 tries. Every
+ * build. Core 0. */
 void ocb_ctrl_published_read(ocb_state *out);
+
+/* Core 0: the reader's counters of the handoff (story 2.5 D4). */
+uint32_t ocb_ctrl_published_retries(void);
+uint32_t ocb_ctrl_published_fallbacks(void);
 
 #endif /* OCB_CTRL_LINK_RUNNER_H */

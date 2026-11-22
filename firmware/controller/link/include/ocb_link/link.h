@@ -73,7 +73,9 @@ typedef struct {
     uint8_t hid_profile;     /* INFO.hid_profile, OCB_HID_PROFILE_* */
     uint16_t app_timeout_ms; /* INFO.app_timeout_ms and the DIRECT app timeout; 0 = default (story 2.7 D9) */
     uint16_t link_timeout_ms; /* heartbeat timeout; 0 = OCB_LINK_TIMEOUT_MS, clamped to OCB_LINK_TIMEOUT_MAX_MS */
-    bool debug_counters;     /* append the STATUS debug counters (D12; v3 tail: story 2.3 D14) */
+    bool debug_counters;     /* append the STATUS debug counters (D12; v3 tail: story 2.3 D14; v4: story 2.5 D13) */
+    uint8_t boot_cause;      /* story 2.5 D7: why the board last rebooted (OCB_LIVE_CAUSE_*), debug STATUS v4 */
+    uint8_t reboot_count;    /* story 2.5 D7: liveness reboots since power-on, debug STATUS v4 */
 } ocb_link_cfg;
 
 /* Counters, u32, wrap. dropped_bytes (STATUS debug counter) =
@@ -157,6 +159,11 @@ typedef struct {
     /* Story 2.3 D14: the USB profile's debug log window, filled by the
      * firmware's drain (debug builds only), sent in the debug STATUS. */
     ocb_dbglog_window dbg;
+
+    /* Story 2.5 D13: the runner's self-timing for the debug STATUS v4
+     * (core 1 loop maximum since START, core 1 stack high-water mark). */
+    uint32_t dbg_loop_max_us;
+    uint32_t dbg_stack_used;
 } ocb_link;
 
 /* Session closed, gate closed, link_ok 0, watchdog disarmed, everything
@@ -176,6 +183,11 @@ void ocb_link_ready_rebase(ocb_link *link, const ocb_usb_mailbox *baseline, uint
  * ocb_link_poll also applies the mailbox's report_period_us (story 2.3 D13)
  * each time that value changes, saturated at 65535. */
 void ocb_link_set_report_period(ocb_link *link, uint16_t report_period_us);
+
+/* Story 2.5 D13: the runner's numbers for the debug STATUS v4, set once
+ * per pass by the firmware (debug builds): the longest core 1 loop pass
+ * since START (us) and the core 1 stack high-water mark (bytes). */
+void ocb_link_set_self_timing(ocb_link *link, uint32_t loop_max_us, uint32_t stack_used_max);
 
 /* The debug log window the debug STATUS carries (story 2.3 D14). */
 ocb_dbglog_window *ocb_link_dbglog_window(ocb_link *link);

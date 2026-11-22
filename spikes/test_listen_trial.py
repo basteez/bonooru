@@ -1485,3 +1485,145 @@ def test_sustain_early_stop_is_the_7th_note_event_not_the_auto_stop(tmp_path, ca
     assert "A         5000     0/0" in out  # left out of the counts
     assert "D_ok (largest hold with every attempt held, none silent) = 6000 ms" in out
     assert "candidate floor100(min(D_ok, T_stop) - 500) = 5500 ms" in out and "INVALID" not in out
+
+
+# ------------------------------------------------------------------ Story 2.5: IOI statistics, --driver, explain_ioi
+
+
+def test_ioi_stats_hand_computed():
+    p = lt.Params(latency=0.0)
+    sched = [0.0, 1.0, 2.0, 3.0]
+    st = lt.ioi_stats([0.5, 1.51, 2.49, 3.5], sched, 0.5, p)
+    # gaps 1.01, 0.98, 1.01 s against 1 s: errors +10, -20, +10 ms
+    assert st.pairs == 3 and abs(st.mean_ms) < 1e-9
+    assert abs(st.sigma_ms - math.sqrt(300.0)) < 1e-6
+    assert abs(st.p95_ms - 19.0) < 1e-6 and abs(st.max_ms - 20.0) < 1e-6  # numpy linear percentile of 10, 10, 20
+    assert st.missing == ()
+    # a constant shift of every onset (another latency) and another offset give the same IOI error
+    st2 = lt.ioi_stats([0.9, 1.91, 2.89, 3.9], sched, 0.3, p)
+    assert (st2.pairs, round(st2.p95_ms, 6), round(st2.max_ms, 6)) == (3, 19.0, 20.0)
+    # a note with no onset is listed and left out of the pairs
+    st3 = lt.ioi_stats([0.5, None, 2.49, 3.5], sched, 0.5, p, indices=[1, 2, 3, 4])
+    assert st3.pairs == 1 and st3.missing == (2,) and abs(st3.max_ms - 10.0) < 1e-6
+    assert lt.ioi_stats([None, None], [0.0, 1.0], 0.0, p).pairs == 0
+    assert "no onset (excluded from the pairs): 02" in lt.ioi_lines(st3)[1]
+
+
+def test_ioi_on_a_clean_melody_is_within_the_analyser_allowance():
+    """D26: the onset method on the committed melody played perfectly: the p95 IOI error is the analyser's
+    own noise and must stay inside ANALYSER_NOISE_MS."""
+    _, presses, notes = melody_rows_and_presses(MEL90)
+    p = lt.Params(latency=LAT)
+    x = melody_recording(presses)
+    res = lt.melody_analyse(x, SR, notes, 0.4, p)
+    on = lt.melody_onsets(x, SR, notes, 0.4, p, [r.audible for r in res])
+    st = lt.ioi_stats(on, [n.t for n in notes], 0.4, p, [n.index for n in notes])
+    assert st.pairs == 61 and st.missing == ()
+    assert st.p95_ms < lt.ANALYSER_NOISE_MS, st
+    assert abs(st.drift_ms_per_s) < 0.2
+
+
+def test_ioi_sees_a_late_note_and_skips_a_missing_one():
+    _, presses, notes = melody_rows_and_presses(MEL90)
+    p = lt.Params(latency=LAT)
+
+    def change(k, pr):
+        if k == 5:
+            return None  # silent: no onset, excluded
+        if k == 20:
+            return [(0.010, pr.t_release - pr.t_press, 0.0)]  # sounds 10 ms late
+        return 0.0
+
+    x = melody_recording(presses, change=change)
+    res = lt.melody_analyse(x, SR, notes, 0.4, p)
+    on = lt.melody_onsets(x, SR, notes, 0.4, p, [r.audible for r in res])
+    st = lt.ioi_stats(on, [n.t for n in notes], 0.4, p, [n.index for n in notes])
+    assert st.missing == (5,) and st.pairs == 59
+    assert abs(st.max_ms - 10.0) < 2.5, st
+
+
+def test_explain_ioi_three_verdicts():
+    floor = (1 - math.sqrt(0.05)) * 1000.0 / 60.0
+    assert abs(floor - 12.940) < 0.01
+    met = lt.explain_ioi(12.0, 40, 8000)
+    assert met["verdict"] == "MET" and abs(met["firmware_bound_ms"] - 8.04) < 1e-9
+    assert abs(met["game_floor_ms"] - floor) < 1e-9
+    ex = lt.explain_ioi(18.0, 40, 8000)
+    assert abs(ex["residual_ms"] - (18.0 - math.sqrt(8.04 ** 2 + floor ** 2))) < 1e-9  # 2.77 ms
+    assert ex["verdict"] == "EXPLAINED"
+    assert lt.explain_ioi(22.0, 40, 8000)["verdict"] == "UNEXPLAINED"   # residual 6.8 ms > 4 ms
+    assert lt.explain_ioi(18.0, 500, 8000)["verdict"] == "UNEXPLAINED"  # firmware bound 8.5 ms > half a frame
+    line = lt.explain_lines(ex, 18.0, 40, 8000)[0]
+    assert "EXPLAINED" in line and "0.776 frame" in line
+
+
+def test_driver_parsing_and_offset():
+    lines = [(1.0, "   0.0  ok   INFO received\n"), (2.0, "T0_HOST_MONO=103.250000\n"),
+             (3.0, "PASTE_LINE: run 1 | late max 37 us, mean 12.0 us, hist 158/0/0/0/0/0 | IN median 8000, min 7950, "
+                   "p95 8050, max 8100 us, slow 0 | loop max 41 us\n"),
+             (4.0, "T0_HOST_MONO=200.000000\n")]
+    assert lt.driver_t0(lines) == 103.25  # the first run
+    assert lt.driver_self_timing(lines) == (37.0, 8000.0)
+    assert lt.driver_t0([(1.0, "FAIL console_ready\n")]) is None
+    assert lt.driver_self_timing([]) is None
+    # chunks of 480 samples (10 ms) from host time 100.0: the WAV time of t0 is 3.25 s
+    chunks = [(100.0 + 0.01 * (i + 1), 480 * (i + 1)) for i in range(600)]
+    offset, scale = lt.alignment(chunks, SR, lt.driver_t0(lines))
+    assert abs(offset - 3.25) < 1e-6 and abs(scale - 1.0) < 1e-6
+
+
+def test_driver_argv_expands_the_port(monkeypatch):
+    monkeypatch.setenv("P", "/dev/cu.usbmodem1234")
+    argv = lt.driver_argv('python3 firmware/tools/link_probe.py --port "$P" selfplay --lead-ms 3000')
+    assert argv == ["python3", "firmware/tools/link_probe.py", "--port", "/dev/cu.usbmodem1234", "selfplay",
+                    "--lead-ms", "3000"]
+
+
+class FakeRecorder:
+    """The capture of a live run, without a microphone: writes `x` as the WAV, chunks from host 100.0."""
+
+    def __init__(self, x, wav_path):
+        self.x = x
+        self.wav_path = wav_path
+        self.chunks = []
+        self.total = 0
+        self.overflows = 0
+
+    def start(self, timeout=5.0):
+        lt.write_wav(self.wav_path, self.x, SR)
+        n = self.x.size
+        self.chunks = [(100.0 + (k + 480) / SR, k + 480) for k in range(0, n - 480, 480)]
+        self.total = n
+
+    def stop(self):
+        return ""
+
+
+def _live_driver(monkeypatch, tmp_path, lines, x):
+    monkeypatch.setattr(lt, "make_recorder", lambda backend, device, sr, wav_path, ffmpeg="ffmpeg":
+                        FakeRecorder(x, wav_path))
+    monkeypatch.setattr(lt, "run_driver", lambda cmd: (0, lines, False))
+    return lt.main(["--backend", "sounddevice", "--mode", "melody", "--tail", "0", "--out-dir", str(tmp_path),
+                    "--driver", "python3 link_probe.py --port \"$P\" selfplay", str(MEL90)])
+
+
+def test_driver_live_run_end_to_end(monkeypatch, tmp_path, capsys):
+    _, presses, _ = melody_rows_and_presses(MEL90)
+    x = melody_recording(presses)  # schedule t=0 at WAV 0.4 s
+    lines = [(1.0, "T0_HOST_MONO=100.400000\n"),
+             (2.0, "PASTE_LINE: run 1 | late max 37 us, mean 12.0 us, hist 158/0/0/0/0/0 | IN median 8000, min 7950, "
+                   "p95 8050, max 8100 us, slow 0 | loop max 41 us\n")]
+    assert _live_driver(monkeypatch, tmp_path, lines, x) == 0
+    out = capsys.readouterr().out
+    assert "driver exit 0" in out and "offset 0.400 s" in out
+    assert "right pitch 62/62" in out and "IOI error (heard onset gap minus scheduled gap, 61 pairs)" in out
+    assert "AC3 (Story 2.5 D16)" in out and ": MET" in out
+    md = next(tmp_path.glob("*.md")).read_text()
+    assert "IOI error" in md and "driver:" in md
+
+
+def test_driver_without_t0_fails_the_run(monkeypatch, tmp_path, capsys):
+    _, presses, _ = melody_rows_and_presses(MEL90)
+    lines = [(1.0, "FAIL console_ready 1 for 2 s in a row within 120 s of the prompt\n")]
+    assert _live_driver(monkeypatch, tmp_path, lines, melody_recording(presses[:3])) == 1
+    assert "printed no T0_HOST_MONO= line" in capsys.readouterr().err

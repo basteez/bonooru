@@ -7,7 +7,10 @@
  * never closer than 10 ms, at most one per 10 ms in a prefill burst);
  * STATUS fields in every mode and after every abort cause; reserved flag
  * bits; the 21 debug bytes (v1 prefix and the split of dropped_bytes) and,
- * story 2.3, the empty v3 P2 log window after them (24 bytes); slot overflow; a too-small `cap`; the TX gate;
+ * story 2.3, the empty v3 P2 log window after them (24 bytes); story 2.5, the
+ * v4 self-timing block (39 bytes, zero on a fresh link: 63 bytes in all), and
+ * the largest debug STATUS (106-byte body) fits the 128-byte UART TX ring at
+ * 50 ms cadence, never split; slot overflow; a too-small `cap`; the TX gate;
  * two independent links. Every output is decoded as a controller frame.
  * Story 2.7: STATUS link_ok follows a loss and the recovery, debug byte 2 is
  * watchdog_trips, and a gate closed by the watchdog's release discards
@@ -309,12 +312,13 @@ static void test_debug_counters(void)
     if (!found) {
         return;
     }
-    OCB_CHECK(m.extra_len == 24u, "debug: %zu extra bytes", m.extra_len);
-    if (m.extra_len == 24u) {
+    OCB_CHECK(m.extra_len == 63u, "debug: %zu extra bytes", m.extra_len);
+    if (m.extra_len == 63u) {
         /* By hand: gap 1234 ms, trips 0, dropped 4 + 8 + 300 = 312, tx_dropped
          * 2, then rx_err 4, overflow 8, overlong 300, FE 2, PE 1, BE 1, OE 1;
-         * story 2.3: an empty P2 log window (total 0, n 0). */
-        const uint8_t want[24] = {0xD2u, 0x04u, 0u,  0x38u, 0x01u, 2u,  0u, 4u, 0u, 8u, 0u,
+         * story 2.3: an empty P2 log window (total 0, n 0); story 2.5: a v4
+         * block of 39 zero bytes (no run, no core 0 numbers, power-on). */
+        const uint8_t want[63] = {0xD2u, 0x04u, 0u,  0x38u, 0x01u, 2u,  0u, 4u, 0u, 8u, 0u,
                                   0x2Cu, 0x01u, 2u, 0u,    1u,    0u, 1u, 0u, 1u, 0u, 0u, 0u, 0u};
         OCB_CHECK_MEM(m.extra, m.extra_len, want, sizeof want, "debug counters");
     }
@@ -323,9 +327,9 @@ static void test_debug_counters(void)
     h.link.cnt.tx_dropped = 70000u;
     h.link.cnt.rx_err_bytes = 80000u;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && m.extra_len == 24u, "debug: second STATUS");
-    if (m.extra_len == 24u) {
-        const uint8_t sat[24] = {0xFFu, 0xFFu, 0u,    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 8u, 0u,
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 63u, "debug: second STATUS");
+    if (m.extra_len == 63u) {
+        const uint8_t sat[63] = {0xFFu, 0xFFu, 0u,    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 8u, 0u,
                                  0x2Cu, 0x01u, 2u,    0u,    1u,    0u,    1u,    0u,    1u,    0u, 0u, 0u, 0u};
         OCB_CHECK_MEM(m.extra, m.extra_len, sat, sizeof sat, "saturated counters");
     }
@@ -465,7 +469,7 @@ static void test_watchdog_status(void)
     lh_link_up(&h);
     ocb_msg_status m;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra_len == 24u && m.extra[2] == 0u,
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra_len == 63u && m.extra[2] == 0u,
               "link up: STATUS link_ok 1, watchdog_trips 0");
     /* Loss by silence. */
     h.auto_hb = false;
@@ -484,7 +488,7 @@ static void test_watchdog_status(void)
               ocb_link_counters_get(&h.link)->tx_dropped - dropped);
     lh_open_gate(&h);
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) == 0u && m.extra_len == 24u && m.extra[2] == 1u &&
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) == 0u && m.extra_len == 63u && m.extra[2] == 1u &&
                   m.abort_count == 1u && m.last_event == OCB_EVT_LINK_LOST,
               "after the loss: STATUS link_ok 0, watchdog_trips 1");
     /* Recovery. */
@@ -493,6 +497,47 @@ static void test_watchdog_status(void)
     lh_advance(&h, 50000u);
     OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra[2] == 1u,
               "after the recovery: STATUS link_ok 1, watchdog_trips still 1");
+}
+
+/* Story 2.5 D13: the largest debug STATUS (16 log records and the v4
+ * block: body 106 bytes) fits an empty 128-byte UART TX ring in one frame,
+ * leaves at the 50 ms cadence, and is never split into a smaller cap. */
+static void test_largest_status_fits_uart_ring(void)
+{
+    static lh h;
+    lh_init_cfg(&h, 8u, true);
+    lh_open_gate(&h);
+    for (unsigned i = 0; i < 16u; i++) {
+        ocb_dbglog_window_add(ocb_link_dbglog_window(&h.link), (uint16_t)(0x0240u + i));
+    }
+    uint8_t wire[128];
+    size_t first = 0u;
+    uint64_t t_first = 0u;
+    int sent = 0;
+    for (int step = 0; step < 400; step++) { /* 200 ms in 0.5 ms steps */
+        const size_t n = ocb_link_tx_next(&h.link, h.now, wire, sizeof wire);
+        if (n > 0u) {
+            OCB_CHECK(n <= 128u && wire[n - 1u] == 0x00u, "frame of %zu bytes", n);
+            if (sent == 0) {
+                first = n;
+                t_first = h.now;
+            } else {
+                const uint64_t want = t_first + (uint64_t)sent * 50000u;
+                OCB_CHECK(h.now >= want && h.now < want + 500u, "STATUS %d at +%llu us", sent,
+                          (unsigned long long)(h.now - t_first));
+            }
+            sent++;
+        }
+        h.now += 500u;
+        ocb_link_poll(&h.link, h.now);
+    }
+    /* 11 + 95 = 106 body bytes, 3 header, 2 CRC, 1 COBS, 1 delimiter. */
+    OCB_CHECK(first == 113u, "largest debug STATUS on the wire: %zu bytes, wanted 113", first);
+    OCB_CHECK(sent == 4 || sent == 5, "%d STATUS frames in 200 ms at a 50 ms cadence", sent);
+    /* A cap of 112 (one byte short): pending, nothing written. */
+    h.now += 50000u;
+    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, 112u) == 0u, "the 113-byte STATUS split into 112");
+    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, sizeof wire) == 113u, "then sent whole");
 }
 
 static void test_two_links(void)
@@ -520,6 +565,7 @@ int main(void)
     test_cadence();
     test_fields();
     test_debug_counters();
+    test_largest_status_fits_uart_ring();
     test_overflow_and_cap();
     test_gate();
     test_gate_rearms_nak();

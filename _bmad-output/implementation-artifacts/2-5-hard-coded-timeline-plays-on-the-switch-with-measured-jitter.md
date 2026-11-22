@@ -1,0 +1,602 @@
+---
+baseline_commit: f36ad9cea92b111a328c0e2880818b818f1d09f5
+---
+
+# Story 2.5: Hard-coded timeline plays on the Switch with measured jitter
+
+Status: review
+
+<!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
+
+## Story
+
+As the owner,
+I want the controller to play a built-in test melody from its own clock,
+so that I hear my own firmware play the ocarina and know its timing is tight.
+
+## Acceptance Criteria
+
+Copied from `_bmad-output/planning-artifacts/epics.md`, Story 2.5 (the four Given/When/Then blocks, numbered). These are the definition of done. The marking in brackets is added by this story file: **[HOST]** = verifiable by `host-tests` (ctest, ASan and UBSan, fake clock, no hardware), **[CI]** = verified by a CI step after the owner pushes, **[HW-MAC]** = needs the controller Zero (and the bridge Zero for the link) plugged into the Mac, no console, **[HW-CONSOLE]** = needs the Switch 2 (top USB-C port, Pro Controller Wired Communication ON, OoT in ocarina free play) plus the bridge Zero on the Mac. The environment (Switch 2 system 23.5.0, OoT 1.1.1, top USB-C port, Wired Communication ON, Apple reference cable) is read from `docs/test-plan.md`, "Test environment", never asked. The dev agent's Tasks 1 to 14 need no hardware; Task 15 is the owner's bench session.
+
+**AC1.** **[HOST + CI + HW-CONSOLE]**
+**Given** the core split of AD-11 (core 0: TinyUSB task, profile, report on every host poll; core 1: non-blocking RAM super-loop with the 1 MHz scheduler, sole writer of the state via a seqlock double buffer, reader retries ≤ 3 then NEUTRAL)
+**When** a debug build with a hard-coded timeline (a melody from the Story 1.5 profile, ending in `NEUTRAL|END`) runs on the console in free play
+**Then** the melody plays with every note at the right pitch
+
+**AC2.** **[HOST + HW-CONSOLE]**
+**Given** the debug build's self-timing
+**When** the timeline plays
+**Then** the firmware records, for every applied event, its lateness vs `t_us` and the IN-poll intervals, and reports them (debug STATUS counters or EVENT)
+**And** the maximum lateness is ≤ one report period
+
+**AC3.** **[HW-CONSOLE + HOST for the analyser]**
+**Given** a recording of the console audio (phone or capture)
+**When** onsets are detected (e.g. aubio) and compared with the timeline
+**Then** inter-onset error p95 ≤ 1 frame is recorded, or the gap is explained (firmware vs console/game) using the self-timing data
+
+**AC4.** **[HOST + HW-MAC + HW-CONSOLE]**
+**Given** a debug build that hangs core 0, then one that hangs core 1 (H.2)
+**When** the stall happens
+**Then** the liveness rules reboot the board through the hardware watchdog (≤ 100 ms), the USB detaches and no input stays pressed on the console
+
+**Added by this story file (not in the epic; the PR must say "Closes #21"):**
+
+**AC5 (issue #21).** **[HOST + HW-CONSOLE]**
+**Given** the Switch 2 polls the IN endpoint every 8000 µs (measured in Story 2.3, H.15)
+**When** this story is done
+**Then** (a) `OCB_CORE_LATE_FALLBACK_US` is confirmed or replaced with a value backed by the measured period and the measured jitter of the IN intervals, recorded in `docs/test-plan.md`; (b) the core 1 stack high-water mark is measured on the hardware with the final super-loop in the debug STATUS path and the worst link chain, and the stack is raised if the measured use is close to 1.5 KB; (c) the numbers are in `docs/test-plan.md` and in the Completion Notes. Both halves of issue #21 are then resolved.
+
+### Reading notes on the AC (what the story file adds, none of it changes the AC)
+
+- **"Hard-coded timeline" in a "debug build" is a build flavour, not a protocol feature** (D9, D10). A new CMake option `OCB_DEBUG_TIMELINE` (debug only) links a generated table of events from the Story 1.5/1.6 melody and loads it into the real core through the real validation path after the host's `HELLO`; the owner then sends the ordinary `START lead_us`. No message, NAK reason, EVENT code or constant is added (D19). The existing `fw-debug` build and every bench step of Stories 2.6, 2.7 and 2.3 are untouched.
+- **"Right pitch" and "inter-onset error" need the console audio.** The recording is the only way to hear the console; it is made by the existing Story 1.6 capture path (sounddevice backend, Mac microphone near the console speaker), analysed by the existing analysers (extended with IOI statistics, D16), and **never committed** (`spikes/recordings/` is git-ignored). Everything else is read from the firmware over the link (STATUS debug v4, D13), so the owner reads numbers, not screens.
+- **What the audio can and cannot prove.** The game samples input once per 60 Hz frame (U10, hypothesis, consistent with the one-frame latency clusters of Spike 2.4) and the console reads the IN endpoint every 8 ms, so even a perfect scheduler gives an inter-onset error with a p95 near 13 ms (0.78 frame, D16 derivation); Spike 2.4 measured p95 of 18.8 to 21.1 ms through 2wiCC. AC3's second branch ("or the gap is explained using the self-timing data") is therefore expected to be used; the story defines how (D16), so the explanation is a computation, not prose.
+- **"Reboot ≤ 100 ms" is a worst-case sum** (D6): stall detection 20 ms + hardware watchdog timeout 60 ms + one loop pass, asserted at compile time and in a host test, then measured on the Mac (H.2a, H.2b) with the host's own clock and a stated tolerance.
+- **"Release builds still send neutral reports"** is a Story 2.3 hand-off (D35 was debug-only). This story makes the seqlock the real path for every build (D4); after it, a release UF2 reports the published state, so a release controller is a working player once Epic 3 streams to it.
+- **The Switch 2 shows a wired controller only after its first input** (Story 2.3 learning). The bench command sends a harmless first input before it starts (D17); A on the HOME screen launches the game, so A is never used for that.
+
+## Scope boundaries (what is NOT in this story)
+
+| Not here | Where it is |
+|---|---|
+| Streaming a timeline from the PC, the sans-IO link, the dev tool | Epic 3 (Story 3.4 plays through the bridge and the real link) |
+| The proper measurement tooling, timing on three OS, T.1 to T.5, setting profile margins from data | Epic 7 (Stories 7.1 to 7.4). This story reuses the Story 1.4/1.6 spike analysers and only extends them (D16) |
+| The bridge firmware, its USB identity | Story 3.1 (the bench still uses 2wiCC_Comms v1.1 and the probe's emulated heartbeat; the bridge Zero is never flashed) |
+| Changing the wire protocol or `PROTO_VERSION` | Nothing changes (D19). STATUS debug counters are append-only debug aids |
+| Aligning the S12 data rows of the P2 reply tables (firmware version, serial, colours) | Story 2.3 hand-off: only if a later story finds a reason |
+| Issue #20 (purity gates miss `asm`, `abort`, `volatile`, ...) | Untouched. If the barrier needs `asm`, it is in a platform file or a compile definition, not in a pure library (D5) |
+| Dock/undock re-enumeration (R13) | Not run in Story 2.3 either; optional `p2watch --dock` stays optional |
+| P1/P3 profiles, rumble, IMU | Not planned |
+
+## Tasks / Subtasks
+
+Tasks 1 to 14 are for the dev agent and need **no hardware**; they end with everything green on the host and every ARM preset compiling with 0 warnings. Task 15 is the **owner's bench session**. The dev agent does not commit or push; the owner commits and pushes and CI is verified afterwards (as in Stories 2.1 to 2.7). Keep Completion Notes honest: anything CI-only is "unverified until pushed", anything on hardware is "unverified on hardware" until Task 15 is recorded.
+
+Local build, from `firmware/`: `export OCB_PICOTOOL_DIR=firmware/.tools/picotool-2.3.1 OCB_ARM_TOOLCHAIN=firmware/.tools/arm-gnu-toolchain-15.2.Rel1` (paths relative to the repo root; use absolute paths if a preset needs them), then `cmake --preset host-tests && cmake --build --preset host-tests && ctest --preset host-tests`, and `cmake --preset fw-release && cmake --build --preset fw-release` (same for `fw-debug` and the new presets of Task 8).
+
+- [x] **Task 1: Read before writing, and measure the baseline numbers the story must beat** (AC: #2, #5; D2, D3)
+  - [x] 1.1 Read the UPDATE files listed in "Developer guardrails" completely. In Dev Notes (Completion Notes at the end) record, for each, what it does today and what must be preserved.
+  - [x] 1.2 `cmake --build` of `fw-release` and `fw-debug` at the baseline commit: record `arm-none-eabi-size controller.elf` (RAM and flash), and `-fstack-usage` for `ocb_ctrl_link_step`, `ocb_link_poll`, `ocb_link_tx_next`, `ocb_link_tx_status_debug_`, `ocb_link_status_body_` (Story 2.3 Debug Log has the previous numbers; this is the "before" for issue #21).
+  - [x] 1.3 Check which CFLAGS the `Debug` and `Release` build types give (`-O0`/`-Og`/`-O2`/`-O3`) and write them down: jitter measured under `-O0` would be unrepresentative (D9 uses an optimised build type for the timing flavours).
+
+- [x] **Task 2: `ocb_live`, the liveness rules, pure C99** (AC: #4; D6, D7)
+  - [x] 2.1 `firmware/controller/core/include/ocb_core/live.h`, `live.c` (NEW, in the `ocb_core` library, so the existing core purity gate applies, no new gate): a peer-counter observer `ocb_live_peer`: `ocb_live_peer_init(p, counter, now_us)`, `bool ocb_live_peer_stale(ocb_live_peer *p, uint32_t counter, uint64_t now_us)` (the counter changed since the last call: remember `now_us`, not stale; unchanged for more than `OCB_LIVE_STALE_US` = 20000: stale; exactly 20000 µs is still alive, 1 µs more is stale; wraps of the 32-bit counter are not a stall; a first observation starts a grace window). Constants in `ocb_core/live.h`: `OCB_LIVE_STALE_US 20000u`, `OCB_WDT_TIMEOUT_MS 60u`, `OCB_LIVE_LOOP_BOUND_US` (the longest legitimate core 0 pass, set from Task 11's measurement, default 5000), and a compile-time check `OCB_LIVE_STALE_US + OCB_WDT_TIMEOUT_MS*1000 + OCB_LIVE_LOOP_BOUND_US <= 100000` (AC4's 100 ms).
+  - [x] 2.2 The decision functions the glue calls, pure: `ocb_live_core0_may_feed(core1_stale)` (feed only while core 1 is not stale) and `ocb_live_core1_must_reboot(core0_stale)`; the cause codes `OCB_LIVE_CAUSE_NONE|CORE0_STALE|CORE1_STALE|BOOT_NOT_ALIVE` that Task 3 stores in the watchdog scratch registers.
+  - [x] 2.3 `tests/test_live.c` (**F.34**), fake clock: the boundary (20000 µs alive, 20001 stale); a counter that changes every 19999 µs for 10^6 steps never goes stale; the counter wrap at 2^32; stale then alive again when the peer resumes (not latched in the pure observer); first-observation grace; the sum constant of 2.1 (a test re-adds the three numbers and compares with 100 ms); the cause codes are distinct and round-trip through the scratch encoding of Task 3 (a pure encode/decode pair, `ocb_live_cause_encode/decode`: magic in the high 16 bits, cause in the low 8, a corrupt word decodes to NONE). Red proofs recorded in the Debug Log: `<` instead of `<=` at the boundary, a missing wrap case, a sum constant over 100 ms.
+
+- [x] **Task 3: The firmware side of liveness and the hardware watchdog** (AC: #4; D6, D7; AD-11)
+  - [x] 3.1 `firmware/controller/platform/liveness.c`, `liveness.h` (NEW, platform glue, both cores): two single-writer `volatile uint32_t` counters, `s_core0_pass` (core 0 increments once per pass of `usb_p2_task`, after `tud_task()` and the pump: "the report pump ran", not "the host polled": a console that stops polling is not a stalled core 0) and `s_core1_pass` (core 1 increments once per pass of the super-loop). `liveness_core0_step(now_us)` (core 0): observes `s_core1_pass`; while fresh, `watchdog_update()`; when stale it **stops feeding**, writes the cause (`CORE1_STALE`) to `watchdog_hw->scratch[0]` (and increments the persistent reboot count in `scratch[1]`) once, and reports NEUTRAL (D6) until the reset. `liveness_core1_step(now_us)` (core 1): observes `s_core0_pass`; when stale it aborts the core with `ocb_core_abort(OCB_ABORT_CORE_STALL)` (NEUTRAL published, the existing cause), writes the cause `CORE0_STALE` to the scratch registers and calls `watchdog_reboot(0, 0, 0)`.
+  - [x] 3.2 `firmware/controller/main.c` (UPDATE): `watchdog_enable(OCB_WDT_TIMEOUT_MS, true)` early in `main()` (before `multicore_launch_core1`), so a core 1 that never starts is caught (`BOOT_NOT_ALIVE`: the first-observation grace of 2.1 expires and core 0 stops feeding). Both rules are in **every** build, release included (it is the AD-11 safety rule); only the hang injectors are debug-only (Task 9). Replace `core1_entry` by the real super-loop (Task 5). The LED blink and the 2 Hz amber (H.0) must not change.
+  - [x] 3.3 Boot reason: at boot core 0 reads `watchdog_caused_reboot()` and the scratch word once (`scratch[0]`, cleared after reading) and passes `{cause, reboot_count}` to the link config (`ocb_link_cfg` gains two small fields, D13) so the debug STATUS reports them. A power-on reset gives cause NONE and count 0 (the scratch registers do not survive power loss; they do survive a watchdog reset, so a count since power-on is meaningful; source: RP2040 register documentation, "Information persists through soft reset of the chip"). `scratch[4]` to `[7]` belong to the SDK (`watchdog_enable`/`watchdog_reboot`): never touch them (read `firmware/external/pico-sdk/src/rp2_common/hardware_watchdog/watchdog.c`).
+  - [x] 3.4 Verify by reading the SDK source (already read for this story: `_watchdog_enable` sets `PSM_WDSEL` to everything except ROSC and XOSC, so the RESETS block and with it the USB controller are reset by a watchdog trigger, which drops the D+ pull-up and detaches the device) and record in the Debug Log the lines read. The bench proves it (H.2a/H.2b): the Mac must see the device disappear and come back.
+  - [x] 3.5 Hot-path rule: the two `*_step` functions are O(1), do no division, and are called once per pass; measure their cost with Task 11's loop counters.
+
+- [x] **Task 4: The state handoff, true seqlock double buffer, in every build** (AC: #1; D4, D5)
+  - [x] 4.1 `firmware/controller/link/pubstate.c`, `.h` (UPDATE; it stays in `ocb_link`, pure): replace the single-slot sequence lock by a **double buffer**: two slots of the 8-byte state, a generation counter, the writer fills the inactive slot and then advances the generation (with a barrier between), the reader copies the slot named by the generation and accepts the copy if the generation advanced by at most one during the copy (the slot it read is only rewritten when the writer publishes **twice** during the copy). The reader retries at most 3 times (`OCB_PUBSTATE_TRIES`) and then returns `NEUTRAL` (AD-11, AC1): this replaces Story 2.3 D35's "keep the last good copy" (D4 explains why the blip that motivated it cannot happen any more). Keep the writer's write-on-change rule (`ocb_pubstate_publish`, keyed on `core->publish_count`). Count, in the pure code, `retries` (reads that needed a second try) and `fallbacks` (reads that returned NEUTRAL by exhaustion) as saturating counters readable by the glue (reader-owned, core 0; reported through the mailbox, Task 6).
+  - [x] 4.2 `link_runner.c` (UPDATE): remove `OCB_DEBUG_BUILD` around `s_pub`, `ocb_pubstate_init/publish/read` and `s_pub_last`; `ocb_ctrl_published_read()` reads through the seqlock in **every** build and returns NEUTRAL on exhaustion. The header comment of `link_runner.h` and the file comment are updated ("release builds still report NEUTRAL" is no longer true).
+  - [x] 4.3 `ocb_link/config.h`: nothing changes in the macro default; the barrier is defined for the target in Task 5.3.
+  - [x] 4.4 `tests/test_link_pubstate.c` (**F.33** updated and extended): the old cases still hold except the "last good" expectations, which become NEUTRAL on exhaustion; add an exhaustive interleaving test with one thread playing both cores (the writer's two halves and the reader's three loads interleaved in every order for 1, 2 and 3 writer publishes during one read): the reader never returns a torn or mixed state (every returned state equals a state that was published), returns the new state or the previous state when at most one publish happened, and returns NEUTRAL only when two or more publishes happened in the window and 3 tries were used up; 100 000 random states round-trip; the counters saturate and do not wrap; the write-on-change rule (1000 passes with the same `publish_count` leave the generation untouched). Red proofs in the Debug Log: the reader accepting a copy when the generation advanced by two; the writer without its barrier ordering in the model (reordered halves); the old NEUTRAL-fallback blip scenario (a writer rewriting every pass) now showing `fallbacks == 0` in the same bench-shaped test.
+
+- [x] **Task 5: Core 1 super-loop from RAM, real memory barrier** (AC: #1, #5; D2, D3, D5)
+  - [x] 5.1 `main.c`: `core1_entry` becomes the AD-11 super-loop: `ocb_ctrl_link_init()`, `ocb_ctrl_link_start_rx()`, then forever `liveness_core1_step()`, `ocb_ctrl_link_step()` (unchanged contents), the timeline loader hook (Task 9, timeline flavour only), and the loop-time measurement of Task 11. No sleep, no blocking call, no `printf`, no divide. The scheduler stays `ocb_core_tick` via `ocb_link_poll`, driven by `time_us_64()` (the 1 MHz timer, polled, **no alarm interrupt**, D3).
+  - [x] 5.2 Run from RAM (D2): `pico_set_binary_type(controller copy_to_ram)` in `firmware/controller/CMakeLists.txt` (all builds), behind the cache variable `OCB_CONTROLLER_RUN_FROM_RAM` (default ON; OFF builds the XIP variant for the comparison of H.20 and for nothing else). Keep every existing `__not_in_flash_func`. `OCB_CORE_RAMFUNC` stays empty (everything is in RAM in a copy_to_ram build; the macro keeps its documented role for the OFF variant). Record `arm-none-eabi-size` before and after (RAM grows by the size of `.text` and `.rodata`, about 40 KB of 264 KB) and the boot-to-enumeration time on the Mac (one `p2_probe.py enum` run).
+  - [x] 5.3 `OCB_LINK_BARRIER` (D5): define it for the ARM targets as a real `DMB` through a compile definition on the `ocb_link` target (PUBLIC, so `pubstate.c` and `rxring.c` see it), without including an SDK header in a pure library. First try the GCC builtin `__atomic_thread_fence(__ATOMIC_SEQ_CST)`; check with `arm-none-eabi-objdump -d` that `ocb_pubstate_write_begin` and `_read` contain a `dmb` instruction and no libcall; if GCC emits a libcall or nothing, use `__asm volatile("dmb 0xF" ::: "memory")` through the same definition and record the decision. The host build keeps the compiler barrier. A new CI step greps the disassembly (`firmware/tools/check-barrier.sh`: fails when `ocb_pubstate_write_begin` has no `dmb`, with a self-test that fails on a build where the definition is removed).
+  - [x] 5.4 `firmware/tools/check-ram-hot-path.sh` (NEW) and a CI step: with `arm-none-eabi-nm -n` on `controller.elf` of `fw-release` (copy_to_ram default), every function of the hot set (`ocb_core_tick`, `ocb_core_frame`, `ocb_link_poll`, `ocb_link_rx_drain`, `ocb_link_tx_next`, `ocb_ctrl_link_step`, `ocb_pubstate_read`, `ocb_pubstate_publish`, `usb_p2_task`, `ocb_p2_next_in`, `time_us_64`, `crc16` and the COBS decoder functions, whatever their final names are) has an address in the RAM range `0x20000000..0x20041FFF`; a `--expect-flash` self-test mode (run on the OFF variant in the same CI job or documented as local) so the gate cannot pass vacuously.
+  - [x] 5.5 Update the "Not covered by this macro" paragraph of `ocb_core/ramfunc.h` to say what Story 2.5 decided (D2).
+
+- [x] **Task 6: Lateness statistics in the core, IN-poll statistics in the profile, the mailbox** (AC: #2, #5; D11, D12)
+  - [x] 6.1 `ocb_core` (UPDATE, pure): `ocb_core_timing_stats` inside `ocb_core` (reset at `START`, kept after the piece ends so they can be read once IDLE): `n` (events applied in PLAYING), `late_max_us`, `late_sum_us` (u32), and a histogram of lateness at apply (`now_us - due`) in 6 buckets with the edges `<50 µs, <100, <250, <1000, <4000, ≥4000`. Updated in `ocb_core_tick` right where the event is applied, always compiled (no `#ifdef` in a pure library, Story 2.3 D21), cost: a few adds and one compare chain, no division. Reported only by the debug STATUS. LATE behaviour is unchanged: the abort still happens when `now_us - due > late_us`; the statistics only record events that were applied.
+  - [x] 6.2 `ocb_p2/interval.c` (UPDATE): beside the median keep, over the same window of 256 samples, the minimum, the maximum, the 95th percentile (from the same 50 µs histogram, bounded cost, recomputed in `ocb_p2_tick` only after new samples) and `slow`, the count of intervals above 1.5 × the median since the last restart (a missed poll shows as one interval near two periods). All reset by `ocb_p2_restart`. Public readers `ocb_p2_interval_min_us/p95_us/max_us/slow`.
+  - [x] 6.3 `ocb_usb_mailbox` (UPDATE, `ready.h`): new single-writer fields written by core 0, read by core 1: `in_min_us`, `in_p95_us`, `in_max_us`, `in_slow`, `core0_pass_max_us` (the longest `usb_p2_task` pass since restart or boot, measured with `time_us_32()` at the start and end of the pass), `seq_retries`, `seq_fallbacks` (Task 4). Update `ocb_usb_mailbox_init`, the zero constant `k_zero_mailbox` in `link_runner.c` and the F.10 test fixtures.
+  - [x] 6.4 `usb_p2.c` (UPDATE): publish the new fields when they change (as `post_period` does), including when the profile restarts (all back to 0).
+  - [x] 6.5 Tests: `tests/test_core_timing.c` (**F.36**) with a fake clock: events applied exactly on time, 49 µs late, 50 µs late (bucket edge), 3999 and 4000 µs late, `late_us` exactly late (applied) and `late_us + 1` (LATE abort, not counted); `n`, max, sum and histogram checked against hand-written expectations; the statistics reset at `START` and survive `PLAYBACK_DONE`; a long piece (10^5 events) does not overflow `late_sum_us` before the documented limit (the limit is stated and the field saturates). Extend `test_p2_interval.c` (**F.29**): min, max, p95 on steady, mixed and outlier trains, `slow` counts a 16 ms interval in an 8 ms train and ignores jitter below 1.5×, restart zeroes all. Update `test_link_ready.c` (**F.10**) for the mailbox fields. Red proofs: the lateness measured from the wrong reference, the p95 taken as the maximum, the histogram edge off by one.
+
+- [x] **Task 7: STATUS debug v4** (AC: #2, #5; D13)
+  - [x] 7.1 `ocb_link/config.h`, `tx_debug.c`, `internal.h` (UPDATE): append to the v3 window a fixed **v4 block of 39 bytes** (layout in "Behaviour reference"), starting at offset `24 + 2 * p2_log_n` of the debug tail. Raise `TX_DBG_BODY_MAX` and `TX_DBG_WIRE_MAX` and the compile-time size checks: the largest debug body is `11 + 24 + 32 + 39 = 106` bytes and the frame about 112 bytes, which fits `OCB_MAX_BODY` (255) and **must also fit the 128-byte UART TX ring** (`OCB_UART_LINK_TX_RING`) when the ring is empty: a test proves the STATUS is never split and still goes out at 50 ms cadence with the largest tail, and the TX release bound of Story 2.7 D6 (`OCB_LINK_RELEASE_WAIT_US 5000`, 128 + 32 bytes at 460800 baud = 3.5 ms) still holds. If it does not fit, shrink the block, do not enlarge the ring.
+  - [x] 7.2 The block is filled from three owners: the core (`ocb_core_timing_stats`, Task 6.1), the mailbox (core 0 fields, Task 6.3) and the link runner (loop maximum and stack high-water mark, Tasks 11 and 12; boot cause and count, Task 3.3). The pure `ocb_link` takes them through a small input struct the runner fills once per pass (debug builds only; release has `debug_counters` false and sends the 11-byte STATUS, unchanged).
+  - [x] 7.3 `link_probe.py` decoder (UPDATE): decodes v4 (offset from `p2_log_n`), prints it in `watch`, and exposes it to the new `selfplay` command (Task 10). `docs/link-protocol.md`: the "STATUS debug counters" list gets "v4 (Story 2.5)" with the table of "Behaviour reference"; extend `test_docs_constants.py` (**F.22**) with the v4 sizes so the doc and `config.h` cannot drift.
+  - [x] 7.4 Tests: `tests/test_link_dbglog.c` (**F.31**) and `test_link_tx.c` (**F.16**) updated: the v4 block carries hand-written bytes for known inputs, the offset follows `p2_log_n` for n = 0, 1, 16, the release configuration still sends the 11-byte STATUS, the cadence does not change.
+
+- [x] **Task 8: Build flavours, presets, option guards** (AC: #1, #4; D9)
+  - [x] 8.1 `firmware/CMakeLists.txt` / `controller/CMakeLists.txt` (UPDATE): cache options `OCB_DEBUG_TIMELINE` (BOOL, default OFF) and `OCB_DEBUG_HANG` (STRING `NONE|CORE0|CORE1`, default `NONE`) and `OCB_DEBUG_HANG_DELAY_US` (default 50000). Both are only accepted with `OCB_DEBUG_BUILD=ON` (`message(FATAL_ERROR)` otherwise, with the fix in the message); `OCB_DEBUG_HANG` other than NONE requires `OCB_DEBUG_TIMELINE=ON` (the melody supplies the held note). The timeline library (Task 9) is added to the controller target only when the option is ON.
+  - [x] 8.2 `CMakePresets.json` (UPDATE): `fw-debug-timeline` (inherits `fw-base`, `CMAKE_BUILD_TYPE=Release`, `OCB_DEBUG_BUILD=ON`, `OCB_DEBUG_TIMELINE=ON`: optimised code with the debug counters, so the measured timing is the release timing, D9), `fw-debug-hang0` and `fw-debug-hang1` (same plus `OCB_DEBUG_HANG=CORE0|CORE1`), with their build presets. The three flavours exist so that each hardware check is one UF2, never a `-D` typed at the bench.
+  - [x] 8.3 `.github/workflows/firmware.yml` (UPDATE): build the three new presets (compile only, 0 warnings), add the steps of Tasks 5.3 and 5.4, and extend `check-release-nolog.sh` (patterns for `ocb_testtl_` and the hang injector symbols; `--expect-present` run on the `fw-debug-timeline` and `fw-debug-hang0` ELFs) so a release ELF is proven free of the test melody and the hang injectors, and so a rename cannot make the gate vacuous.
+  - [x] 8.4 `firmware/README.md`, `firmware/controller/README.md` (UPDATE): the new presets, what each flashes, the options and the guard messages.
+
+- [x] **Task 9: The built-in timeline and the hang injectors** (AC: #1, #4; D8, D9, D10, D18)
+  - [x] 9.1 `firmware/tools/gen_test_timeline.py` (NEW, standard library only): reads `spikes/samples/story-1-6/ode-to-joy-90bpm.txt` (the sender format: `<frames>f buttons hat stick # label`; the generated file derived from the Story 1.5 profile by Story 1.6, with its 400 ms press cap) with its own small parser (not `send_2wicc.py`), converts each row to an event `t_us = (frames * 1000000 + 30) / 60` (integer, rounded, the frame grid of the profile), maps `buttons` and `hat` and the stick to the canonical state (AD-10: `ly 0x00` up; `80:00` is `lx 0x80, ly 0x00`; hat 8 neutral), checks the AD-9 allow-list (buttons L, R, A, X, Y only, hat up/down/neutral, left stick, right stick centred), strictly increasing `t_us`, below 2^31, at most 400 events, and marks the **last** row (the final neutral) `NEUTRAL|END`. Writes `firmware/controller/core/testtl_data.c` (committed, generated, header comment "do not edit; regenerate with ..."), a `const` array in flash/RAM image of `{t_us, state, flags}` and its length. Also writes the expected-note table `firmware/tests/testtl_expected.txt` (index, sounding pitch, frame, `t_us`) read by the tests and by the analysis tool (D16).
+  - [x] 9.2 `firmware/controller/core/include/ocb_core/testtl.h`, `testtl.c` (NEW, pure C99, in `ocb_core`, **not linked into the controller unless `OCB_DEBUG_TIMELINE`**; always built and tested on the host): `size_t ocb_testtl_count(void)`, `const ocb_testtl_event *ocb_testtl_get(size_t i)` and `int ocb_testtl_load(ocb_core *core, const ocb_core_env *env)`: for each event it builds a `QUEUE_EVENT` frame with the real encoder (`ocb_proto/msgs.h`), hands it to `ocb_core_frame` with `seq = core->expected` (so every event goes through the real validation: ordering, END rule, flags, queue capacity), then restores `core->expected` with `ocb_core_advance_expected(core, saved - 1)` so the host's next frame (`START`) still has the seq it expects. It returns 0 or the first NAK reason. It must not be called unless the core is IDLE, unlatched and the queue is empty.
+  - [x] 9.3 Trigger (D10), `link_runner.c` (UPDATE, `#ifdef OCB_DEBUG_TIMELINE` only in the platform file): once per pass in `ocb_ctrl_link_step()`: if the link session is open (`ocb_link_session_open`), the core is IDLE and not aborted and its queue is empty and the timeline is not yet loaded for this session, call `ocb_testtl_load`. The "loaded" flag clears when the queue is cleared again (HELLO, STOP) so a second run is `STOP` (or `HELLO`) then `START`. The host sends only `HELLO` and `START lead_us`; it must not send its own `QUEUE_EVENT`s to this flavour (documented in the README and refused by `link_probe.py selfplay` if STATUS `free` is below the capacity before the load).
+  - [x] 9.4 `firmware/controller/platform/debug_hang.c`, `.h` (NEW, `#ifdef OCB_DEBUG_HANG` only, debug builds only): core 1 flavour: when the core has published the K-th state with a note button down (`K = 1`, the first note) it busy-waits `OCB_DEBUG_HANG_DELAY_US` with the 64-bit timer and then spins forever (`for (;;) {}` with a compiler barrier). Core 0 flavour: when the pump has read the K-th pressed state it waits the same delay and spins forever. Neither is reachable in release builds (Task 8.3 proves it with `nm`). The state at the moment of the hang is a held note, so "no input stays pressed" is meaningful.
+  - [x] 9.5 Tests: `tests/test_testtl.c` (**F.37**): the table is non-empty, ordered, inside the allow-list, ends with `NEUTRAL|END`; `ocb_testtl_load` into a real core (capacity 512) returns 0, the queue holds the whole table, `core->expected` is unchanged, a `START` frame with the original seq is ACKed and the piece plays: ticking a fake clock at 50 µs steps, the published states in order equal the table through the AD-9 mask (every state is a note state of the profile), `PLAYBACK_DONE` is the last event, no `UNDERRUN`, no `LATE`, lateness statistics: `n` equals the event count and `max < 50 µs`; with a 30 ms stall in the middle of the piece the core aborts `LATE` and never fires a backlog (the existing rule, now on the real melody); loading twice, loading into a PLAYING core and loading into a latched core return an error and change nothing; a table with a bad row (generator negative control) is rejected by the real `ocb_core_frame` path. `tests/test_gen_test_timeline.py` (**F.38**, ctest `testtl_drift`, `python3 -I`): regenerates the C file in a temporary directory and compares it byte for byte with the committed file (drift), checks the generator's own rules on hand-written bad inputs (a forbidden button, a non-increasing time, no final neutral), and checks the source trial file's header says it is generated from the Story 1.5 profile. Red proofs: the allow-list check removed, the END flag missing, `expected` not restored (START gets `NAK SEQ`).
+
+- [x] **Task 10: Bench tools** (AC: #1, #2, #4; D17, D18)
+  - [x] 10.1 `firmware/tools/link_probe.py` (UPDATE), new one-shot command `selfplay [--lead-ms 3000] [--wait-s 120] [--first-input hat-down|none] [--runs 1]` (H.18): HELLO and heartbeat as in `linkup`; prints one prominent prompt line ("PLUG THE CONTROLLER INTO THE SWITCH TOP USB-C PORT; the game must be in ocarina free play"), waits up to the budget for `console_ready` 1 and INFO `report_period_us` known (hello resent while the controller boots; absorbs plug bounces with a stable window as `p2check` does); refuses to start if STATUS `free` is below the queue capacity (a preloaded or dirty queue); sends the first input (D-pad down, 3 presses of 150 ms with gaps, in DIRECT, the same path as `press`; **never A**), then `STOP` (back to IDLE, the timeline loads), checks `free` dropped by the event count, sends `START lead_us`, polls STATUS until `EVENT PLAYBACK_DONE` (budget: piece length + lead + 10 s), and prints: events applied, lateness max / mean / histogram, the IN interval median / min / p95 / max / `slow`, loop maximum of core 1, `core0_pass_max_us`, seqlock `retries` and `fallbacks`, core 1 stack high-water mark, abort and event log. `PASS` when `n` equals the table length, `late_max_us <= report_period_us`, no `LATE` or `UNDERRUN` event, `abort_count` unchanged except the END, `seq_fallbacks == 0`, `core0_pass_max_us` and the loop maximum below their stated limits, and the stack mark below 1536 bytes; otherwise `FAIL <reason>` naming the first broken limit. It also prints `T0_HOST_MONO=<seconds>` (the host `time.monotonic()` at which the controller's t0 is estimated: START ACK time plus `lead_us` minus half the round trip) and `PASTE_LINE:` with the numbers in the form the test plan table takes. `--runs N` repeats `STOP`, `START` N times (the statistics are per run, D11) and prints each; the owner gets the repeat for free.
+  - [x] 10.2 `firmware/tools/p2_probe.py` (UPDATE), new one-shot command `stall --expect core0|core1 [--hang-delay-ms 50] [--wait-s 120]` (H.2a, H.2b, Mac, no console): holds the HID stream (as `watch`), prompts nothing but "start `link_probe.py selfplay` now" (or, with `--drive`, runs it as a subprocess on `$P` itself, so the owner types one command), timestamps every report with the host monotonic clock, finds the first report with a note button down (`T_press`), then checks: (1) the stream's state froze or went NEUTRAL; for `core0` the reports stop; for `core1` the reports continue and, once core 0 sees core 1 stale (about 20 ms), the state in the reports becomes NEUTRAL (D6); (2) the HID device disappears (`read` error or the device missing from enumeration, polled every 5 ms) and **comes back** within `--wait-s` (the board rebooted and re-enumerated); (3) `stall_to_gone_ms = T_gone - T_press - hang_delay_ms - 4` (4 ms: report latency on the Mac's 2 ms poll plus one poll) is **≤ 100 ms plus a host tolerance of 25 ms, both printed** (the removal notification latency of macOS is not known, the tolerance is a stated assumption and recorded with the result); (4) no report after the device came back carries a note button before the next `START` (the board came up NEUTRAL). It prints the raw timestamps. It never touches the console.
+  - [x] 10.3 `link_probe.py` (UPDATE), `hangcheck` (H.2a/H.2b, after the reboot, through the bridge): HELLO again (the link restarts with the board), expects INFO and a STATUS whose debug v4 shows `boot_cause` = `CORE0_STALE` or `CORE1_STALE` as expected, `reboot_count` +1, mode IDLE, `abort_count` 0 (fresh boot), `console_ready` 0 until a host handshakes; `PASS` or `FAIL <reason>`. `p2_probe.py stall --drive` runs it automatically at the end so the whole hang check is one command per flavour.
+  - [x] 10.4 `tests/test_p2_probe.py` (**F.32** extended) and `tests/test_link_probe.py` (**F.19, F.20, F.23** style): `selfplay`, `stall` and `hangcheck` run unmodified against the real C code through the existing ctypes simulators (`ocb_link_sim`, `ocb_p2_sim`; extend them with the timeline loader, the v4 block, a fake console that polls every 8000 µs, a scripted hang that makes reports stop or freeze then the device vanish and return), with negative controls: late max above the period → FAIL, a LATE event → FAIL, a preloaded queue → refuses, no `console_ready` within the budget → FAIL, stack mark 1600 → FAIL, the device never disappearing → FAIL, disappearing after 160 ms → FAIL, coming back with a note pressed → FAIL, a wrong `boot_cause` → FAIL. The scripts take the serial port from the global `--port` option only (`"$P"`), never hard-coded; every wait states its time budget in the prompt line.
+
+- [ ] **Task 11: Loop time and core 0 pass time** (AC: #2; D3, D12)
+  - [ ] 11.1 Core 1: the runner measures, in debug builds, each pass with `time_us_32()` (two reads, subtraction, `max`) and keeps `loop_max_us` since START (reset at START, kept after the piece); the target of AD-11 is "< 50 µs" and is a **target to measure, not a gate on the first run**: the STATUS builds a 106-byte frame in the same pass and may take longer; if the maximum is above 50 µs, record which pass it is (STATUS build? `rx_drain` of a burst?) and whether it matters (the only hard limit is `late_max <= report period`). Core 0: `core0_pass_max_us` as in Task 6.3. Both feed `OCB_LIVE_LOOP_BOUND_US` of Task 2.1 (the constant is set from the measured core 0 maximum with a safety factor and recorded).
+  - [x] 11.2 Tests: the measurement helper is pure (`ocb_link/` or `ocb_core/`: `max` with saturation, wrap-safe subtraction), covered by a small test in `test_core_timing.c`.
+
+- [ ] **Task 12: Issue #21, the LATE decision and the core 1 stack** (AC: #5; D14, D15)
+  - [x] 12.1 Stack paint and measurement (debug builds): the SDK's default core 1 stack is `PICO_CORE1_STACK_SIZE` = 0x800 in the `.stack1` section (`multicore.c`; `multicore_launch_core1` uses it and `__StackOneBottom`). Before `multicore_launch_core1`, core 0 fills the core 1 stack region with a pattern (`0xA5A5A5A5`) from `__StackOneBottom` up to the initial stack pointer region's start (leave the words the SDK pushes for the launch untouched: read `multicore_launch_core1_with_stack` first); core 1 scans a few words per pass from the bottom upward and keeps the **lowest address ever seen modified**, reported as `stack_used_max` in bytes in v4 (incremental, at most 8 words per pass, never a 2 KB scan in one pass). The measurement covers the deepest chain that can run: debug STATUS build (`ocb_link_tx_status_debug_` 248 B + `ocb_link_status_body_` 80 B in Story 2.3's numbers), `ocb_link_rx_drain` with a full RX ring, the UART RX handler (runs on core 1, `rx_sink`), `ocb_core_frame`, `ocb_testtl_load`, the loader in the timeline flavour. `selfplay` and `hangcheck` print it; H.18 also drives the worst case once: `link_probe.py soak` with corruption (the H.5 command) on this build, then reads the mark.
+  - [ ] 12.2 Decision rule (D15): `PICO_CORE1_STACK_SIZE` is raised (compile definition on the controller target, e.g. 0x1000) when the measured mark is above 1536 bytes (1.5 KB, the issue's own threshold), or kept at 0x800 with the number and a one-line justification. Either way a static check (`-fstack-usage` sum of the worst chain in a script, `firmware/tools/check-stack.sh`, **gate** at 1536 bytes of worst static chain with the same numbers recorded) lands in CI so a later change that deepens the chain fails. The static analysis is a lower bound (indirect calls, ISR frame), which is why the hardware mark is also kept.
+  - [ ] 12.3 LATE (D14): with the measured `report_period_us` = 8000 and the measured IN interval jitter (min, p95, max, `slow`) from H.18, decide and record whether `OCB_CORE_LATE_FALLBACK_US` stays 8000 (recommended: it equals the measured median, so the fallback and the measured value agree during the first 64 polls after a handshake) or changes. Update `ocb_core/core.h`'s comment ("a hypothesis" becomes "measured on the Switch 2, Story 2.5, H.18"), `docs/usb-controller-emulation.md` ("Report period jitter" row of "Measured on the Switch 2"), `docs/link-protocol.md` (LATE rule text) and `docs/test-plan.md`. If the decision is unchanged, a test (`test_core_end_late.c`, **F.4**) pins the value so it is never changed by accident (hand-written 8000).
+  - [ ] 12.4 Close the issue by evidence: the PR description lists, for each of issue #21's two to-do blocks, the file and the test-plan row that resolves it, and says "Closes #21".
+
+- [x] **Task 13: Audio analysis tooling and docs** (AC: #1, #3; D16)
+  - [x] 13.1 `spikes/listen_trial.py` (UPDATE; spike code, Python 3.11+, `uv run --python 3.12`): (a) `--mode melody` also prints and writes the inter-onset statistics: for consecutive heard onsets of the melody's NOTE rows, `IOI error = measured onset gap - scheduled gap` (ms and frames), reported as count, mean, σ, p95 of the absolute error, max and the drift slope (the same definitions as the Spike 2.4 jitter mode, so the numbers are comparable); notes with no audible onset are listed and excluded from pairs; (b) a `--driver CMD` option: the live run starts `CMD` (for example `python3 firmware/tools/link_probe.py --port "$P" selfplay --lead-ms 3000`) instead of the 2wiCC sender, starts the capture before it, reads `T0_HOST_MONO=` from its output, converts the host monotonic time to the recording clock (the recorder stamps its own start with the same monotonic clock) to get the `--offset`, and stops the capture after the command exits plus the tail; the report names are the usual `<trial>-<date>-<time>` in `spikes/recordings/` (git-ignored). The default path (sender) is unchanged.
+  - [x] 13.2 `spikes/test_listen_trial.py` (UPDATE): synthetic audio with known onsets: the IOI statistics against hand-computed values (exact for a clean signal, with a shifted first onset giving the same IOI error, with a missing note excluded), the `--driver` offset conversion with a fake clock and a fake driver output; negative control: a driver that prints no `T0_HOST_MONO` fails the run. The existing 483 spike tests stay green.
+  - [x] 13.3 The explanation recipe of AC3 (D16) is a small pure function in the same file (`explain_ioi(ioi_p95_ms, late_max_us, in_period_us, frame_ms=16.667)`) returning the three numbers (firmware bound, game quantisation floor, residual) and a verdict `MET` (p95 ≤ 1 frame), `EXPLAINED` (above 1 frame, the firmware bound ≤ 0.5 frame and the residual within the analyser noise of Spike 2.4) or `UNEXPLAINED` (anything else, which opens a follow-up for Epic 7 and is **not** hidden); tested with hand-written cases (all three verdicts).
+
+- [ ] **Task 14: Documentation** (D20)
+  - [x] 14.1 `docs/test-plan.md` (UPDATE): host rows **F.34 to F.38** (and the updated F.4, F.10, F.16, F.22, F.29, F.31, F.32, F.33), hardware rows **H.2a, H.2b, H.2c (H.2 split, the old H.2 row keeps its pass criterion), H.18, H.19, H.20**, a "Bench rig for the timeline and watchdog (Story 2.5)" block (flashes, commands with `"$P"`, what is recorded), the new T-row note (T.1 will reuse this recorder), the "Measured on the Switch 2" jitter row. Record only measured values (evidence first, D22 of Story 2.3).
+  - [x] 14.2 `docs/usb-controller-emulation.md` (UPDATE): "Profile interface (AD-12)": the double-buffer handoff and the NEUTRAL fallback; the timing chain section: the polling grid adds up to one report period (peak to peak) of visibility jitter and the game's own 60 Hz sampling adds up to one frame; "Report period jitter" filled from H.18 only after the bench; the 1 ms hypothesis marker stays REFUTED. `docs/link-protocol.md`: STATUS v4, the liveness and watchdog rules in "Rules the controller link applies" (a "Story 2.5" paragraph: 20 ms, 60 ms, causes, NEUTRAL by core 0 when core 1 is stale). `firmware/THIRD_PARTY_NOTICES.md`: nothing new unless a source is copied (none planned).
+  - [ ] 14.3 `_bmad-output/specs/spec-bonooru/risk-register.md` (UPDATE after Task 15 only): R3/NFR-04 notes get the measured numbers; no status change before evidence.
+
+- [ ] **Task 15: Owner's bench session** (AC: #1 to #5; D17, D18). Rows in "Hardware checks" below. Needs: controller Zero, the Apple USB-C reference cable, the Switch 2 (top USB-C port, Wired Communication ON, Allow accessories to connect = Always on the Mac), the bridge Zero with 2wiCC_Comms v1.1 wired as in the Story 2.6 rig (wiring not rechecked), Joy-Con to open ocarina free play, the Mac microphone placed near the console speaker for H.19, `pip install pyserial hidapi` in the bench venv, and `uv` for the spike analyser.
+  - [ ] 15.1 H.2a and H.2b on the Mac (no console). 15.2 H.18 on the console, then H.19. 15.3 H.2c on the console (optional if H.2a and H.2b pass with a clear detach). 15.4 H.20 (optional comparison). 15.5 Fill the test-plan rows and the measured tables, then the risk register. 15.6 Mark the story done only when H.2a, H.2b, H.18 are PASS and H.19 is MET or EXPLAINED with the numbers; each FAIL needs an explained decision.
+
+## Dev Notes
+
+### What this story is
+
+Story 2.3 made the controller board a Pro Controller the console accepts; Story 2.4 built the playback core, 2.6 the link and 2.7 the link watchdog. What is still a bring-up is the **shape of the firmware around them**: core 1 runs the link loop as a plain function, the state reaches core 0 through a debug-only handoff, nothing proves the scheduler's timing, and nothing reboots the board if a core hangs with a note pressed. This story makes the firmware match AD-11 (the loop from RAM, the seqlock in every build, the liveness and watchdog rules), proves the timing in two layers (the firmware times itself and reports through STATUS; the console audio is analysed against the timeline) and plays the first melody on the real console from the controller's own clock.
+
+### Design in one page
+
+```text
+ core 1 (super-loop, RAM)                          core 0 (RAM, TinyUSB + profile)
+   liveness_core1_step: core0 stale? -> CORE_STALL abort + scratch + watchdog_reboot(0,0,0)
+   ocb_ctrl_link_step: UART, link, ocb_link_poll -> ocb_core_tick (time_us_64, 1 MHz polled)
+        |  applied event -> core->published (+ lateness stats)        usb_p2_task: tud_task, pump, ocb_p2_tick
+        v                                                              liveness_core0_step: core1 stale? -> NEUTRAL, stop feeding
+   ocb_pubstate_publish (double buffer, write on change) ---seq--->   ocb_ctrl_published_read (3 tries, else NEUTRAL)
+   STATUS debug v1..v4 <- core stats, mailbox (core 0 stats), loop max, stack mark, boot cause
+        ^                                                              |  mailbox (single writer core 0): in min/p95/max/slow,
+        +---------------------------- mailbox fields --------------------+  pass max, seq counters, period
+ hardware watchdog 60 ms, fed by core 0 only while core 1 is fresh (20 ms)       Switch 2 polls IN every 8000 us
+ debug timeline flavour: HELLO -> loader -> START lead_us -> melody; hang flavours: K-th pressed state + 50 ms -> spin
+```
+
+Jitter budget (what the numbers can mean): scheduler lateness (core 1, µs, measured) + visibility on the wire (the state change waits for the next IN poll: 0 to one report period, 8 ms, a uniform window that **cannot be removed**, only its constant part could) + the game's frame sampling (0 to 16.67 ms) + the audio analyser noise. Only the first is a firmware property; the rest is the console, which is why AC3 has an explanation branch.
+
+### Sources used (read-only research done for this story, 2026-11-22)
+
+| S | Source | Gives |
+|---|---|---|
+| S1 | pico-sdk 2.3.1 in `firmware/external/pico-sdk/src/rp2_common/hardware_watchdog/watchdog.c` | `watchdog_enable` and `watchdog_reboot` both go through `_watchdog_enable`, which sets `PSM_WDSEL` to everything except ROSC and XOSC (the USB controller is reset); the RP2040 counter decrements twice per tick (E1), max 8388 ms; `watchdog_enable` writes `scratch[4]`, `watchdog_reboot` writes `scratch[4..7]`; `watchdog_caused_reboot` reads the reason register |
+| S2 | RP2040 register documentation (docs.rs `rp2040-pac` / Embassy `rp-pac`, mirrors of the datasheet) | watchdog scratch registers: "information persists through soft reset of the chip"; `PSM_WDSEL` selects the blocks a watchdog event resets |
+| S3 | pico-sdk `pico_multicore/multicore.c`, `pico_standard_link/script_include/sections_stack.incl` | the core 1 default stack is `PICO_CORE1_STACK_SIZE` (0x800) in `.stack1` placed in SCRATCH_X, `multicore_launch_core1` uses `__StackOneBottom`; `multicore_launch_core1_with_stack` takes an explicit stack |
+| S4 | pico-sdk `pico_standard_link/CMakeLists.txt` (`pico_set_binary_type`, `copy_to_ram`, `PICO_COPY_TO_RAM`) and the web note that on RP2040 an XIP cache miss can stall the CPU for a long time, so time-critical code is placed in RAM (Kent Dindell's "pico priority inversion", pico-sdk issue 2653 about the unused XIP cache in `copy_to_ram` builds) | why `copy_to_ram` removes flash stalls for the whole program, including SDK and TinyUSB code the per-function macro does not cover |
+| S5 | pico-sdk `hardware_sync/sync.h` | `__dmb()` is a `dmb` instruction with a memory clobber |
+| S6 | Story 2.3 file (H.15, Learnings, Hand-off to Story 2.5), `docs/usb-controller-emulation.md` ("Measured on the Switch 2") | the console polls every 8000 µs whatever `bInterval` says; the Switch 2 shows a wired controller only after its first input; sleep cuts USB power |
+| S7 | `docs/test-plan.md` Spike 2.4 and 2.5, Story 1.6 section; `spikes/listen_trial.py`, `spikes/send_2wicc.py`, `spikes/samples/story-1-6/` | onset jitter measured through 2wiCC (IOI p95 18.8 to 21.1 ms, two latency clusters one frame apart), the 60 Hz frame period, the existing capture (sounddevice) and analysers, the Ode to Joy trial files, the 400 ms press cap and the "held note cut about every 7th note" finding |
+| S8 | `_bmad-output/specs/spec-bonooru/requirements.md` NFR-04 and NFR-05 | the 1-frame inter-onset target and the 100 ms fail-safe |
+
+No source code is copied. aubio is named by the AC as an example; the repo already has analysers for the same job (D16).
+
+### Decisions (made autonomously, 2026-11-22; the owner can overrule any of them)
+
+Each was researched in the repo first (AD-5, AD-8, AD-9, AD-11, AD-12, AD-15, AD-19, ADR-002, NFR-04, NFR-05, Stories 1.4 to 1.6, 2.3 to 2.7, issues #20 and #21, the pinned SDK sources) and then online (S2, S4). Open questions are resolved by the recommended option.
+
+**D1. Pure logic in `ocb_core`, glue in `controller/platform`, nothing new that the purity gates cannot see.**
+The liveness observer (`ocb_live`), the timeline table and loader (`ocb_testtl`), the lateness statistics and the double buffer are pure C99 (no pico-sdk, no TinyUSB, no clock reads, no `#ifdef` inside the libraries), built in both modes and covered by ctest with ASan and UBSan. The watchdog, the scratch registers, the stack paint, the timer reads, the hang injectors and the CMake flavours are platform code. `ocb_live` and `ocb_testtl` live in `ocb_core`, so the existing core gate (F.13) covers them and no fifth gate is created; the pubstate stays in `ocb_link` (link gate F.18). *Alternative rejected:* a new library per piece (four more gates and CI steps for a few hundred lines).
+
+**D2. Both cores run from RAM through `pico_set_binary_type(controller copy_to_ram)`, with a switch for the comparison.**
+AD-11 wants core 1 "from RAM (`__not_in_flash_func`)". The per-function macro only covers functions we annotate: `OCB_CORE_RAMFUNC` is empty today, `ocb_proto`'s decoders, CRC and COBS, the SDK's `time_us_64`, and all of TinyUSB would still execute through the XIP cache, and on the RP2040 a cache miss can stall a core for a long time (S4); the two cores also share the one flash interface. `copy_to_ram` puts the whole program in SRAM at boot: no XIP miss anywhere, no list of functions to maintain, nothing to forget when a function is renamed. Cost: about 40 KB of the 264 KB SRAM (the controller uses about 54 KB with text today) and a few milliseconds of boot copy. A CMake cache variable `OCB_CONTROLLER_RUN_FROM_RAM` (default ON) keeps the XIP variant for the comparison H.20; a CI gate (Task 5.4) proves the hot functions are in RAM. *Alternative rejected:* annotating the hot path function by function (the AD's wording): partial, and it leaves SDK and library code (including `time_us_64`) in flash; kept only as the documented role of `OCB_CORE_RAMFUNC` for the XIP variant.
+
+**D3. The 1 MHz scheduler is the polled TIMER, no alarm interrupt.**
+`ocb_core_tick` is already driven by `time_us_64()` once per pass. An alarm ISR would add a second writer of the core state or a cross-context call, a stack frame for issue #21 and an interrupt latency source, and it would buy nothing: the loop period is measured (Task 11, target < 50 µs) and the only hard limit is "lateness ≤ one report period" (8 ms), two orders of magnitude above the loop period. If H.18 shows the lateness maximum approaching the period, the story records the pass that caused it before anything is changed. *Alternative rejected:* a timer ISR (issue #21 mentions "super-loop and timer ISR" as the thing to re-measure; there is no ISR to re-measure in this design, which is part of the result).
+
+**D4. The state handoff is a true seqlock double buffer in every build; the reader falls back to NEUTRAL after 3 tries (AD-11, AC1) and the bench requires zero fallbacks.**
+Story 2.3's single-slot sequence lock produced a one-report NEUTRAL inside a held press (H.15 attempt 3, press 4) when core 1 rewrote the state every pass; the fix was write-on-change plus "keep the last good copy". AD-11 and AC1 say "double buffer, retry ≤ 3, then NEUTRAL". With two slots a read is disturbed only when the writer publishes **twice** during the copy (a few µs, or a few tens of µs if the USB interrupt preempts the reader), and core 1 publishes at most once per scheduler event or per `SET_STATE` frame (hundreds of µs apart at the least), so exhaustion is practically unreachable, and when it does happen NEUTRAL is the AD's safe default. The blip cannot recur, and if it does the debug counter `seq_fallbacks` shows it and fails H.18. This supersedes the "last good" rule of Story 2.3 D35 (kept only as history). The path becomes the real path for **release builds too** (Story 2.3 hand-off). *Alternative rejected:* keeping "last good" (it differs from the AD and from the AC; a stale held note is not obviously safer than a one-report release when it is the exception path).
+
+**D5. A real `DMB` in `OCB_LINK_BARRIER` on the ARM targets, without an SDK include in a pure library.**
+On the RP2040 the cores are in-order and the handoff works with volatile accesses (Story 2.3's note), but the double buffer's ordering argument (slot written, then generation advanced) should hold by construction, and a later RP2350 port must not break. The barrier is a compile definition on the `ocb_link` target: first `__atomic_thread_fence(__ATOMIC_SEQ_CST)`, otherwise `__asm volatile("dmb 0xF" ::: "memory")` (same effect as the SDK's `__dmb()`, S5), verified in the disassembly by a CI gate. It is not an SDK include and not an `asm` token in a pure source file, so issue #20's open gap is not widened. *Alternative rejected:* including `hardware/sync.h` in `pubstate.c` (breaks the link gate and the host build).
+
+**D6. Liveness: 20 ms, watchdog 60 ms, core 0 counts passes, core 0 reports NEUTRAL when core 1 is stale, core 1 forces the reboot.**
+AD-11's rules, with numbers that add up to the AC: stall detection `OCB_LIVE_STALE_US` = 20 ms, hardware watchdog `OCB_WDT_TIMEOUT_MS` = 60 ms, plus one loop bound: worst case stall to reset 20 + 60 + ≤ 5 = 85 ms ≤ 100 ms (asserted at compile time and in F.34). AD-11's own wording "watchdog (≤ 100 ms)" would give 120 ms worst case when core 1 hangs (20 ms of detection after the last feed plus a 100 ms timeout), so the timeout is 60 ms. Core 0's "report counter" is a **pass counter** incremented once per `usb_p2_task` pass: a console that stops polling (Wired Communication off, sleep) is not a hung core 0, and counting completed IN transfers would reboot the board every time that happens. Additions that AD-11 does not forbid and the AC needs: (a) as soon as core 1 is stale core 0 reports **NEUTRAL** instead of the published state (core 0 is alive, so the console sees the release at its next poll, about 20 ms + 8 ms after the stall, before the reset); (b) core 1, on seeing core 0 stale, first aborts the core with the existing `OCB_ABORT_CORE_STALL` (NEUTRAL published, latch set, no EVENT) and then calls `watchdog_reboot(0, 0, 0)` (immediate). The watchdog is enabled before core 1 starts so a core 1 that never comes up is caught. The rules are in every build; only the injectors are debug-only. *Alternative rejected:* core 0 forcing the reboot as well when it sees core 1 stale (it is faster, but AD-11 gives core 0 only the feeding rule, and the 60 ms path keeps working when core 0 is also impaired).
+
+**D7. The reboot cause survives in the watchdog scratch registers and is reported in the debug STATUS.**
+After a watchdog reset the controller comes up with no memory of why, and the app (or the bench) cannot tell a stall reboot from a power-on. `scratch[0]` holds a magic and the cause (`CORE0_STALE`, `CORE1_STALE`, `BOOT_NOT_ALIVE`), `scratch[1]` a reboot count since power-on; `scratch[4..7]` stay the SDK's. The values are read once at boot, cleared, and reported in v4 (`boot_cause`, `reboot_count`). Release builds do not report it (debug STATUS only); they still reboot. *Alternative rejected:* a new EVENT code for "rebooted by the watchdog" (a protocol change, D19).
+
+**D8. The melody is the Story 1.6 Ode to Joy at 90 BPM, generated from the committed trial file, with a drift test.**
+AC1 asks for "a melody from the Story 1.5 profile". The only file derived from that profile that is already proven on the console (3 official runs at 90 BPM, 62/62 notes audible and right pitch) is `spikes/samples/story-1-6/ode-to-joy-90bpm.txt` (62 notes, 44.2 s, the profile's chart fingerings, 400 ms press cap from the Story 1.6 workaround for the unexplained held-note cut). One source of truth: `firmware/tools/gen_test_timeline.py` converts it (frames to `t_us`, final neutral marked `NEUTRAL|END`) into a committed generated C table and a note table for the analysis; a drift test regenerates and compares. The press cap means the audio results are comparable with Story 1.6's. *Alternative rejected:* a hand-typed melody in C (a second source of truth, and no link to the profile); a table built at boot from the profile (the profile is TOML for the app, not a firmware input).
+
+**D9. Debug flavours are presets, optimised, and cannot exist in release.**
+`fw-debug-timeline`, `fw-debug-hang0`, `fw-debug-hang1` are named presets (`Release` optimisation level with `OCB_DEBUG_BUILD=ON`), so each hardware step flashes one UF2 and nobody types a `-D` at the bench. They use `Release` optimisation because jitter measured at `-O0` would be unrepresentative (Task 1.3 records the flags); the debug counters are `OCB_DEBUG_BUILD`'s job, not the optimiser's. The options are refused without `OCB_DEBUG_BUILD`, the hang options need the timeline, and the release ELF is proven free of `ocb_testtl_` and the injectors by `nm` (Task 8.3). The existing `fw-debug` build stays as it is, because H.4 to H.12 depend on its behaviour (a preloaded queue would break them). *Alternative rejected:* one debug build that cycles hang modes by a counter in the scratch registers (fewer flashes, but a stateful build whose behaviour changes after each reboot is a trap; three flashes are acceptable and Task 15 says when each happens).
+
+**D10. The timeline is loaded through the real validation path, triggered by the ordinary protocol, with no wire change.**
+The loader builds ordinary `QUEUE_EVENT` frames and gives them to `ocb_core_frame`, then restores `expected`, so ordering, END, flags and capacity are validated by the same code the app will use, and the owner's host sends only `HELLO` and `START lead_us` (which Epic 3's tool also sends). The trigger is a platform rule in the timeline flavour: session open, IDLE, not aborted, empty queue, not yet loaded: so after `STOP` or `HELLO` the table is there again for the next run. *Alternatives rejected:* loading at boot (a `HELLO` clears the queue); a magic `PING` body or a debug-only frame type (a deviation from the contract AD-3 and F.12 pin: unknown types get `NAK UNKNOWN_TYPE`); `START` on an empty queue starting the melody (changes F.12's pinned rule in code the app will rely on); an automatic start when `console_ready` rises (plays when the owner is not ready, and a first press on the HOME screen can launch the game).
+
+**D11. Lateness statistics live in the pure core, always compiled, reported by the debug STATUS only.**
+Lateness is `now_us - due` at the moment `ocb_core_tick` applies an event, the one place that knows both numbers without a second clock. A handful of integer operations per event, no division, no `#ifdef` (Story 2.3 D21); release builds carry the counters and never send them. Statistics are per run (reset at `START`, kept after the end so a host reads them once the core is IDLE). Buckets: `<50 µs, <100, <250, <1000, <4000, ≥4000` plus `max` and `sum`: enough to show a clean distribution and a tail without storing 150 values; an event that is too late never gets applied (LATE abort, existing rule), so `max ≤ late_us` holds by construction and the measured numbers show how far below it the firmware really is. *Alternative rejected:* one record per event in RAM (150 × 2 bytes plus a transport the STATUS cannot carry).
+
+**D12. IN-poll statistics are measured on core 0 in task context, with the stamp latency bounded by a pass-time counter.**
+The completion callback runs inside `tud_task()`, so the stamp contains core 0's own loop latency (Story 2.3 Debug Log: the hook cannot tell which endpoint completed). Rather than stamp in the interrupt (TinyUSB 0.18's event hook has no endpoint), the story **bounds** the error: the longest `usb_p2_task` pass (`core0_pass_max_us`) is reported next to the interval minimum, p95, maximum and the count of intervals above 1.5 × the median (a missed poll shows up as one interval near two periods). If the pass maximum is small against the observed jitter, the jitter is real polling jitter; if not, it is stamping noise and the result says so. *Alternative rejected:* an ISR stamp (a second core 0 writer and an unverifiable endpoint filter).
+
+**D13. STATUS debug v4: one fixed 39-byte block after the v3 window.**
+Append-only, as every debug layout before it (AD-19, Story 2.6 D35, Story 2.3 D14); the block starts at `24 + 2·p2_log_n` of the tail because the window has a variable length. Layout in "Behaviour reference". The largest debug body is 106 bytes (frame about 112), inside `OCB_MAX_BODY` and the 128-byte UART TX ring; release STATUS stays 11 bytes. No `PROTO_VERSION` change, no vector change; `docs/link-protocol.md` documents it and F.22 pins its sizes. The two boot fields enter through the link configuration (`ocb_link_cfg`), the core 0 fields through the mailbox, so `ocb_link` stays free of platform code. *Alternative rejected:* two STATUS frames or a new message (a protocol change).
+
+**D14. `OCB_CORE_LATE_FALLBACK_US` is expected to stay 8000; the decision is made from the H.18 numbers and pinned by a test.**
+The threshold is "one report period" (AD-8); the fallback applies only while the period is unknown (the first 64 polls, about half a second at 8 ms, and after a USB-down event). The measured period is 8000 µs, so the fallback and the measured value agree and a `START` right after a handshake has the same threshold as one later. The measured scheduler lateness is expected in the tens of µs, so the rule "LATE when overdue by more than a period" is loose by two orders of magnitude and never fires in normal operation, which is what a fail-safe wants. The decision is **recorded with the measured jitter** (min, p95, max, `slow`): if the console's interval jitter reaches the period (an interval of 16 ms inside an 8 ms train), the threshold stays as defined (one period) and the result is reported, because a longer threshold would let a note fire a frame late rather than abort. The comment in `core.h` loses the word "hypothesis". A test pins 8000.
+
+**D15. The core 1 stack is measured with a painted stack on the hardware, and raised by a rule.**
+The static analysis of Story 2.6 gave about 750 to 800 bytes for the worst link chain plus the UART ISR frame; Story 2.3 measured a debug STATUS chain of about 144 + 248 + 80 bytes; the default stack is 2 KB. The hardware mark (painted pattern, incremental scan by core 1, reported in v4) is the measurement issue #21 asks for. Rule: above 1536 bytes (1.5 KB) raise `PICO_CORE1_STACK_SIZE` (compile definition, e.g. 0x1000); at or below keep it and record the number. A CI script (`check-stack.sh`, `-fstack-usage`) keeps a static lower bound under the same limit so a later change cannot silently deepen the chain. *Alternative rejected:* raising the stack "just in case" (RAM is cheap here, but an unmeasured number would leave issue #21 half closed).
+
+**D16. The audio layer reuses the Story 1.4/1.6 spike analysers, extended with IOI statistics, and the explanation is a computation.**
+The repo already has a lossless capture (sounddevice backend), a melody analyser (audible, pitch, onset per note) and a jitter analyser. Epic 7 builds the proper tooling (Story 7.1), so this story extends the spike tool instead of adding aubio (a new dependency for the same job): (a) IOI error statistics in `--mode melody` with the Spike 2.4 definitions (comparable numbers); (b) `--driver CMD`, which replaces the 2wiCC sender by the firmware's `selfplay`, and an offset from the host monotonic clock (`T0_HOST_MONO`); offsets are only used to locate windows, the IOI error is independent of them. Explanation of a miss (AC3's second branch): **firmware bound** = `late_max_us + report_period_us` (the scheduler's lateness plus one whole polling window), **game floor** = for events quantised to a 16.67 ms frame, the difference of two independent uniform errors has a triangular distribution whose p95 is `0.776 × 16.67 ≈ 12.9 ms`; the **residual** = measured p95 minus the root-sum-square of the two. Verdict `MET` (p95 ≤ 1 frame), `EXPLAINED` (above 1 frame, firmware bound ≤ 0.5 frame and the residual within the analyser noise already measured in Spike 2.4) or `UNEXPLAINED` (reported as is, follow-up for Epic 7). Spike 2.4's p95 through 2wiCC (18.8 to 21.1 ms) is the reference to compare with, not a pass limit. Recordings stay in `spikes/recordings/` (git-ignored) and are never committed or described beyond the numbers. *Alternatives rejected:* aubio (extra dependency, no gain over analysers the owner already trusts and validated); a phone recording by hand (no timestamps, no offset, nothing to automate).
+
+**D17. First input, bench order and the one command.**
+The console shows a wired controller only after its first input (Story 2.3). `selfplay` sends D-pad down three times in DIRECT before it starts: harmless in ocarina free play (a modifier without a note) and on the HOME screen (a cursor move), never A (launches the game from HOME), never D-pad left (the free-play entry, AD-9 and the Story 1.6 rule). The owner opens ocarina free play with the Joy-Con **before** plugging the controller. If the game does not react to the new controller after the first input (the console may keep the Joy-Con as player 1: unknown, nothing in the sources says), the check records it as the first finding of H.18 and the owner sets the Joy-Con aside; this is the one thing read by eye ("do the notes play?"). Everything else is read over the link. Human actions for H.18: flash, open free play, plug, run one command, listen. The script gives 120 s for the plug and absorbs bounces; the Mac side needs "Allow accessories to connect" = Always.
+
+**D18. The hang checks are Mac-first and timed with the host clock, the console run confirms the outcome.**
+The injectors hang the board with a note button down (the melody's first note) after `OCB_DEBUG_HANG_DELAY_US` = 50 ms, so "no input stays pressed" is meaningful. On the Mac, `p2_probe.py stall` reads the HID stream, finds the press, and measures press to device-gone minus the known delay; the assumptions (4 ms report latency, a 25 ms tolerance for macOS device-removal notification) are printed and recorded with the result. For core 1 the check also sees core 0's NEUTRAL (D6) before the reset. After the reboot `hangcheck` reads the cause from the debug STATUS. The same flavours then run once on the console (H.2c): the owner sees the note stop and the controller reconnect (the game also keeps a pressed A at most 6.5 s, so a stuck note would be audible as one that outlasts the reset). Mac first because it is fully scripted and needs no console, no menu, no sleep cycle. *Alternative rejected:* timing the hang on the console only (no clock the story can read there).
+
+**D19. No protocol change.**
+`PROTO_VERSION` stays 1; no message, NAK reason, EVENT code or constant is added; `common/proto/**` and the vectors are untouched. STATUS gets a longer debug tail (D13). The new constants (`OCB_LIVE_STALE_US`, `OCB_WDT_TIMEOUT_MS`, buckets) are core-private and documented in `docs/link-protocol.md` where the app needs to know the behaviour.
+
+**D20. Documentation follows the evidence-first rule.**
+The test-plan rows and the measured tables are filled only from the bench; the risk register changes after the bench (Task 14.3, Task 15). The dev agent writes the rows with empty Result cells.
+
+**D21. Issue #21 is closed by the PR, row by row.**
+Block 1 (LATE fallback): D14, Task 12.3, H.18 numbers in `docs/test-plan.md` and `docs/usb-controller-emulation.md`. Block 2 (core 1 stack): D15, Task 12.1 and 12.2, the hardware mark from H.18 plus the CI static gate. The PR description lists them and says "Closes #21".
+
+### Behaviour reference (the tables the tests encode)
+
+**Liveness and watchdog**
+
+| Rule | Value | Where |
+|---|---|---|
+| Peer stale | the peer's counter unchanged for more than 20000 µs (exactly 20000 is alive) | `ocb_live` (F.34) |
+| Core 0 feeds the watchdog | only while core 1's counter is fresh | `liveness_core0_step` |
+| Core 0 reports | NEUTRAL while core 1 is stale | `ocb_ctrl_published_read` consumer in `usb_p2.c` |
+| Core 1 on stale core 0 | `ocb_core_abort(CORE_STALL)`, scratch cause `CORE0_STALE`, `watchdog_reboot(0,0,0)` | `liveness_core1_step` |
+| Hardware watchdog | 60 ms, enabled before core 1 is launched | `main.c` |
+| Worst case | 20 ms + 60 ms + loop bound ≤ 100 ms | compile-time check, F.34 |
+| Scratch registers | `[0]` magic + cause (u8), `[1]` reboot count since power-on; `[4..7]` are the SDK's | `liveness.c` |
+
+**Lateness histogram buckets (µs, at apply)**: `[0,50)`, `[50,100)`, `[100,250)`, `[250,1000)`, `[1000,4000)`, `[4000, ∞)`. Counted only for applied events; a LATE abort is not counted.
+
+**STATUS debug v4 block (39 bytes, little-endian, every u16 saturating, at offset `24 + 2·p2_log_n` of the debug tail)**
+
+| Offset | Field | Source |
+|---|---|---|
+| 0 | `late_n u16` events applied this run | core |
+| 2 | `late_max_us u16` | core |
+| 4 | `late_sum_us u32` (host divides by `late_n`) | core |
+| 8 | `late_hist u16 × 6` | core |
+| 20 | `loop_max_us u16` core 1 pass maximum this run | link runner |
+| 22 | `core0_pass_max_us u16` | mailbox |
+| 24 | `in_min_us u16`, `in_p95_us u16`, `in_max_us u16`, `in_slow u16` (8 bytes) | mailbox |
+| 32 | `seq_retries u16`, `seq_fallbacks u8` | mailbox |
+| 35 | `stack_used_max u16` bytes | link runner |
+| 37 | `boot_cause u8`, `reboot_count u8` | link config |
+
+**Timeline flavour**: `HELLO` (session open) then the loader fills the queue; `START lead_us` plays; `PLAYBACK_DONE` ends; `STOP` or `HELLO` re-arms. **Hang flavours**: the K-th published or read state with a note button down (`K = 1`) plus 50 ms, then an endless loop.
+
+**Reference numbers carried in**: report period 8000 µs (H.15); the game frame 16.67 ms (U10); the AD-15 minimum press and gap (≥ 2 × max(8 ms, 16.67 ms) = 33.3 ms) are met by the melody (3 frames press, 5 frames gap); Spike 2.4 IOI p95 18.8 to 21.1 ms through 2wiCC; Story 1.6 90 BPM runs 62/62 audible and right pitch.
+
+### Consumers (what later stories need from this one)
+
+- **Story 3.1 and 3.4**: the release controller now reports the real published state (D4); `START` plays from a PC timeline; the core 1 loop and the liveness rules are in place; STATUS release is unchanged (11 bytes).
+- **Story 3.5**: A.3 and the console-side "no input stays pressed" checks reuse H.2a to H.2c and the `hangcheck` idea.
+- **Epic 7 (7.1 to 7.4)**: the recorder (`--driver`, IOI statistics, `explain_ioi`) is the base for the T.1 to T.5 tooling; the profile margins are set from data there; the measured jitter budget of this story is the reference.
+- **Epic 4**: `STATUS` gains nothing for the app (v4 is debug only).
+- **Story 8.x**: nothing.
+
+### Developer guardrails
+
+- **Read before editing (UPDATE files):** `firmware/CMakeLists.txt`, `firmware/CMakePresets.json`, `firmware/controller/CMakeLists.txt`, `controller/main.c`, `controller/platform/{link_runner.c,link_runner.h,usb_p2.c,usb_p2.h}`, `controller/core/**` (`core.h`, `sched.c`, `modes.c`, `queue.c`, `ramfunc.h`), `controller/link/**` (`link.c`, `tx.c`, `tx_debug.c`, `ready.c`, `pubstate.c`, `dbglog.c`, `include/ocb_link/{config.h,internal.h,ready.h,pubstate.h,link.h}`), `controller/profile_p2/interval.c`, `include/ocb_p2/p2.h`, `firmware/tests/{CMakeLists.txt,link_fixture.h,link_sim_shim.c,p2_sim_shim.c,test_link_pubstate.c,test_link_ready.c,test_link_tx.c,test_link_dbglog.c,test_p2_interval.c,test_p2_probe.py,test_link_probe.py,test_docs_constants.py,test_core_end_late.c}`, `firmware/tools/{link_probe.py,p2_probe.py,check-release-nolog.sh,check-core-pure.sh}`, `.github/workflows/firmware.yml`, `spikes/{listen_trial.py,test_listen_trial.py,send_2wicc.py}` and `spikes/samples/story-1-6/ode-to-joy-90bpm.txt`, `docs/{test-plan,usb-controller-emulation,link-protocol}.md`, `firmware/{README.md,controller/README.md}`. Preserve everything not named here.
+- **The system must keep working end to end:** both UF2s still build in `fw-release` and `fw-debug`; the UART link, the link watchdog and the P2 handshake behave as in Stories 2.3 and 2.7 (H.8 to H.12, H.13 to H.16 must still pass when re-run; the LED blinks amber at 2 Hz, H.0); the Story 2.3 bench tools keep working (`p2check`, `p2watch`, `press`, `enum`, `handshake`, `watch`).
+- **Never press A for a "first input"**: A on the HOME screen launches the game. The first input is D-pad down. Never send D-pad left, ZL, ZR, B, Home, Capture from a script in free play.
+- **The bridge Zero is never flashed**; only the controller Zero goes into BOOTSEL. Scripts take the serial port from the global `--port` option (`"$P"`), never hard-coded, every wait states its time budget in the prompt line, scripts absorb wire bounces (stable window before checking, resends at 300 ms up to 3 times as in Story 2.3) and give the human time. Minimise the human's physical actions (plug in, say ready, listen).
+- No `printf` or stdio on the controller; no GPIO number token (`GP<n>`) in any comment or string of new files (the pin gate); no TinyUSB or SDK include in `ocb_core`, `ocb_link`, `ocb_p2`; `-Wconversion` is on, cast `uint8_t` arithmetic explicitly; no 64-bit division on the target.
+- No new protocol constant, message or vector; do not touch `common/proto/**`.
+- Do not create temp files in the repo; do not commit or push; do not edit `_bmad/`; recordings are never committed (`spikes/recordings/` is git-ignored); no game screenshots.
+- Pure C99 in the pure libraries with sanitizer-clean host tests; new tests are registered in `firmware/tests/CMakeLists.txt` and run by `ctest --preset host-tests`.
+- Local build environment: `OCB_PICOTOOL_DIR=firmware/.tools/picotool-2.3.1`, `OCB_ARM_TOOLCHAIN=firmware/.tools/arm-gnu-toolchain-15.2.Rel1`.
+- The owner has ADHD: bench steps are few, each one command, and the prompts say what to do and for how long the script waits.
+
+### Architecture compliance
+
+- AD-8: the mode table, the abort latch, `LATE` (strictly more than one report period), END and underrun are unchanged; the statistics only observe. `CORE_STALL` (already a latch cause) is raised by the new detector.
+- AD-9: the timeline stays inside the allow-list; the generator and the real core enforce it.
+- AD-10: the table uses the canonical state only; the profile maps it (unchanged).
+- AD-11: core 0 = TinyUSB + profile + reports; core 1 = non-blocking super-loop from RAM (D2, D3), sole writer of the state through a seqlock double buffer with retry ≤ 3 then NEUTRAL (D4), liveness 20 ms and a hardware watchdog (D6); the debug log ring is unchanged.
+- AD-12: the profile reads only the published state; the handoff is the AD's own.
+- AD-15: minimum press and gap rule met by the melody; timeline events are on the frame grid.
+- AD-19: STATUS base unchanged; debug tail append-only (D13).
+- AD-20: no pin is added; the watchdog does not touch the UART gate (the reboot restarts the boot sequence, TX is high-Z at power-up).
+- NFR-04 and NFR-05: first measured end-to-end numbers (AC3, AC4); the validation phase M7 remains Epic 7.
+- ADR-004, NFR-07: no code copied; the SDK is used as pinned.
+
+### Library and framework requirements
+
+Firmware: pico-sdk 2.3.1 (`hardware_watchdog`, `pico_multicore`, `pico_time`, `pico_standard_link` binary types) and TinyUSB 0.18.0 as pinned (nothing fetched), Arm GNU Toolchain 15.2.Rel1, CMake ≥ 3.25, C99 for the pure libraries. Host tools: Python 3 standard library (the bench Mac has 3.9.6: no `match`, no `X | Y` type syntax, no f-string `=`), `pyserial` and `hidapi` only where a port or HID device is opened; the spike analyser keeps its own requirements (`uv run --python 3.12`, numpy, sounddevice, pyserial). No new dependency.
+
+### File structure requirements
+
+```text
+firmware/controller/core/                          (UPDATE ocb_core)
+  include/ocb_core/live.h  testtl.h               (NEW)
+  live.c  testtl.c  testtl_data.c                 (NEW; testtl_data.c is generated, committed)
+  (UPDATE) include/ocb_core/core.h ramfunc.h, sched.c, modes.c (stats reset at START)
+firmware/controller/platform/
+  liveness.c  liveness.h  debug_hang.c  debug_hang.h   (NEW; debug_hang only with OCB_DEBUG_HANG)
+  (UPDATE) link_runner.c link_runner.h usb_p2.c
+firmware/controller/main.c  CMakeLists.txt         (UPDATE: super-loop, watchdog, copy_to_ram, flavours)
+firmware/controller/link/
+  (UPDATE) pubstate.c include/ocb_link/pubstate.h config.h internal.h ready.h  tx_debug.c  ready.c  link.c
+firmware/controller/profile_p2/interval.c  include/ocb_p2/p2.h   (UPDATE)
+firmware/CMakeLists.txt  CMakePresets.json         (UPDATE: options, presets)
+firmware/tools/
+  gen_test_timeline.py  check-ram-hot-path.sh  check-barrier.sh  check-stack.sh   (NEW)
+  (UPDATE) link_probe.py  p2_probe.py  check-release-nolog.sh
+firmware/tests/
+  test_live.c  test_core_timing.c  test_testtl.c  test_gen_test_timeline.py  testtl_expected.txt   (NEW)
+  (UPDATE) CMakeLists.txt link_fixture.h link_sim_shim.c p2_sim_shim.c test_link_pubstate.c test_link_ready.c
+           test_link_tx.c test_link_dbglog.c test_p2_interval.c test_p2_probe.py test_link_probe.py
+           test_docs_constants.py test_core_end_late.c
+spikes/listen_trial.py  test_listen_trial.py       (UPDATE)
+.github/workflows/firmware.yml                      (UPDATE)
+docs/test-plan.md  usb-controller-emulation.md  link-protocol.md      (UPDATE)
+firmware/README.md  controller/README.md            (UPDATE)
+_bmad-output/specs/spec-bonooru/risk-register.md    (UPDATE after the bench)
+```
+
+Not touched: `common/proto/**`, `common/hw/**` (pins), `bridge/**`, `_bmad/**`, `spikes/samples/story-1-6/*.txt` (read only), the three existing purity gate scripts.
+
+### Testing requirements
+
+All under ctest `host-tests`, ASan and UBSan on, hand-written expectations (never derived from the code under test), fake clocks.
+
+| Test (ctest name) | Test-plan ID | Must cover |
+|---|---|---|
+| `test_live` | **F.34** (new) | Task 2.3: stale boundary, wrap, grace, constants sum ≤ 100 ms, cause encoding |
+| `test_link_pubstate` | **F.33** (updated) | Task 4.4: double buffer, exhaustive interleavings, NEUTRAL after 3, counters, write on change |
+| `test_core_timing` | **F.36** (new) | Task 6.5, 11.2: lateness statistics, buckets, reset at START, loop helper |
+| `test_testtl`, `testtl_drift` | **F.37**, **F.38** (new) | Task 9.5: table, loader, START seq, melody plays on a fake clock, drift of the generated file |
+| `test_p2_interval` | **F.29** (updated) | Task 6.5: min, max, p95, `slow` |
+| `test_link_dbglog`, `test_link_tx`, `test_link_ready` | **F.31, F.16, F.10** (updated) | Task 7.4, 6.5: v4 block, offsets, release 11-byte STATUS, mailbox fields |
+| `docs_constants_check` | **F.22** (updated) | Task 7.3: v4 sizes |
+| `test_core_end_late` | **F.4** (updated) | Task 12.3: 8000 pinned |
+| `p2_probe_selftest`, `link_probe_selftest` | **F.32, F.19 to F.23** (extended) | Task 10.4: `selfplay`, `stall`, `hangcheck`, negative controls |
+| spike tests (`uv run --python 3.12 --with pytest pytest spikes/test_listen_trial.py`) | outside ctest; named in the test plan and run in the Completion Notes | Task 13.2, 13.3 |
+| CI gates | | `check-release-nolog` (extended), `check-ram-hot-path`, `check-barrier`, `check-stack`, the existing four purity gates and the pin gate |
+
+Red proofs to record in the Debug Log (each shown failing once, then reverted, with the failing output line): F.34 boundary and sum; F.33 generation accepted after two publishes; F.36 wrong reference and edge; F.37 allow-list check removed, END flag missing, `expected` not restored; F.29 p95 as max; F.32 negative controls; `check-ram-hot-path` on the XIP variant; `check-barrier` with the definition removed; `check-release-nolog` on a release ELF with the melody linked in. CI mapping: "Host tests" runs all of it; the new steps run the gates; every ARM preset builds with 0 warnings.
+
+### Hardware checks (owner bench session; Task 15)
+
+**Rig (record in the test-plan bench block):** Mac (macOS, Darwin 27.x), "Allow accessories to connect" = **Always**; the controller Zero with the UF2 named in each row (local builds: `cmake --preset <name> && cmake --build --preset <name>` in `firmware/`, UF2 at `build/<name>/controller/controller.uf2`, flashed by BOOTSEL on the **controller Zero only**); the Apple USB-C reference cable; the bridge Zero with 2wiCC_Comms v1.1 (never flashed), crossed TX/RX and GND as left after Story 2.6 (wiring not rechecked), its port in `P` (`ls /dev/cu.usbmodem*`, `export P=/dev/cu.usbmodemXXXX`, never typed into a command); the Switch 2 on the top USB-C port with Pro Controller Wired Communication ON; the Joy-Con to open ocarina free play; the Mac microphone near the console speaker for H.19; a bench venv with `pip install pyserial hidapi`. The console cuts USB power in sleep: do not let it sleep during a run. All commands run from the repo root.
+
+| ID | Test | Exact steps (owner actions in **bold**) | Expected | Record |
+|---|---|---|---|---|
+| H.2a | Hang core 0 (AC4, Mac only, no console) | 1. **Flash `fw-debug-hang0` (BOOTSEL), leave it plugged into the Mac**, bridge wired. 2. `python3 firmware/tools/p2_probe.py stall --expect core0 --drive --port "$P"` (it starts `selfplay`, holds the HID stream, times the hang, waits for the reboot and runs `hangcheck`). | `PASS`: a note button seen, reports stop, the device disappears and comes back, stall to gone ≤ 100 ms + 25 ms tolerance (both printed), the board comes back NEUTRAL, `boot_cause` `CORE0_STALE`, `reboot_count` +1 | the printed lines and times, the host tolerance assumption, macOS version |
+| H.2b | Hang core 1 (AC4, Mac only) | as H.2a with **`fw-debug-hang1`** and `--expect core1` | `PASS`: reports continue, the state becomes NEUTRAL about 20 to 30 ms after the press (core 0 sees core 1 stale), the device disappears at about 20 + 60 ms, comes back NEUTRAL, `boot_cause` `CORE1_STALE` | same |
+| H.2c | The hang on the console (AC4, optional if H.2a and H.2b pass) | 1. Console on, Wired Communication ON, game in ocarina free play (**open it with the Joy-Con**). 2. Flash `fw-debug-hang0`, **plug into the console top USB-C port**, run `python3 firmware/tools/link_probe.py --port "$P" selfplay`. 3. Repeat with `fw-debug-hang1`. | the first note starts, then stops within a fraction of a second and the controller reappears (a stuck note would outlast the reset); `hangcheck` PASS | one sentence per flavour: what you saw and heard |
+| H.18 | The built-in melody on the console, self-timing and the stack (AC1, AC2, AC5) | 1. **Flash `fw-debug-timeline`.** 2. Console on, Wired Communication ON, **open ocarina free play with the Joy-Con**. 3. `python3 firmware/tools/link_probe.py --port "$P" selfplay --runs 3`. 4. At the prompt: **plug the controller into the console's top USB-C port**. 5. **Listen**: does the melody play, do the notes sound right? 6. After the run: `python3 firmware/tools/link_probe.py --port "$P" --seed 1 --heartbeat soak --cycles 20 --events 500 --corrupt 0.02 --drop 0.02 --garbage` then `watch --seconds 5` (reads the stack mark after the worst traffic; the soak needs the queue free, so run it **after** `selfplay`, whose session it replaces). | `PASS` for each of the 3 runs: `late_n` = table length, `late_max_us` ≤ `report_period_us`, no LATE or UNDERRUN, `seq_fallbacks` 0, loop max and `core0_pass_max_us` printed, stack mark ≤ 1536; the owner confirms the notes are right and that the console played the controller (first finding if not, D17) | the `PASTE_LINE` of each run (lateness max / mean / histogram, IN median / min / p95 / max / slow, loop max, pass max, stack mark), the one-sentence hearing result, the build commit |
+| H.19 | Audio recording and IOI (AC1, AC3) | 1. Same setup as H.18, microphone near the console speaker. 2. `uv run --python 3.12 spikes/listen_trial.py --backend sounddevice --mode melody --driver 'python3 firmware/tools/link_probe.py --port "$P" selfplay --lead-ms 3000' spikes/samples/story-1-6/ode-to-joy-90bpm.txt` (it starts the capture, runs the driver, stops, analyses). 3. Optional control: the same command with the 2wiCC sender path of Story 1.6 for a same-session comparison (the sender needs the 2wiCC firmware, so it is skipped unless the owner has it flashed). | the report: notes audible N/62 and right pitch N/62; IOI error count, mean, σ, p95, max, drift; `explain_ioi` verdict `MET`, `EXPLAINED` or `UNEXPLAINED` with the three numbers | the report lines (the recording itself is never committed), the verdict |
+| H.20 | RAM against XIP (D2, optional) | 1. `cmake --preset fw-debug-timeline -DOCB_CONTROLLER_RUN_FROM_RAM=OFF && cmake --build --preset fw-debug-timeline`, **flash**, run H.18's `selfplay --runs 3`. 2. **Re-flash the default.** | both variants print their numbers; the RAM build is not worse (lateness max, loop max, `core0_pass_max_us`); a difference is a result | the two lines, one sentence |
+| H.2 (the old row) | Core stall (debug build: hang core 0, then core 1) | passes when H.2a and H.2b pass | | |
+
+Safety: nothing on 3V3 or 5V; USB cables only as above; the console is never put to sleep during a run (power is cut in sleep).
+
+What to record, once, in `docs/test-plan.md`: rows F.33 to F.38 and the updated ones, H.2a to H.2c, H.18 to H.20, the bench block (commit, UF2 build commits, macOS version, Python and hidapi versions, cable, port, console system version, the microphone position), and in `docs/usb-controller-emulation.md` "Measured on the Switch 2" the jitter row; in the Completion Notes: the numbers for issue #21.
+
+### Previous story intelligence (Story 2.3 done and merged; PRs up to #23)
+
+- Hand-offs addressed here: `report_period_us` 8000 µs and issue #21 (D14, D15, Tasks 12.x); the published-state path debug-only (D4); `OCB_LINK_BARRIER` empty on target (D5); STATUS grew (D13, with the stack and TX-ring checks); the S12 data rows left unaligned (not touched).
+- The patterns to reuse rather than reinvent: pure library plus ctypes simulator plus a bench probe that runs unmodified against it (F.19 to F.23, F.32), `PASS`/`FAIL` one-command bench steps with a stable window and resends, purity gate copies with drift guards, red proofs in the Debug Log, honest Completion Notes ("unverified until pushed", "unverified on hardware").
+- Learnings that bind this story: the Switch 2 shows a wired controller only after its first input (never A, D17); sleep cuts USB power (the board reboots on wake, so no sleep during a run); the console polls at 8 ms whatever `bInterval` says; "Allow accessories to connect" must be Always; a reader that gives up after three odd reads against a writer that rewrites every pass produced a NEUTRAL blip (D4 removes the cause and counts the fallback); the owner's glance at the console is part of a pass criterion when the console is the only judge.
+- Story 2.7 facts to keep: `OCB_ABORT_CORE_STALL` exists and is latched with no EVENT; `STOP` and `HELLO` clear the latch; the TX gate releases after `LINK_LOST`; STATUS cadence 50 ms, ACK-triggered STATUS at least 10 ms apart; the probe's emulated heartbeat is 20 ms (a gap above 60 ms is host jitter, not a firmware failure).
+- Story 1.6 facts to keep: the melody file's 400 ms press cap is a workaround for an unexplained held-note cut about every 7th note; the analyser's default heard latency 0.12 s is per session; the capture backend must be sounddevice (ffmpeg loses samples).
+
+### Git intelligence
+
+Recent commits on `main`: `f36ad9c` merge of PR #23 (Story 2.3), `bbfd650` final CI run recorded, `a4900b0` bench results and the last-good published state, `573630f` the published state and press/watch bench commands (H.15 attempt 2), `c020514` pairing and MCU replies. Pattern: one story branch (this one: `story/2-5-hard-coded-timeline-plays-on-the-switch-with-measured-jitter`), an implementation commit plus review follow-up commits, bench sessions recorded in later commits, merge by PR; the owner commits and pushes. `firmware/controller/` holds `core/`, `link/`, `profile_p2/`, `platform/` and `main.c` with a plain core 1 loop. `.claude/` is untracked and not part of the story.
+
+### Latest tech information
+
+pico-sdk 2.3.1 (pinned): `watchdog_enable(delay_ms, pause_on_debug)` stores a marker in `scratch[4]`; `watchdog_reboot(pc, sp, delay_ms)` with a zero delay triggers at once; both reset every PSM block except ROSC and XOSC; on the RP2040 the load value is doubled because the counter decrements twice per tick (E1), the maximum is 8388 ms; `watchdog_caused_reboot()` reads the reason register. The default core 1 stack is `PICO_CORE1_STACK_SIZE` 0x800 in `.stack1` (SCRATCH_X); `multicore_launch_core1_with_stack` accepts a caller-provided stack. `pico_set_binary_type(<target> copy_to_ram)` builds the program to be copied to SRAM at start (the crt0 copies it; the XIP cache is then unused by the program). `__dmb()` is a `dmb` with a memory clobber. TinyUSB 0.18.0: `tud_hid_report_complete_cb` runs inside `tud_task()`; `tud_event_hook_cb` has no endpoint argument (Story 2.3 Debug Log). The dev **re-reads** the SDK sources named in S1, S3, S4 and S5 before relying on this paragraph; where the SDK disagrees, the SDK wins and the difference goes into the Debug Log.
+
+### Project Context Rules
+
+No `project-context.md` exists in the repo. Project rules that apply, from the owner's notes and the repo: all repo files in English (chat in Italian); never commit `_bmad/` or `bmad-*`/`gds-*` skills (only `_bmad-output/`); never edit `~/Documents/org/`; no game screenshots, never reference `ux-designs/*/imports/`; no binaries and no 2wiCC code (NFR-07, ADR-004); game audio recordings stay in the git-ignored `spikes/recordings/` and are never committed or embedded; do not create temp files in the repo; the dev agent does not commit or push; the breadboard GND/GP0/GP1 wiring is not rechecked each session unless rewired; the test environment (Switch 2 system version, OoT version, console port, Wired Communication setting) is read from `docs/test-plan.md`, never asked; research before raising open questions; ask one decision at a time (the owner has ADHD: keep the bench steps few, simple and one command each); the bridge Zero is never flashed, only the controller Zero goes into BOOTSEL.
+
+### References
+
+- [Source: `_bmad-output/planning-artifacts/epics.md`#Story 2.5, #Story 2.3, #Story 2.4, #Story 2.6, #Story 2.7, #Story 3.4, #Epic 2 Notes, #Epic 7]
+- [Source: `_bmad-output/planning-artifacts/architecture/architecture-bonooru-2026-11-19/ARCHITECTURE-SPINE.md`#AD-5, AD-8, AD-9, AD-10, AD-11, AD-12, AD-15, AD-19, AD-20, Structural Seed]
+- [Source: `_bmad-output/specs/spec-bonooru/requirements.md` (NFR-04, NFR-05); `decisions.md` (ADR-002, ADR-006); `risk-register.md` (R3, R13, C7)]
+- [Source: `_bmad-output/implementation-artifacts/2-3-controller-enumerates-as-a-wired-pro-controller.md`#D13, #D35, #Learnings, #Hand-off to Story 2.5, #Bench complete; `2-4-controller-core-modes-queue-scheduler-and-safety-mask.md`#D6, #D12; `2-6-controller-link-uart-reliability-session-and-status.md`#D35; `2-7-controller-link-watchdog.md`#D6, #D15, #Hardware checks]
+- [Source: `_bmad-output/implementation-artifacts/1-5-measured-default-mapping-profile.md`, `1-6-walking-skeleton-plays-a-whole-melody.md`; `app/profiles/oot-switch2-1.1.1.toml`; `spikes/samples/story-1-6/ode-to-joy-90bpm.txt`; `spikes/listen_trial.py`, `spikes/send_2wicc.py`]
+- [Source: `docs/usb-controller-emulation.md`#Measured on the Switch 2, #Timing chain, #Profile interface (AD-12); `docs/link-protocol.md`#STATUS debug counters, #Rules the controller link applies; `docs/test-plan.md`#Test environment, #Bench rig for the P2 profile, #Spike 2.4, #Walking skeleton (Story 1.6), #Timing validation phase, #Firmware host tests, #Hardware-in-the-loop checks (H.2, H.15 to H.17); `docs/ocarina-input-mechanics.md`]
+- [Source: `firmware/controller/{main.c,CMakeLists.txt,platform/link_runner.{c,h},platform/usb_p2.c,link/pubstate.c,link/include/ocb_link/{config.h,pubstate.h,ready.h},link/tx_debug.c,core/include/ocb_core/{core.h,ramfunc.h},core/sched.c,profile_p2/interval.c}`; `firmware/tools/{link_probe.py,p2_probe.py,check-release-nolog.sh}`; `.github/workflows/firmware.yml`; `firmware/CMakePresets.json`]
+- [Source: pico-sdk 2.3.1 `src/rp2_common/{hardware_watchdog/watchdog.c,pico_multicore/multicore.c,pico_standard_link/CMakeLists.txt,pico_standard_link/script_include/sections_stack.incl,hardware_sync/include/hardware/sync.h}` (S1, S3, S4, S5); RP2040 register documentation mirrors, watchdog scratch and `PSM_WDSEL` (S2)]
+- [Source: GitHub issue #21 (LATE threshold and core 1 stack, Story 2.5); issue #20 (purity gates, not touched)]
+
+### Open points for the owner (none block the story)
+
+- **D2:** the whole controller program runs from RAM (`copy_to_ram`). If you prefer the AD's per-function wording, the XIP variant stays one CMake option away; H.20 compares them.
+- **D4:** the seqlock falls back to NEUTRAL after 3 tries (the AD and the AC), replacing Story 2.3's "last good copy"; the bench requires zero fallbacks.
+- **D6:** the hardware watchdog is 60 ms, not AD-11's "≤ 100 ms", so that detection plus timeout stays inside the AC's 100 ms.
+- **D9:** three extra UF2 flavours (timeline, hang core 0, hang core 1), so three flashes in the bench session; a cycling single build was rejected as stateful.
+- **D16:** the audio check is expected to land in the "explained" branch (the game's own 60 Hz sampling plus the 8 ms polling grid make a p95 near 13 ms the floor); the story computes the explanation instead of arguing it.
+- **D17:** if the game ignores the new controller after its first input (for example because the Joy-Con stays player 1), that is the first finding of H.18 and the Joy-Con has to be put aside.
+- **D18:** the Mac's device-removal notification latency is unknown; the 25 ms tolerance is a stated assumption recorded with each result.
+
+## Dev Agent Record
+
+### Agent Model Used
+
+Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow, run autonomously on 2026-11-22.
+
+### Debug Log References
+
+- SDK read for Task 3.4 (pico-sdk 2.3.1, `src/rp2_common/hardware_watchdog/watchdog.c`): `_watchdog_enable()` does `hw_set_bits(&psm_hw->wdsel, PSM_WDSEL_BITS & ~(PSM_WDSEL_ROSC_BITS | PSM_WDSEL_XOSC_BITS))` (every block but the two oscillators, so RESETS and with it the USB controller are reset); `watchdog_enable()` writes `scratch[4] = 0x6ab73121` first; `watchdog_reboot(0, 0, 0)` writes `scratch[4] = 0` and calls `_watchdog_enable(0, 0)`, which sets `WATCHDOG_CTRL_TRIGGER` (immediate); the load is `delay_ms * 1000 * 2` on the RP2040 (E1); `watchdog_caused_reboot()` returns `watchdog_hw->reason` on the RP2040. `pico_multicore/multicore.c`: `core1_stack` is `PICO_CORE1_STACK_SIZE` bytes in `.stack1`; `multicore_launch_core1()` uses `__StackOneBottom`; `multicore_launch_core1_with_stack()` pushes 3 words (entry, stack bottom, `core1_wrapper`) at the top. `pico_standard_link/script_include/section_end.incl`: `__StackOneTop = ORIGIN(SCRATCH_X) + LENGTH(SCRATCH_X)`, `__StackOneBottom = __StackOneTop - SIZEOF(.stack1_dummy)`. No difference from the story's "Latest tech information".
+- F.34 red proofs (each reverted): `>=` instead of `>` at the boundary -> `test_live.c:22: FAIL: exactly 20000 us unchanged is alive`; change test `counter > last` instead of `!=` (wrap not handled) -> `test_live.c:55: FAIL: after the wrap`; `OCB_WDT_TIMEOUT_MS 100u` (sum 125 ms) -> compile error `live.h:46:45: error: 'ocb_live_worst_case_within_ac4' declared as an array with a negative size`.
+- F.33 exhaustive interleavings (green): k=1: 70 interleavings, 0 NEUTRAL; k=2: 3699 (3560 with a retry), 0 NEUTRAL; k=3: 287268, 0 NEUTRAL; k=4: 7119565 (1817572 NEUTRAL, all with >= 2 publishes in the window); 1.1 s under ASan/UBSan.
+- F.33 red proofs (each reverted): reader accepting `g1 - floor(g0) <= 3` -> `test_link_pubstate.c:97: FAIL: k=2: torn or mixed state returned (writer step 7, try 0)`; the story's one-step generation (gen += 2 only after the slot is written, reader accepts an advance of one publish) -> `FAIL: k=2: torn or mixed state returned (writer step 7, try 0)` (the D22 counter-example); generation published before the slot (reordered halves) -> `FAIL: k=1: torn or mixed state returned (writer step 4, try 0)` and `FAIL: k=4: the NEUTRAL fallback was never reached`.
+- F.33 bench-shaped blip (Story 2.3 H.15 attempt 3, a write inside every read): 10000 reads, fallbacks 0, retries 0.
+- F.36 red proofs (each reverted): lateness measured from t0 instead of the event's due time -> `test_core_timing.c:48: FAIL: max 248000, wanted 8000`; first bucket edge `<=` instead of `<` -> `test_core_timing.c:53: FAIL: bucket 0: 3, wanted 2`.
+- Red-proof hygiene: the first restore of a red edit kept the backup's older mtime and ninja did not rebuild; the helper now touches the restored file and every green run after a red proof is a fresh build (all three tests re-run green after `touch` + rebuild).
+- F.29 red proof (reverted): the 95th percentile taken as the maximum (k95 = count) -> `test_p2_interval.c:41: FAIL: with one missed poll: min 8000 p95 16000 max 16000, wanted 8000 8000 16000`.
+- F.38 red proofs (each reverted): the generator's allow-list check removed -> `testtl_drift: FAIL button_b: exit 0, wanted 1`; the END flag not set on the last row -> `testtl_drift: FAIL drift: controller/core/testtl_data.c differs from a fresh generation` and `FAIL last row is not NEUTRAL|END at 44166667 us`.
+- F.37 red proof (reverted): `expected` not restored after the load -> `test_testtl.c:96: FAIL: expected 159 after the load, wanted 1` and `link_fixture.h:307: FAIL: START after the load: wanted one ACK(1), got 1 frame(s), first type 0x85 body0 2` (NAK SEQ).
+- check-release-nolog (extended, families dbglog/testtl/hang) red proofs: a scratch release build with the melody linked in (guard disabled in a scratch copy, restored) -> lists `ocb_testtl_count ... ocb_testtl_table_len` and `check-release-nolog: FAIL: debug-only symbols in .../controller.elf`, exit 1; `--expect-present=dbglog,testtl,hang` on the timeline ELF (no injector) -> `FAIL: no hang symbol ... (expected in this debug build; renamed?)`, exit 1. Green: release and XIP release clean; fw-debug dbglog 7 symbols; fw-debug-timeline dbglog,testtl 13; fw-debug-hang0/1 dbglog,testtl,hang 15.
+- CMake option guards shown: `-DOCB_DEBUG_TIMELINE=ON` on fw-release -> `CMake Error ... OCB_DEBUG_TIMELINE=ON needs OCB_DEBUG_BUILD=ON ... Use the preset fw-debug-timeline`; `-DOCB_DEBUG_HANG=CORE0` on fw-debug -> `OCB_DEBUG_HANG=CORE0 needs OCB_DEBUG_TIMELINE=ON ... Use the preset fw-debug-hang0 or fw-debug-hang1`.
+- D5/D24 barrier: `__atomic_thread_fence(__ATOMIC_SEQ_CST)` compiled with Arm GNU Toolchain 15.2.Rel1 for cortex-m0plus at -O3 gives `f3bf 8f5b dmb ish` (objdump of a scratch object): a real DMB, no libcall, but with the ISH option that ARMv6-M reserves; the firmware uses `dmb 0xF` (SY, `f3bf 8f5f`), the SDK's `__dmb()`, from a force-included platform header.
+- check-barrier (new gate): green on all six controller ELFs (fw-release, fw-release-xip, fw-debug-timeline, fw-debug-hang0/1: writer 6, reader 8 `dmb sy`; fw-debug at -Og: writer 2, reader 2, the helpers are separate functions there; the first version of the gate looked only at the entry functions and failed on fw-debug, fixed to count the helpers too); `--self-test` ok. Red proofs: a scratch fw-release built with the force-include line commented out (restored) -> `check-barrier: FAIL: the writer has 0 'dmb sy' (wanted >= 2)`, `FAIL: the reader has 0 'dmb sy'`, exit 1; a scratch object of pubstate.c without the definition -> same, exit 1.
+- check-ram-hot-path (new gate): 23 hot functions in RAM in fw-release, fw-debug, fw-debug-timeline, fw-debug-hang0/1; `--expect-flash` on fw-release-xip ok (19 hot functions in flash; the 4 with `__not_in_flash_func` stay in RAM). Red proofs: the XIP ELF through the RAM check -> `check-ram-hot-path: ocb_frame_decode at 0x10007318 is not in RAM` ... `FAIL: 19 hot functions outside RAM`, exit 1; `--expect-flash` on the RAM build -> `self-test FAIL: every hot function is in RAM`, exit 1.
+- check-stack (new gate, `-fcallgraph-info=su` call graphs): fw-release 1200 B (core 1 loop 1132: core1_entry 8 -> ocb_ctrl_link_step 304 -> ocb_link_tx_next 144 -> ocb_link_tx_status_debug_ 368 -> ocb_frame_encode 280 -> ocb_cobs_encode 28; UART RX interrupt 36: on_uart_rx 16 -> rx_sink 8 -> ocb_rxring_push 12; + 32 exception frame); fw-debug (-Og) 1164 B; fw-debug-timeline 1224 B (core1_entry 16, ocb_ctrl_link_step 320); all <= 1536. Not counted (listed by the gate): memcpy, memset, __aeabi_uidiv, __aeabi_lmul, hard_assertion_failure, indirect calls other than the UART sink. Red proofs: `--limit 1100` on fw-debug-timeline -> `check-stack: FAIL: the static core 1 chain (1224 bytes) is above 1100 bytes`, exit 1; a scratch fw-debug-timeline with 400 more bytes in the debug STATUS scratch (reverted) -> `FAIL: the static core 1 chain (1624 bytes) is above 1536 bytes`, exit 1.
+- Baseline (Task 1.2, commit f36ad9c, before any change): `arm-none-eabi-size` controller.elf fw-release text 39096 / bss 15268 (dec 54364), fw-debug text 49120 / bss 15432 (dec 64552); `-fstack-usage` (scratch release build with the flag): ocb_ctrl_link_step 304, ocb_link_poll 88, ocb_link_tx_next 144, ocb_link_tx_status_debug_ 248, ocb_link_status_body_ 80, ocb_link_rx_drain 40, ocb_link_rx_entry 80, ocb_core_frame 48, ocb_core_tick 48, rx_sink 8, core1_entry 8 (same as Story 2.3's numbers).
+- Build types (Task 1.3): `CMAKE_C_FLAGS_RELEASE` = `-g -O3 -DNDEBUG`, `CMAKE_C_FLAGS_DEBUG` = `-Og -g` (from the CMake caches of fw-release and fw-debug); the timing flavours use Release (-O3) with OCB_DEBUG_BUILD (D9).
+- Found by the selfplay simulation (F.23 style, 1 ms tick): the first loader kept a "tried" flag that was cleared only when a pass saw the core not loadable; a STOP processed in the pass right after a load emptied the queue and the loader never ran again ("FAIL run 1: the queue is still empty after STOP"). Fixed in the firmware and the sim: only a failed load is remembered (a successful load leaves a non-empty queue, so the next empty IDLE queue can only come from HELLO or STOP). The same race existed in the firmware (practically unreachable at microsecond passes, fixed anyway).
+- Selfplay LATE negative control: the first attempt (a 50 us period) gave lateness 0 because the sim ticks land exactly on the 100 ms grid; replaced by a 20 ms stalled loop during the piece -> `FAIL run 1: late_n 1, the table has 6 events` with `events LATE`.
+- F.22 red proof (reverted): docs/link-protocol.md edited to "body is 105 bytes" and "`OCB_WDT_TIMEOUT_MS`, 100 ms" -> `docs_constants_check: FAIL link doc: STATUS v4 sizes differ from ocb_link/config.h (63, 95, 106, 113)` and `FAIL link doc (Story 2.5): OCB_WDT_TIMEOUT_MS written as 100, live.h gives 60`.
+
+### Completion Notes List
+
+**State: dev work done, status `review`; nothing is verified on hardware yet (Task 15), and every CI result is unverified until the owner pushes.** Tasks 1 to 10 and 13 are complete; 11.1, 12.2, 12.3 have their dev part done and close with the H.18 numbers; 12.4 (the PR text, draft below) and 14.3 (risk register, after the bench) are for the lead; Task 15 is the owner's.
+
+What was built (by AC):
+- **AC1 (melody from the controller's clock, AD-11 shape).** Core 1 runs the super-loop (`main.c`: liveness step, `ocb_ctrl_link_step()`, debug pass end; no sleep, no stdio, no divide; the 1 MHz timer polled, no alarm ISR, D3). The published state goes through a sequence-locked double buffer in every build (`link/pubstate.c`, 3 tries then NEUTRAL, D4, D22); release builds now report the real state. Whole program from RAM (`copy_to_ram`, D2, gate `check-ram-hot-path.sh`). Real `dmb sy` barrier on the target (`platform/ocb_link_barrier.h` force-included, D5, D24, gate `check-barrier.sh`). The timeline flavour `fw-debug-timeline` loads the generated Ode to Joy table (158 events, `testtl_data.c` from `gen_test_timeline.py`, drift test) through the real `ocb_core_frame` path after HELLO/STOP; the host sends only HELLO and START.
+- **AC2 (self-timing).** `ocb_core_timing_stats` (per-run lateness n/max/sum/6-bucket histogram, F.36), the IN interval min/p95/max/slow in `ocb_p2` (F.29), core 0's pass maximum and the handoff counters through the mailbox (F.10), core 1's loop maximum and stack mark from the runner, the boot cause from the config: all in the debug STATUS v4 block (39 bytes, F.31, F.16; largest frame 113 bytes, fits the 128-byte UART TX ring). `link_probe.py selfplay` checks `late_max_us <= report_period_us` and the other limits (PASS/FAIL, PASTE_LINE).
+- **AC3 (audio).** `spikes/listen_trial.py`: IOI statistics in `--mode melody` (Spike 2.4 definitions), `--driver CMD` (selfplay drives the run, offset from `T0_HOST_MONO`, the AC3 explanation from its PASTE_LINE), `explain_ioi` (MET / EXPLAINED / UNEXPLAINED, D16, D26). Spike tests 606 passed, 1 skipped (598 + 1 skipped before; 8 new).
+- **AC4 (hangs).** `ocb_live` (pure, F.34) and `platform/liveness.c` (every build): 20 ms stale, 60 ms hardware watchdog armed before core 1 starts, core 0 reports NEUTRAL and stops feeding when core 1 is stale, core 1 aborts (`CORE_STALL`) and reboots at once when core 0 is stale; worst case 85 ms asserted at compile time. Cause and count in scratch[0]/[1]. Hang flavours `fw-debug-hang0/1` (`debug_hang.c`, non-blocking delay, D23). Bench: `p2_probe.py stall` (+ `--drive`), `link_probe.py hangcheck`.
+- **AC5 (issue #21).** LATE fallback kept at 8000 µs and pinned (F.4, D14); stack: painted-stack high-water mark in v4 (`platform/stack_mark.c`), static gate `check-stack.sh` (call-graph based, D28) at 1536 B.
+
+Task 1.1, the UPDATE files read (what they did, what was kept): `main.c` (LED 2 Hz amber, USB on core 0, a plain core 1 loop: LED and USB unchanged, loop replaced); `link_runner.c/.h` (UART glue, debug-only pubstate with "last good": glue kept, handoff now every build with NEUTRAL fallback); `usb_p2.c` (TinyUSB glue, IN stamping, USB-down posting: all kept, NEUTRAL on stale core 1 and the new mailbox posts added); `core.h/sched.c/modes.c/queue.c/ramfunc.h` (modes, LATE, latch: rules unchanged, statistics only observe); `link.c/tx.c/tx_debug.c/ready.c/pubstate.c/dbglog.c` and headers (link rules unchanged; v4 appended, mailbox extended, pubstate replaced); `interval.c/p2.h` (median kept, spread added); the tests and tools listed (extended, every old case kept except the pubstate "last good" expectations, now NEUTRAL per D4); `firmware.yml` (all steps kept, new builds and gates added); docs (appended, Story 2.3 measured rows untouched).
+
+Numbers (Task 1.2, 5.2, 12): baseline and stack numbers are in the Debug Log. After: `arm-none-eabi-size` controller.elf fw-release text 41784 / bss 15496 (dec 57280), fw-debug 51184 / 15644, fw-debug-timeline 45600 / 15652, fw-release-xip 42508 / 15496; bytes with a run address in SRAM (`size -A`): fw-release 52500 (of 264 KB, about 20 %; the XIP variant 20616), so copy_to_ram moved about 32 KB of code and read-only data into RAM. `-fstack-usage` after (fw-release / fw-debug / fw-debug-timeline): `ocb_ctrl_link_step` 304 / 296 / 320, `ocb_link_poll` 88 / 48 / 88, `ocb_link_tx_next` 144 / 128 / 144, `ocb_link_tx_status_debug_` 368 / 360 / 368 (was 248: the v4 block and the larger body and wire buffers), `ocb_link_status_body_` 80 / 24 / 80, `ocb_testtl_load_table` 328 (timeline only, not on the deepest chain). Static core 1 chain (check-stack): 1200 / 1164 / 1224 bytes, limit 1536.
+
+Local verification (2026-11-22, env `OCB_PICOTOOL_DIR=firmware/.tools/picotool-2.3.1 OCB_ARM_TOOLCHAIN=firmware/.tools/arm-gnu-toolchain-15.2.Rel1`): host-tests clean build 0 warnings, `ctest --preset host-tests` 39/39 passed (ASan + UBSan; new: test_live, test_core_timing, test_testtl, testtl_drift); fw-release, fw-debug, fw-debug-timeline, fw-debug-hang0, fw-debug-hang1, fw-release-xip each configured and built with `--clean-first`: 0 warnings, UF2 produced; every CI check script green as the workflow runs it (pins, proto version, proto/core/link/P2 purity, release-nolog on 6 ELFs, check-barrier self-test + 6 ELFs, check-ram-hot-path 5 ELFs + `--expect-flash` on XIP, check-stack on 3 builds); Python tools parse with Python 3.9 (the bench Mac's 3.9.6 also runs ctest here). Every new gate was shown failing once (Debug Log). CI itself: unverified until pushed.
+
+New decisions (made autonomously, researched in the repo and the pinned SDK first; the owner can overrule):
+- **D22. The handoff's generation counts half publishes.** The story's scheme (advance the generation once, after the slot, accept an advance of one) lets a reader copy slot `g0 & 1` while the second publish rewrites it and still read `g0 + 1` afterwards: a torn state (F.33 shows it as a red proof). The writer now makes the generation odd before filling the inactive slot and even after; the reader accepts when `g1 - (g0 & ~1) <= 2` (at most one complete publish and no start of the next). Same two slots, same 3 tries, same NEUTRAL fallback.
+- **D23. The hang injectors wait without blocking.** A busy-wait of `OCB_DEBUG_HANG_DELAY_US` would itself be the stall (liveness sees it after 20 ms), and `stall`'s formula (press to gone minus the delay) would be wrong; the injector arms at the first note and the loop keeps running until the delay has passed, then spins.
+- **D24. The barrier is `dmb 0xF` from a force-included platform header.** `__atomic_thread_fence(__ATOMIC_SEQ_CST)` gives `dmb ish` with Arm GNU Toolchain 15.2.Rel1 on Cortex-M0+ (objdump); ARMv6-M defines only SY, other options are reserved and software must not rely on them. `controller/platform/ocb_link_barrier.h` defines `OCB_LINK_BARRIER()` as the SDK's `__dmb()` instruction; `controller/CMakeLists.txt` force-includes it into `ocb_link` in the firmware builds only, so the pure library gets no SDK include and no asm token (issue #20 not widened).
+- **D25. The timeline loader remembers only a failed load; selfplay checks `free == queue_cap - table events` after STOP.** The F.23-style simulation found a race in the first loader (a STOP in the pass right after a load left the queue empty for good). With only failures remembered, HELLO and STOP always re-arm it. Because the loader fills the queue at HELLO, "free below capacity before the load" cannot be observed; the exact free count after STOP proves both that this is the timeline flavour and that nothing else is queued.
+- **D26. The analyser-noise allowance of `explain_ioi` is 4 ms.** Spike 2.4 has no separate analyser-noise figure; its onset method recovers a known onset σ within 1 ms on synthetic notes, i.e. an IOI p95 near 2.8 ms; rounded up to 4 ms (one bin of its latency histogram). A synthetic perfect run of the committed melody gives an IOI p95 below 4 ms (test). The other D16 definitions are used exactly as written.
+- **D27. F.35 (not assigned by the story file) is the row of the ELF gates** (release-nolog extended, barrier, RAM hot path, stack), which are CI steps, not ctest.
+- **D28. `check-stack.sh` walks the `-fcallgraph-info=su` call graphs** of the controller build (our sources and the SDK sources compiled into it) from `core1_entry` and from the UART RX interrupt (plus the known indirect sink `rx_sink`) and adds the 32-byte exception frame, instead of summing a hand-listed chain: inlining at -O3 changes the functions that exist, and a fixed list would miss a new deep path. Library code without frame information (memcpy, memset, the AEABI helpers) is listed as not counted; a dynamic frame or a recursion fails the gate.
+- **D29. A `fw-release-xip` preset** builds the XIP variant in CI for the RAM gate's `--expect-flash` self-test (the story allowed the same job or local); also used by the release-nolog and barrier gates.
+- **D30. Counters and resets:** `seq_retries` counts every read that needed more than one try (fallbacks included); the IN spread is published only with 64 samples (as the median), 50 µs bin centres, and `slow` counts only while a median is published, since the last restart; `core0_pass_max_us` resets at each profile restart (core 0 does not know START); core 1's `loop_max_us` resets when the runner sees the move into PLAYING; a boot that `watchdog_caused_reboot()` does not report (power-on, RUN pin) gives `boot_cause` NONE whatever the scratch holds.
+
+Issue #21, what is resolved and what remains:
+- Block 1 (LATE fallback): the median IN interval is measured (8000 µs, Story 2.3 H.15) and feeds `INFO.report_period_us` and the core's threshold (Story 2.3); the fallback stays 8000 µs (D14), now documented as the measured median and pinned by F.4. The jitter instrumentation is in place (v4: IN min/p95/max/slow next to `core0_pass_max_us`, printed by selfplay). **Remaining on hardware: the jitter numbers from H.18, recorded in docs/test-plan.md and "Measured on the Switch 2"; if they show intervals reaching the period, the threshold stays one period and the result is reported (D14).**
+- Block 2 (core 1 stack): re-measured statically with the final super-loop and the debug STATUS v4 path: 1224 bytes worst (fw-debug-timeline), 1200 (fw-release), under the 1.5 KB threshold, so `PICO_CORE1_STACK_SIZE` stays 0x800 for now; the CI gate keeps the static chain under 1536 bytes. There is no timer ISR in this design (D3). **Remaining on hardware: the painted-stack high-water mark (`stack_used_max`, v4) after H.18's runs and the corrupted soak; raise the stack (compile definition, e.g. 0x1000) only if it is above 1536 bytes (D15).**
+
+Pending hardware checks (Task 15; one-shot commands with `"$P"`, all from the repo root): H.2a, H.2b (Mac), H.2c (console, optional), H.18, H.19, H.20 (optional), exactly as written in docs/test-plan.md; plus the boot-to-enumeration time of the copy_to_ram build (Task 5.2: H.2a/H.2b's `stall` prints `back N ms after it vanished`, the watchdog reset to the Mac seeing the device again, 50 ms polling; record it) and `OCB_LIVE_LOOP_BOUND_US` (Task 11.1: keep 5000 if H.18's `core0_pass_max_us` and loop maximum are well below it, else raise it within the 100 ms sum). Then 14.3 (risk register) and the PR.
+
+Draft for the PR description (Task 12.4), to complete with the H.18 numbers: "Closes #21. Block 1 (LATE fallback): `OCB_CORE_LATE_FALLBACK_US` stays 8000 µs = the measured median (Story 2.3 H.15), pinned by F.4 (`firmware/tests/test_core_end_late.c`); jitter: docs/test-plan.md H.18 row and docs/usb-controller-emulation.md 'Report period jitter'. Block 2 (core 1 stack): static chain 1224 B (`firmware/tools/check-stack.sh`, CI gate at 1536 B), hardware mark: docs/test-plan.md H.18 row; `PICO_CORE1_STACK_SIZE` 0x800 kept (or raised, per D15)."
+
+### File List
+
+New:
+
+- `firmware/controller/core/include/ocb_core/live.h`
+- `firmware/controller/core/include/ocb_core/testtl.h`
+- `firmware/controller/core/include/ocb_core/timing.h`
+- `firmware/controller/core/live.c`
+- `firmware/controller/core/testtl.c`
+- `firmware/controller/core/testtl_data.c`
+- `firmware/controller/core/timing.c`
+- `firmware/controller/platform/debug_hang.c`
+- `firmware/controller/platform/debug_hang.h`
+- `firmware/controller/platform/liveness.c`
+- `firmware/controller/platform/liveness.h`
+- `firmware/controller/platform/ocb_link_barrier.h`
+- `firmware/controller/platform/stack_mark.c`
+- `firmware/controller/platform/stack_mark.h`
+- `firmware/tests/test_core_timing.c`
+- `firmware/tests/test_gen_test_timeline.py`
+- `firmware/tests/test_live.c`
+- `firmware/tests/test_testtl.c`
+- `firmware/tests/testtl_expected.txt`
+- `firmware/tools/check-barrier.sh`
+- `firmware/tools/check-ram-hot-path.sh`
+- `firmware/tools/check-stack.sh`
+- `firmware/tools/gen_test_timeline.py`
+
+Modified:
+
+- `.github/workflows/firmware.yml`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `_bmad-output/implementation-artifacts/2-5-hard-coded-timeline-plays-on-the-switch-with-measured-jitter.md`
+- `docs/link-protocol.md`
+- `docs/test-plan.md`
+- `docs/usb-controller-emulation.md`
+- `firmware/CMakeLists.txt`
+- `firmware/CMakePresets.json`
+- `firmware/README.md`
+- `firmware/controller/CMakeLists.txt`
+- `firmware/controller/README.md`
+- `firmware/controller/core/CMakeLists.txt`
+- `firmware/controller/core/include/ocb_core/core.h`
+- `firmware/controller/core/include/ocb_core/ramfunc.h`
+- `firmware/controller/core/modes.c`
+- `firmware/controller/core/sched.c`
+- `firmware/controller/link/include/ocb_link/config.h`
+- `firmware/controller/link/include/ocb_link/link.h`
+- `firmware/controller/link/include/ocb_link/pubstate.h`
+- `firmware/controller/link/include/ocb_link/ready.h`
+- `firmware/controller/link/link.c`
+- `firmware/controller/link/pubstate.c`
+- `firmware/controller/link/ready.c`
+- `firmware/controller/link/tx_debug.c`
+- `firmware/controller/main.c`
+- `firmware/controller/platform/link_runner.c`
+- `firmware/controller/platform/link_runner.h`
+- `firmware/controller/platform/usb_p2.c`
+- `firmware/controller/profile_p2/include/ocb_p2/p2.h`
+- `firmware/controller/profile_p2/interval.c`
+- `firmware/tests/CMakeLists.txt`
+- `firmware/tests/link_fixture.h`
+- `firmware/tests/link_sim_shim.c`
+- `firmware/tests/test_core_end_late.c`
+- `firmware/tests/test_docs_constants.py`
+- `firmware/tests/test_link_dbglog.c`
+- `firmware/tests/test_link_probe.py`
+- `firmware/tests/test_link_pubstate.c`
+- `firmware/tests/test_link_ready.c`
+- `firmware/tests/test_link_tx.c`
+- `firmware/tests/test_p2_interval.c`
+- `firmware/tests/test_p2_probe.py`
+- `firmware/tools/check-release-nolog.sh`
+- `firmware/tools/link_probe.py`
+- `firmware/tools/p2_probe.py`
+- `spikes/listen_trial.py`
+- `spikes/test_listen_trial.py`
+
+Not to commit: `.claude/`, `_bmad/`, the build trees (`firmware/build/`, their `.su`/`.ci` files), UF2s and other binaries, recordings.
+
+## Change Log
+
+- 2026-11-22: Story 2.5 created (ready-for-dev) by the create-story workflow, run autonomously. Decisions D1 to D21 recorded; sources S1 to S8 cited; issue #21 folded in as AC5 (the PR says "Closes #21"); no protocol change (D19).
+- 2026-11-22: Dev work by the gds-dev-story workflow, run autonomously: Tasks 1 to 10 and 13 done, 11.1, 12.2, 12.3 dev part done (they close with the H.18 numbers), 12.4 and 14.3 left for the PR and after the bench, Task 15 pending (owner). New decisions D22 to D30 (Completion Notes). Status review.

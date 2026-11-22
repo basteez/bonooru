@@ -29,6 +29,13 @@ Communication off and on) that posts to the USB mailbox, the measured
 report period and the P2 debug log exactly as the controller's core 0
 does; negative controls (no console_ready within the budget, a 100 us
 interval, a missing handshake record).
+F.19/F.23 style, story 2.5 (Task 10.4): the STATUS v4 decoder by hand, the
+selfplay verdict on crafted runs, and `selfplay` and `hangcheck` unmodified
+against the real link with the timeline loader of the fw-debug-timeline
+flavour (a short 6-event table, and once the real 158-event melody on a
+coarser tick) and a console polling every 8000 us; negative controls (a
+LATE event, no timeline loaded, a different table, no console_ready within
+the budget, a stack mark of 1600 bytes, a wrong boot cause).
 """
 
 import argparse
@@ -185,6 +192,46 @@ class Vectors(unittest.TestCase):
                          ["restart mount", "usb 80 04", "HANDSHAKE"])
         empty = probe.debug_counters(bytes(21) + bytes([0, 0, 0]))
         self.assertEqual((empty["p2_log_total"], empty["p2_log"]), (0, []))
+
+    def test_debug_v4(self):
+        """Story 2.5 D13: the v4 block after the v3 window, at 24 + 2 n, by hand."""
+        block = bytes([62, 0, 0x34, 0x12, 0x04, 0x03, 0x02, 0x01, 60, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF,
+                       37, 0, 0x9C, 0x01, 0x0E, 0x1F, 0x72, 0x1F, 0x80, 0x3E, 3, 0, 0xFF, 0xFF, 0xFF,
+                       0x4C, 0x04, 2, 5])
+        self.assertEqual(len(block), 39)
+        for n in (0, 1, 16):
+            extra = bytes(21) + bytes([n, 0, n]) + bytes(2 * n) + block
+            d = probe.debug_counters(extra)
+            v = d["v4"]
+            self.assertEqual((v["late_n"], v["late_max_us"], v["late_sum_us"]), (62, 0x1234, 0x01020304), n)
+            self.assertEqual(v["late_hist"], [60, 1, 0, 0, 0, 65535])
+            self.assertEqual((v["loop_max_us"], v["core0_pass_max_us"]), (37, 412))
+            self.assertEqual((v["in_min_us"], v["in_p95_us"], v["in_max_us"], v["in_slow"]), (7950, 8050, 16000, 3))
+            self.assertEqual((v["seq_retries"], v["seq_fallbacks"], v["stack_used_max"]), (65535, 255, 1100))
+            self.assertEqual((v["boot_cause"], v["reboot_count"]), (2, 5))
+        self.assertNotIn("v4", probe.debug_counters(bytes(21) + bytes([0, 0, 0]) + block[:38]))
+        self.assertIn("boot=CORE1_STALE reboots=5", probe.v4_str(v))
+        self.assertNotIn("late_hist", probe.dbg_str(d))
+
+    def test_selfplay_verdict(self):
+        """Story 2.5: each limit of a selfplay run fails on its own."""
+        good = dict(late_n=158, late_max_us=40, late_sum_us=1000, late_hist=[158, 0, 0, 0, 0, 0], loop_max_us=45,
+                    core0_pass_max_us=120, in_min_us=7950, in_p95_us=8050, in_max_us=8100, in_slow=0,
+                    seq_retries=0, seq_fallbacks=0, stack_used_max=1100, boot_cause=0, reboot_count=0,
+                    events=[0x01], abort_delta=1)
+        self.assertIsNone(probe.selfplay_verdict(good, 158, 8000))
+        for change, needle in ((dict(late_n=157), "late_n 157"), (dict(late_max_us=9000), "above one report period"),
+                               (dict(events=[0x03, 0x01]), "EVENT LATE"), (dict(events=[0x04]), "EVENT UNDERRUN"),
+                               (dict(abort_delta=2), "abort_count moved by 2"),
+                               (dict(seq_fallbacks=1), "seq_fallbacks 1"),
+                               (dict(core0_pass_max_us=5001), "core0_pass_max_us 5001"),
+                               (dict(loop_max_us=6000), "loop_max_us 6000"),
+                               (dict(stack_used_max=1600), "stack_used_max 1600")):
+            bad = dict(good)
+            bad.update(change)
+            self.assertIn(needle, probe.selfplay_verdict(bad, 158, 8000) or "", change)
+        self.assertEqual(probe.read_timeline(os.path.join(FW_DIR, "tests", "testtl_expected.txt")),
+                         (62, 158, 44166667))
 
     def test_p2log_tracker(self):
         """Every record once, in order; a jump beyond the window is a gap."""
@@ -639,6 +686,11 @@ def load_sim():
     lib.sim_report_period.argtypes = [ctypes.c_uint32]
     lib.sim_dbglog.argtypes = [ctypes.c_uint8, ctypes.c_uint8]
     lib.sim_dbglog.restype = ctypes.c_int
+    lib.sim_timeline.argtypes = [ctypes.c_int]
+    lib.sim_in_spread.argtypes = [ctypes.c_uint32] * 4
+    lib.sim_core0.argtypes = [ctypes.c_uint32] * 3
+    lib.sim_self_timing.argtypes = [ctypes.c_uint32] * 2
+    lib.sim_set_boot.argtypes = [ctypes.c_uint8, ctypes.c_uint8]
     return lib
 
 
@@ -768,7 +820,8 @@ def cmd_args(**kw):
     a = dict(port="sim", baud=probe.DEFAULT_BAUD, seed=1, no_pace=False, pace_share=probe.PACE_SHARE,
              max_inflight=probe.MAX_INFLIGHT, hb_enabled=True, hb_period_ms=probe.HEARTBEAT_PERIOD_MS,
              seconds=2.0, expect_fresh=False, expect_ready="auto", keepalive_seconds=2.0, rounds=3, mode="idle",
-             no_heartbeat=False, meter_seconds=1.0, count=5, trace=None, wait_s=10.0, step_s=10.0, dock=False)
+             no_heartbeat=False, meter_seconds=1.0, count=5, trace=None, wait_s=10.0, step_s=10.0, dock=False,
+             lead_ms=300, first_input="hat-down", runs=1, timeline=None, expect="core0", reboots_before=None)
     a.update(kw)
     return argparse.Namespace(**a)
 
@@ -1315,6 +1368,155 @@ class P2BenchSteps(unittest.TestCase):
         rc, text = run_cmd(port, probe.cmd_p2watch, user=ConsoleUser(port, console), step_s=3.0)
         self.assertEqual(rc, 1, text)
         self.assertIn("run p2check first", last_line(text))
+
+
+# ------------------------------------------------------- story 2.5 (F.23)
+
+SHORT_EXPECTED = ("# test table of link_sim_shim.c (k_short_table)\n"
+                  "# Expected notes: 2 notes in 6 events, the last event at 500000 us.\n"
+                  "01 B5 6 100000\n02 D6 18 300000\n")
+
+
+class Switch2Console(ConsoleModel):
+    """The console at the controller's port for selfplay: polls every
+    8000 us, and core 0 posts the IN spread and its own numbers (story 2.5
+    D12) when the period becomes known."""
+
+    def __init__(self, lib, spread=(7950, 8000, 8100, 0), core0=(120, 0, 0), **kw):
+        kw.setdefault("period_us", 8000)
+        kw.setdefault("in_every_s", 0.008)
+        super().__init__(lib, **kw)
+        self.spread = spread
+        self.core0 = core0
+
+    def tick(self, t):
+        n0 = self.n_in
+        super().tick(t)
+        if self.n_in == 64 and n0 != 64:
+            self.lib.sim_in_spread(*self.spread)
+            self.lib.sim_core0(*self.core0)
+
+
+class StallPort(Bridge2wiCCPort):
+    """Negative control: the controller's loop stalls 20 ms (no poll, so no
+    scheduler pass) 90 ms into the lead of a 300 ms START: the event due at
+    +100 ms is applied 10 ms late, more than one 8000 us period: LATE."""
+
+    def _tick(self):
+        if self.lib.sim_counter(10) == 2 and getattr(self, "playing_since", None) is None:
+            self.playing_since = self.clock.t
+        since = getattr(self, "playing_since", None)
+        if since is not None and 0.390 <= self.clock.t - since < 0.410:
+            saved = self.lib.sim_poll
+            self.lib.sim_poll = lambda now: None
+            try:
+                super()._tick()
+            finally:
+                self.lib.sim_poll = saved
+            return
+        super()._tick()
+
+
+class CoarsePort(Bridge2wiCCPort):
+    """The same bench model on a 1 ms tick (for the 44 s melody)."""
+
+    TICK = 1e-3
+    USB_BYTES_PER_TICK = 1200
+    UART_BYTES_PER_TICK = 46080 * 1e-3
+
+
+class SelfPlay(unittest.TestCase):
+    """Story 2.5 F.23 style: selfplay and hangcheck against the real link."""
+
+    def setUp(self):
+        if SIM_LIB is None:
+            self.skipTest("no link simulation library")
+        self.lib = load_sim()
+        self.expected = os.path.join(TMP_DIR or ".", "short_testtl_expected.txt")
+        with open(self.expected, "w", encoding="utf-8") as f:
+            f.write(SHORT_EXPECTED)
+
+    def port(self, timeline=2, stack=900, cls=Bridge2wiCCPort, **kw):
+        port = cls(self.lib)
+        port.console = Switch2Console(self.lib, **kw)
+        self.lib.sim_timeline(timeline)
+        self.lib.sim_self_timing(30, stack)
+        return port, port.console
+
+    def test_selfplay_short_table(self):
+        port, console = self.port()
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected,
+                           runs=2)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("run 1: STATUS free 506 = queue_cap 512 - 6 table events", text)
+        self.assertIn("run 2: late_n = 6", text)
+        self.assertIn("T0_HOST_MONO=", text)
+        self.assertIn("PASTE_LINE: run 2 | late max", text)
+        self.assertIn("IN median 8000, min 7950, p95 8000, max 8100 us, slow 0", text)
+        self.assertIn("stack 900 B", text)
+        self.assertIn("first input: D-pad down x3 in DIRECT (6 of 6", text)
+        # The host's estimate of t0 is close to the controller's (fake clock).
+        t0s = [float(x) for x in re.findall(r"T0_HOST_MONO=([0-9.]+)", text)]
+        self.assertEqual(len(t0s), 2)
+
+    def test_selfplay_real_melody(self):
+        port, console = self.port(timeline=1, cls=CoarsePort)
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console),
+                           timeline=os.path.join(FW_DIR, "tests", "testtl_expected.txt"), lead_ms=1000,
+                           first_input="none")
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("STATUS free 354 = queue_cap 512 - 158 table events", text)
+        self.assertIn("late_n = 158", text)
+
+    def test_selfplay_negative_controls(self):
+        # A LATE event: the controller's loop stalls 20 ms during the piece.
+        port, console = self.port(cls=StallPort)
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("late_n 1, the table has 6 events", last_line(text))
+        self.assertIn("events LATE", text)
+        # Not the timeline flavour: the queue stays empty after STOP.
+        port, console = self.port(timeline=0)
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("not a fw-debug-timeline build", last_line(text))
+        # A different table than the expected file says.
+        port, console = self.port(timeline=1)
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("STATUS free 354 = queue_cap 512 - 6", last_line(text))
+        # No console_ready within the budget (never plugged).
+        port, console = self.port()
+        rc, text = run_cmd(port, probe.cmd_selfplay, timeline=self.expected, wait_s=3.0)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("console_ready 1 for 2 s in a row", last_line(text))
+        # A stack mark of 1600 bytes.
+        port, console = self.port(stack=1600)
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("stack_used_max 1600 B above 1536 B", last_line(text))
+
+    def test_hangcheck(self):
+        port = Bridge2wiCCPort(self.lib)
+        self.lib.sim_set_boot(1, 3)
+        rc, text = run_cmd(port, probe.cmd_hangcheck, expect="core0")
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("boot_cause CORE0_STALE (want CORE0_STALE)", text)
+        rc, text = run_cmd(port, probe.cmd_hangcheck, expect="core0", reboots_before=2)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        # Negative controls: the wrong cause, the wrong count, a power-on boot.
+        port = Bridge2wiCCPort(self.lib)
+        self.lib.sim_set_boot(1, 1)
+        rc, text = run_cmd(port, probe.cmd_hangcheck, expect="core1")
+        self.assertEqual(rc, 1, text)
+        self.assertIn("boot_cause CORE0_STALE (want CORE1_STALE)", last_line(text))
+        rc, text = run_cmd(port, probe.cmd_hangcheck, expect="core0", reboots_before=4)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("reboot_count 1 (want 4 + 1)", last_line(text))
+        port = Bridge2wiCCPort(self.lib)
+        rc, text = run_cmd(port, probe.cmd_hangcheck, expect="core1")
+        self.assertEqual(rc, 1, text)
+        self.assertIn("boot_cause NONE", last_line(text))
 
 
 if __name__ == "__main__":

@@ -42,10 +42,21 @@ typedef struct {
      * counter: core 1 applies it to INFO and the LATE threshold when it
      * changes (ocb_link_poll). */
     volatile uint32_t report_period_us; /* core 0 only */
+    /* Story 2.5 D12, D13: core 0's self-timing for the debug STATUS v4
+     * (not counters; each is one aligned store by core 0, read by core 1;
+     * the fields are independent, a reader may see a mix of two updates,
+     * which a debug report accepts). us unless stated. */
+    volatile uint32_t in_min_us;         /* IN interval minimum of the window (0 = unknown) */
+    volatile uint32_t in_p95_us;         /* IN interval 95th percentile of the window */
+    volatile uint32_t in_max_us;         /* IN interval maximum of the window */
+    volatile uint32_t in_slow;           /* intervals above 1.5 x the median since the restart */
+    volatile uint32_t core0_pass_max_us; /* longest core 0 pass since the restart (or boot) */
+    volatile uint32_t seq_retries;       /* published-state reads that needed a retry */
+    volatile uint32_t seq_fallbacks;     /* published-state reads that fell back to NEUTRAL */
 } ocb_usb_mailbox;
 
-/* Zeroes the counters and the report period. Call once, before either
- * core uses the mailbox. */
+/* Zeroes the counters, the report period and the self-timing fields. Call
+ * once, before either core uses the mailbox. */
 void ocb_usb_mailbox_init(ocb_usb_mailbox *m);
 
 /* Core 0 (Story 2.3): one increment each. */
@@ -56,6 +67,13 @@ void ocb_usb_mailbox_unmount(ocb_usb_mailbox *m);
 void ocb_usb_mailbox_bus_reset(ocb_usb_mailbox *m);
 /* Core 0 (Story 2.3 D13): one aligned store. */
 void ocb_usb_mailbox_set_report_period(ocb_usb_mailbox *m, uint32_t report_period_us);
+/* Core 0 (Story 2.5 D12): the IN interval spread, one store per field. */
+void ocb_usb_mailbox_set_in_spread(ocb_usb_mailbox *m, uint32_t min_us, uint32_t p95_us, uint32_t max_us,
+                                   uint32_t slow);
+/* Core 0 (Story 2.5 D4, D12): the longest core 0 pass and the
+ * published-state reader's counters, one store per field. */
+void ocb_usb_mailbox_set_core0(ocb_usb_mailbox *m, uint32_t pass_max_us, uint32_t seq_retries,
+                               uint32_t seq_fallbacks);
 
 /* USB-down events returned by ocb_ready_poll (a bit mask). */
 #define OCB_READY_DOWN_SUSPEND 0x01u

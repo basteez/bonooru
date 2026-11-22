@@ -37,12 +37,23 @@ exit 0 or 1, 2 for a usage error):
                           they change, so a press sent with link_probe.py
                           press is seen end to end without a console.
 
+  stall --expect core0|core1 [--drive --port "$P"]
+                          story 2.5 H.2a/H.2b, a hang flavour on the Mac:
+                          holds the stream, finds the first note, times the
+                          hang to the device vanishing (host clock, the
+                          assumptions printed), checks how the reports
+                          end (core 0: they stop; core 1: they turn NEUTRAL),
+                          waits for the board to come back with nothing
+                          pressed; --drive runs link_probe.py selfplay and
+                          hangcheck on the bridge port itself.
+
 No serial port and no device path is ever hard-coded: the HID device is
-found by VID:PID.
+found by VID:PID, the bridge port comes from --port.
 """
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -567,6 +578,198 @@ def cmd_watch(args, out=print):
     return run_watch(dev, args, out)
 
 
+# ------------------------------------------------------------ stall (2.5)
+# Story 2.5 D18, H.2a and H.2b: a hang flavour (fw-debug-hang0 or -hang1)
+# plugged into the Mac. The host clock times the hang; the assumptions are
+# printed with every result.
+STALL_WAIT_S = 120.0       # time for the press to come (or the device to come back)
+STALL_HANG_DELAY_MS = 50   # OCB_DEBUG_HANG_DELAY_US of the hang presets
+STALL_REPORT_LATENCY_MS = 4  # a report reaches hidapi within one Mac poll (2 ms) plus one more
+STALL_LIMIT_MS = 100       # AC4: stall to reset
+STALL_HOST_TOL_MS = 25     # assumed macOS device-removal notification latency (D18)
+STALL_GONE_BUDGET_S = 2.0  # after the press: the device must vanish by then
+STALL_POLL_S = 0.005       # presence poll while the reports are silent
+STALL_STOP_GAP_MS = 10     # core 0 hang: the reports stop at least this long before the device vanishes
+STALL_NEUTRAL_READ_S = 1.0  # after it comes back: reports read to prove nothing is pressed
+NOTE_BUTTONS = ("Y", "X", "A", "L", "R")  # the AD-9 note buttons of the melody
+
+
+def note_pressed(r):
+    """The note buttons (AD-9) pressed in a 0x30 report."""
+    return [b for b in pressed(r) if b in NOTE_BUTTONS]
+
+
+class HidBackend:
+    """hidapi and subprocess for `stall`, replaced by a fake in the tests."""
+
+    def open(self):
+        return HidTransport()
+
+    def present(self):
+        import hid  # noqa: PLC0415
+        return bool(hid.enumerate(VID, PID))
+
+    def spawn(self, argv):
+        return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+
+    def run(self, argv):
+        return subprocess.call(argv)
+
+
+def _link_probe_argv(args, *rest):
+    tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "link_probe.py")
+    return [sys.executable, tool, "--port", args.port] + list(rest)
+
+
+def _open_retry(backend, budget_s):
+    end = time.monotonic() + budget_s
+    while True:
+        try:
+            return backend.open()
+        except (IOError, OSError, ValueError, ImportError):
+            if time.monotonic() >= end:
+                return None
+            time.sleep(0.2)
+
+
+def _stream_on(dev, out):
+    h = Host(dev, out)
+    h.usb(0x02, [0x81, 0x02])
+    dev.write(usb_cmd(0x04))
+    return h
+
+
+def run_stall(backend, args, out=print):
+    """H.2a/H.2b: times a hang from the first note to the device vanishing,
+    checks the board comes back with nothing pressed, and (with --drive)
+    runs link_probe.py selfplay and hangcheck itself."""
+    fails = []
+
+    def check(ok, text):
+        out("%s %s" % ("ok  " if ok else "FAIL", text))
+        if not ok:
+            fails.append(text)
+        return ok
+
+    def finish():
+        if fails:
+            out("FAIL %s" % fails[0])
+            return 1
+        out("PASS")
+        return 0
+
+    delay = args.hang_delay_ms
+    out("     assumptions: hang delay %d ms (the preset), report latency %d ms, host tolerance %d ms for the "
+        "macOS removal notification; limit %d ms (AC4)" % (delay, STALL_REPORT_LATENCY_MS, STALL_HOST_TOL_MS,
+                                                         STALL_LIMIT_MS))
+    dev = _open_retry(backend, args.wait_s)
+    if not check(dev is not None, "the controller 057E:2009 is open (fw-debug-hang%s on the Mac)" %
+                 ("0" if args.expect == "core0" else "1")):
+        return finish()
+    _stream_on(dev, out)
+    child = None
+    if args.drive:
+        if not check(bool(args.port), "--drive needs --port \"$P\" (the bridge's serial port)"):
+            return finish()
+        child = backend.spawn(_link_probe_argv(args, "selfplay", "--wait-s", "%d" % args.wait_s))
+        out(">>> STREAM ON. link_probe.py selfplay started on %s; waiting up to %.0f s for the first note." % (
+            args.port, args.wait_s))
+    else:
+        out(">>> STREAM ON. Start `python3 firmware/tools/link_probe.py --port \"$P\" selfplay` now; waiting up to "
+            "%.0f s for the first note." % args.wait_s)
+    t_press = t_last = t_neutral = t_gone = None
+    n = 0
+    end = time.monotonic() + args.wait_s
+    while t_gone is None:
+        now = time.monotonic()
+        if t_press is None and now >= end:
+            break
+        if t_press is not None and now - t_press > STALL_GONE_BUDGET_S:
+            break
+        try:
+            r = dev.read(STALL_POLL_S * 1000.0)
+        except (IOError, OSError, ValueError):
+            t_gone = time.monotonic()  # the read failed: the device went away
+            break
+        if r and r[0] == 0x30:
+            n += 1
+            t = time.monotonic()
+            notes = note_pressed(r)
+            if t_press is None and notes:
+                t_press = t
+                out("     first note seen: %s" % " ".join(notes))
+            elif t_press is not None and not notes and t_neutral is None and not pressed(r):
+                t_neutral = t
+            t_last = t
+            continue
+        if t_press is not None and not backend.present():
+            t_gone = time.monotonic()
+    if child is not None and t_press is None:
+        child.terminate()
+        tail = (child.communicate()[0] or "").splitlines()[-5:]
+        for line in tail:
+            out("     selfplay: %s" % line)
+    if not check(t_press is not None, "a note button pressed in the 0x30 stream within %.0f s (%d reports)" % (
+            args.wait_s, n)):
+        return finish()
+    if not check(t_gone is not None, "the controller vanished within %.0f s of the first note (the reboot)"
+                 % STALL_GONE_BUDGET_S):
+        return finish()
+
+    def ms(t):
+        return (t - t_press) * 1000.0 if t is not None else float("nan")
+
+    out("     raw: press 0 ms, last report %+.1f ms, neutral report %s, gone %+.1f ms (host monotonic)" % (
+        ms(t_last), ("%+.1f ms" % ms(t_neutral)) if t_neutral is not None else "none", ms(t_gone)))
+    if args.expect == "core0":
+        check((t_gone - t_last) * 1000.0 >= STALL_STOP_GAP_MS,
+              "core 0 hung: the reports stopped %.1f ms before the device vanished (want >= %d ms)" % (
+                  (t_gone - t_last) * 1000.0, STALL_STOP_GAP_MS))
+    else:
+        check(t_neutral is not None and t_neutral < t_gone,
+              "core 1 hung: the reports went on and turned NEUTRAL before the reset (core 0 saw core 1 stale)")
+        if t_neutral is not None:
+            out("     press to NEUTRAL %.1f ms = %d ms hang delay + %.1f ms (expected about 20 to 30 ms)" % (
+                ms(t_neutral), delay, ms(t_neutral) - delay))
+    stall = ms(t_gone) - delay - STALL_REPORT_LATENCY_MS
+    check(stall <= STALL_LIMIT_MS + STALL_HOST_TOL_MS, "stall to gone %.1f ms = %.1f - %d - %d (want <= %d + %d ms "
+          "host tolerance)" % (stall, ms(t_gone), delay, STALL_REPORT_LATENCY_MS, STALL_LIMIT_MS, STALL_HOST_TOL_MS))
+    out(">>> The controller rebooted; waiting up to %.0f s for it to come back." % args.wait_s)
+    end = time.monotonic() + args.wait_s
+    while not backend.present() and time.monotonic() < end:
+        time.sleep(0.05)
+    back = backend.present()
+    if child is not None:
+        child.terminate()
+        child.communicate()
+    if not check(back, "the controller came back (re-enumerated) within %.0f s" % args.wait_s):
+        return finish()
+    out("     back %.0f ms after it vanished" % ((time.monotonic() - t_gone) * 1000.0))
+    dev = _open_retry(backend, 30.0)
+    if not check(dev is not None, "reopened after the reboot"):
+        return finish()
+    _stream_on(dev, out)
+    bad = []
+    seen = 0
+    end = time.monotonic() + STALL_NEUTRAL_READ_S
+    while time.monotonic() < end:
+        r = dev.read(50)
+        if r and r[0] == 0x30:
+            seen += 1
+            if note_pressed(r):
+                bad.append(" ".join(note_pressed(r)))
+    check(seen > 0 and not bad, "after the reboot: %d reports, no note pressed%s" % (
+        seen, (" (pressed: %s)" % bad[0]) if bad else ""))
+    if args.drive:
+        rc = backend.run(_link_probe_argv(args, "hangcheck", "--expect", args.expect))
+        check(rc == 0, "link_probe.py hangcheck --expect %s: %s" % (args.expect, "PASS" if rc == 0 else "FAIL"))
+    return finish()
+
+
+def cmd_stall(args, out=print):
+    return run_stall(HidBackend(), args, out)
+
+
 # -------------------------------------------------------------------- cli
 def wait_arg(text):
     try:
@@ -601,11 +804,23 @@ def main(argv=None):
     p.add_argument("--seconds", type=seconds_arg, default=30.0, help="time to watch (default %(default)s)")
     p.add_argument("--expect", choices=sorted(name for _, _, name in BTN_BITS),
                    help="FAIL unless this button is seen pressed at least once")
+    p = sub.add_parser("stall", help="story 2.5 H.2a/H.2b: time a hang flavour's reboot from the first note "
+                                     "(Mac, no console)")
+    p.add_argument("--expect", choices=("core0", "core1"), required=True, dest="expect")
+    p.add_argument("--hang-delay-ms", type=int, default=STALL_HANG_DELAY_MS,
+                   help="the preset's OCB_DEBUG_HANG_DELAY_US in ms (default %(default)s)")
+    p.add_argument("--wait-s", type=wait_arg, default=STALL_WAIT_S,
+                   help="time for the first note, and for the device to come back (default %(default)s)")
+    p.add_argument("--drive", action="store_true",
+                   help="run link_probe.py selfplay (and hangcheck at the end) on --port itself")
+    p.add_argument("--port", default=None, help="the bridge's serial port, for --drive (pass \"$P\")")
     args = ap.parse_args(argv)
     if args.cmd == "enum":
         return cmd_enum(args)
     if args.cmd == "watch":
         return cmd_watch(args)
+    if args.cmd == "stall":
+        return cmd_stall(args)
     return cmd_handshake(args)
 
 

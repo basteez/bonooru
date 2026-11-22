@@ -18,7 +18,11 @@ except what a subcommand says it sends (`noise`, `fill --no-hello`,
 Subcommands: hello, watch, fill, soak, noise, try, loopback (story 2.6), the
 one-command bench steps of story 2.7: linkup (H.8), silence (H.9), direct
 and playing (H.11), breaks (H.12), and of story 2.3: p2check (H.15),
-p2watch (H.16) and press (D35: a D-pad direction or a button in DIRECT). Run with -h.
+p2watch (H.16) and press (D35: a D-pad direction or a button in DIRECT), and
+of story 2.5: selfplay (H.18: the built-in melody of the fw-debug-timeline
+build on the console, with the firmware's self-timing from the debug STATUS
+v4) and hangcheck (H.2a/H.2b: after a liveness reboot, the boot cause the
+firmware reports). Run with -h.
 
 console_ready (story 2.3 D15): it now comes only from a real USB host that
 completed the P2 handshake, the Switch 2 or, on the bench Mac,
@@ -53,7 +57,9 @@ the trace when it fails.
 """
 
 import argparse
+import os
 import random
+import re
 import struct
 import sys
 import time
@@ -338,6 +344,8 @@ def describe(ftype, seq, body):
             s += " | " + dbg_str(d)
             if d.get("p2_log"):
                 s += " | p2_log: " + ", ".join(p2_log_str(k, i) for k, i in d["p2_log"])
+            if d.get("v4"):
+                s += " | v4: " + v4_str(d["v4"])
         return s
     return "%s %s (tx seq %d)" % (name, " ".join("%s=%s" % kv for kv in f.items()), seq)
 
@@ -372,11 +380,32 @@ def p2_log_str(kind, ident):
     return "%s %02x" % (P2_LOG_KINDS.get(kind, "kind%02x" % kind), ident)
 
 
+# v4 (story 2.5 D13): one fixed 39-byte block after the v3 window, at offset
+# 24 + 2 * p2_log_n of the debug tail, little-endian, every u16 saturating.
+DEBUG_V4_LEN = 39
+DEBUG_V4_FORMAT = "<HHI6HHHHHHHHBHBB"
+DEBUG_V4 = ("late_n", "late_max_us", "late_sum_us", "late_hist", "loop_max_us", "core0_pass_max_us", "in_min_us",
+            "in_p95_us", "in_max_us", "in_slow", "seq_retries", "seq_fallbacks", "stack_used_max", "boot_cause",
+            "reboot_count")
+LATE_BUCKETS_US = ("<50", "50-99", "100-249", "250-999", "1000-3999", ">=4000")
+BOOT_CAUSES = {0: "NONE", 1: "CORE0_STALE", 2: "CORE1_STALE", 3: "BOOT_NOT_ALIVE"}
+
+
+def debug_v4(block):
+    """The 39-byte v4 block as a dict (late_hist is a list of 6)."""
+    v = struct.unpack(DEBUG_V4_FORMAT, bytes(block[:DEBUG_V4_LEN]))
+    d = dict(zip(DEBUG_V4[:3], v[:3]))
+    d["late_hist"] = list(v[3:9])
+    d.update(zip(DEBUG_V4[4:], v[9:]))
+    return d
+
+
 def debug_counters(extra):
     """STATUS debug counters (docs/link-protocol.md) as a dict: the v1 prefix
-    (7 bytes), when present the v2 split of dropped_bytes (14 more bytes)
-    and the v3 P2 debug log window (p2_log_total and p2_log, a list of
-    (kind, id)); None without debug counters."""
+    (7 bytes), when present the v2 split of dropped_bytes (14 more bytes),
+    the v3 P2 debug log window (p2_log_total and p2_log, a list of
+    (kind, id)) and the v4 self-timing block ("v4", a dict, story 2.5);
+    None without debug counters."""
     if len(extra) < 7:
         return None
     d = dict(zip(DEBUG_V1, struct.unpack("<HBHH", extra[:7])))
@@ -387,12 +416,26 @@ def debug_counters(extra):
         recs = extra[24:24 + 2 * n]
         d["p2_log_total"] = total
         d["p2_log"] = [(recs[i], recs[i + 1]) for i in range(0, len(recs) - 1, 2)]
+        off = 24 + 2 * n
+        if len(extra) >= off + DEBUG_V4_LEN:
+            d["v4"] = debug_v4(extra[off:off + DEBUG_V4_LEN])
     return d
 
 
+def v4_str(v):
+    """The v4 block as one line."""
+    mean = v["late_sum_us"] / float(v["late_n"]) if v["late_n"] else 0.0
+    return ("late n=%d max=%d us mean=%.1f us hist=%s | loop_max=%d us core0_pass_max=%d us | IN min=%d p95=%d "
+            "max=%d slow=%d | seq retries=%d fallbacks=%d | stack=%d B | boot=%s reboots=%d" % (
+                v["late_n"], v["late_max_us"], mean, "/".join(str(x) for x in v["late_hist"]), v["loop_max_us"],
+                v["core0_pass_max_us"], v["in_min_us"], v["in_p95_us"], v["in_max_us"], v["in_slow"],
+                v["seq_retries"], v["seq_fallbacks"], v["stack_used_max"],
+                BOOT_CAUSES.get(v["boot_cause"], "%d" % v["boot_cause"]), v["reboot_count"]))
+
+
 def dbg_str(d):
-    """The numeric debug counters as k=v (the P2 log list is printed apart)."""
-    return " ".join("%s=%d" % kv for kv in (d or {}).items() if kv[0] != "p2_log")
+    """The numeric debug counters as k=v (the P2 log and v4 are printed apart)."""
+    return " ".join("%s=%d" % kv for kv in (d or {}).items() if isinstance(kv[1], int))
 
 
 def drop_split(d):
@@ -1983,6 +2026,250 @@ def cmd_press(port, args):
     return c.finish()
 
 
+# ------------------------------------------------------------ story 2.5
+# selfplay (H.18) and hangcheck (H.2a, H.2b): docs/test-plan.md, "Bench rig
+# for the timeline and watchdog (Story 2.5)".
+SELFPLAY_WAIT_S = 120.0     # time to plug the controller into the console
+SELFPLAY_STABLE_S = 2.0     # console_ready must hold this long (plug bounces)
+SELFPLAY_LEAD_MS = 3000
+SELFPLAY_TAIL_S = 10.0      # after the last event, before giving up on PLAYBACK_DONE
+SELFPLAY_LOAD_S = 1.0       # the loader fills the queue within one pass of the STOP
+FIRST_INPUT_PRESSES = 3     # D17: D-pad down, never A
+FIRST_INPUT_HOLD_MS = 150
+FIRST_INPUT_GAP_MS = 300
+STACK_LIMIT_B = 1536        # D15, issue #21
+LOOP_LIMIT_US = 5000        # OCB_LIVE_LOOP_BOUND_US (ocb_core/live.h)
+HANGCHECK_WAIT_S = 120.0
+MODE_IDLE = 0
+EVT_PLAYBACK_DONE = 0x01
+EVT_LATE = 0x03
+EVT_UNDERRUN = 0x04
+TIMELINE_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests", "testtl_expected.txt")
+_TIMELINE_RE = re.compile(r"(\d+) notes in (\d+) events, the last event at (\d+) us")
+
+
+def read_timeline(path):
+    """(notes, events, last_event_us) from the header of the expected-notes
+    file the generator writes (tools/gen_test_timeline.py), or None."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            head = f.read(4096)
+    except OSError:
+        return None
+    m = _TIMELINE_RE.search(head)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def selfplay_verdict(run, n_events, period_us):
+    """The first broken limit of one selfplay run (H.18), or None. `run` has
+    the v4 fields, `events` (codes received during the run) and
+    `abort_delta` (abort_count after minus before)."""
+    if run["late_n"] != n_events:
+        return "late_n %d, the table has %d events" % (run["late_n"], n_events)
+    if run["late_max_us"] > period_us:
+        return "late_max_us %d above one report period (%d us)" % (run["late_max_us"], period_us)
+    bad = [EVENT_NAMES.get(e, hex(e)) for e in run["events"] if e in (EVT_LATE, EVT_UNDERRUN)]
+    if bad:
+        return "EVENT %s during the run" % bad[0]
+    if run["abort_delta"] != 1 or EVT_PLAYBACK_DONE not in run["events"]:
+        return "abort_count moved by %d (want 1, the END) or no PLAYBACK_DONE" % run["abort_delta"]
+    if run["seq_fallbacks"] != 0:
+        return "seq_fallbacks %d (the published state fell back to NEUTRAL)" % run["seq_fallbacks"]
+    if run["core0_pass_max_us"] > LOOP_LIMIT_US:
+        return "core0_pass_max_us %d above %d" % (run["core0_pass_max_us"], LOOP_LIMIT_US)
+    if run["loop_max_us"] > LOOP_LIMIT_US:
+        return "loop_max_us %d above %d" % (run["loop_max_us"], LOOP_LIMIT_US)
+    if run["stack_used_max"] > STACK_LIMIT_B:
+        return "stack_used_max %d B above %d B (issue #21: raise PICO_CORE1_STACK_SIZE)" % (
+            run["stack_used_max"], STACK_LIMIT_B)
+    return None
+
+
+def paste_line(i, run, period_us):
+    mean = run["late_sum_us"] / float(run["late_n"]) if run["late_n"] else 0.0
+    return ("PASTE_LINE: run %d | late max %d us, mean %.1f us, hist %s | IN median %d, min %d, p95 %d, max %d us, "
+            "slow %d | loop max %d us | core0 pass max %d us | stack %d B | seq retries %d, fallbacks %d" % (
+                i, run["late_max_us"], mean, "/".join(str(x) for x in run["late_hist"]), period_us,
+                run["in_min_us"], run["in_p95_us"], run["in_max_us"], run["in_slow"], run["loop_max_us"],
+                run["core0_pass_max_us"], run["stack_used_max"], run["seq_retries"], run["seq_fallbacks"]))
+
+
+def _v4_of(st):
+    d = (st or {}).get("dbg") or {}
+    return d.get("v4")
+
+
+def _wait_ready_stable(link, deadline, stable_s):
+    """console_ready 1 continuously for stable_s (absorbs plug bounces)."""
+    since = [None]
+
+    def ok():
+        if not _ready(link.status):
+            since[0] = None
+            return False
+        if since[0] is None:
+            since[0] = link.status_t
+        return link.status_t - since[0] >= stable_s
+
+    return link.wait(max(0.0, deadline - link.port.now()), ok)
+
+
+def _direct_presses(link, state, count, hold_ms, gap_ms):
+    """Presses `state` count times in DIRECT (PINGs keep the app timeout
+    away), NEUTRAL in between; returns the SET_STATEs ACKed."""
+    acks = 0
+    for _ in range(count):
+        acks += link.request_reliable(SET_STATE, state) == "ACK"
+        end = link.port.now() + hold_ms / 1000.0
+        while link.port.now() < end:
+            link.wait(min(0.05, max(0.0, end - link.port.now())))
+            link.send(PING)
+        acks += link.request_reliable(SET_STATE, NEUTRAL) == "ACK"
+        end = link.port.now() + gap_ms / 1000.0
+        while link.port.now() < end:
+            link.wait(min(0.2, max(0.0, end - link.port.now())))
+            link.send(PING)
+    return acks
+
+
+def _start_timed(link, lead_us, tries=3):
+    """START with the host's timing: (reply, t_send, t_reply) of the try
+    that got a reply (the same seq is resent every 50 ms, at most `tries`)."""
+    ticket = link.send(START, struct.pack("<I", lead_us))
+    seq = ticket[0]
+    for i in range(tries):
+        t_send = link.port.now()
+        r = link.reply(ticket, ACK_TIMEOUT_S)
+        if r is not None:
+            return r, t_send, link.port.now()
+        if i + 1 < tries:
+            ticket = link.send(START, struct.pack("<I", lead_us), seq=seq)
+    return None, None, None
+
+
+def cmd_selfplay(port, args):
+    """H.18: the built-in melody of a fw-debug-timeline controller plays on
+    the console from the controller's own clock; the firmware's self-timing
+    (debug STATUS v4) is checked against the limits of story 2.5."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    tl = read_timeline(args.timeline)
+    if not c.check(tl is not None, "the expected-notes file %s names the table (notes, events, last event)"
+                   % args.timeline):
+        return c.finish()
+    n_notes, n_events, end_us = tl
+    if getattr(args, "hb_enabled", True):
+        port.hb_start(_hb_period(args))
+    link.out(">>> PLUG THE CONTROLLER INTO THE SWITCH TOP USB-C PORT; the game must be in ocarina free play "
+             "(open it with the Joy-Con first). Waiting up to %.0f s." % args.wait_s)
+    t0 = port.now()
+    deadline = t0 + args.wait_s
+    info = link.hello(timeout=args.wait_s)
+    if not c.check(info is not None, "INFO received (the controller is powered and the link answers)"):
+        return c.finish()
+    if not _link_up(link, c, timeout=1.0):
+        return c.finish()
+    if not c.check(_wait_ready_stable(link, deadline, SELFPLAY_STABLE_S),
+                   "console_ready 1 for %.0f s in a row within %.0f s of the prompt" % (SELFPLAY_STABLE_S,
+                                                                                       args.wait_s)):
+        c.note("P2 log so far: %s" % _p2_sequence(link.p2log.since(t0)))
+        return c.finish()
+    period = 0
+    while True:
+        info = link.hello()
+        period = info["report_period_us"] if info else 0
+        if period or port.now() >= deadline:
+            break
+        link.wait(0.5)
+    if not c.check(period > 0, "INFO report_period_us %d (the console's median IN interval)" % period):
+        return c.finish()
+    cap = info["queue_cap"]
+    if args.first_input == "hat-down":
+        acks = _direct_presses(link, press_state(hat="down"), FIRST_INPUT_PRESSES, FIRST_INPUT_HOLD_MS,
+                               FIRST_INPUT_GAP_MS)
+        c.check(acks == 2 * FIRST_INPUT_PRESSES, "first input: D-pad down x%d in DIRECT (%d of %d SET_STATE ACKed; "
+                "the console shows a wired controller only after its first input)" % (
+                    FIRST_INPUT_PRESSES, acks, 2 * FIRST_INPUT_PRESSES))
+    lead_us = int(args.lead_ms) * 1000
+    passes = 0
+    for i in range(1, args.runs + 1):
+        if not c.check(link.request_reliable(STOP) == "ACK", "run %d: STOP ACKed (IDLE: the timeline loads)" % i):
+            break
+        st = link.next_status(SELFPLAY_LOAD_S, lambda s: s["mode"] == MODE_IDLE and s["free"] != cap)
+        free = st["free"] if st else cap
+        if free == cap:
+            c.check(False, "run %d: the queue is still empty after STOP: not a fw-debug-timeline build?" % i)
+            break
+        if not c.check(free == cap - n_events, "run %d: STATUS free %d = queue_cap %d - %d table events (a dirty "
+                       "or different queue refuses the run)" % (i, free, cap, n_events)):
+            break
+        abort0 = st["abort_count"]
+        n_ev = len(link.events)
+        r, t_send, t_reply = _start_timed(link, lead_us)
+        if not c.check(r == "ACK", "run %d: START lead %d ms ACKed (%s)" % (i, args.lead_ms, r)):
+            break
+        rtt = t_reply - t_send
+        link.out("T0_HOST_MONO=%.6f" % (t_reply + lead_us / 1e6 - rtt / 2.0))
+        link.log("run %d: playing %d notes, %.1f s, round trip %.1f ms" % (i, n_notes, end_us / 1e6,
+                                                                          rtt * 1000.0))
+        budget = lead_us / 1e6 + end_us / 1e6 + SELFPLAY_TAIL_S
+
+        def ended():
+            return any(code in (EVT_PLAYBACK_DONE, EVT_LATE, EVT_UNDERRUN) for _, code in link.events[n_ev:])
+
+        if not c.check(link.wait(budget, ended), "run %d: an end EVENT within %.0f s" % (i, budget)):
+            break
+        st = link.next_status(0.5)
+        v = _v4_of(st)
+        if not c.check(v is not None, "run %d: the debug STATUS carries the v4 block (a story 2.5 debug build)" % i):
+            break
+        run = dict(v)
+        run["events"] = [code for _, code in link.events[n_ev:]]
+        run["abort_delta"] = (st["abort_count"] - abort0) & 0xFF
+        link.log("run %d: events %s" % (i, ", ".join(EVENT_NAMES.get(e, hex(e)) for e in run["events"])))
+        link.log("run %d: %s" % (i, v4_str(v)))
+        link.out(paste_line(i, run, period))
+        why = selfplay_verdict(run, n_events, period)
+        if c.check(why is None, "run %d: %s" % (i, why or "late_n = %d, late_max %d <= %d us, no LATE/UNDERRUN, "
+                                                       "fallbacks 0, loop and pass max <= %d us, stack <= %d B" % (
+                                                           n_events, v["late_max_us"], period, LOOP_LIMIT_US,
+                                                           STACK_LIMIT_B))):
+            passes += 1
+    link.request_reliable(STOP)
+    c.note("%d of %d runs passed; listen: did the melody play, every note at the right pitch?" % (passes, args.runs))
+    return c.finish()
+
+
+def cmd_hangcheck(port, args):
+    """H.2a, H.2b: after a liveness reboot the controller comes back fresh
+    and its debug STATUS v4 names the cause (CORE0_STALE or CORE1_STALE)."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    if getattr(args, "hb_enabled", True):
+        port.hb_start(_hb_period(args))
+    want = {"core0": 1, "core1": 2}[args.expect]
+    link.out(">>> Waiting up to %.0f s for the controller to answer after its reboot (HELLO every 100 ms)."
+             % args.wait_s)
+    info = link.hello(timeout=args.wait_s)
+    if not c.check(info is not None, "INFO received (the controller is back)"):
+        return c.finish()
+    st = link.next_status(1.0)
+    v = _v4_of(st)
+    if not c.check(v is not None, "the debug STATUS carries the v4 block (a story 2.5 debug build)"):
+        return c.finish()
+    c.check(v["boot_cause"] == want, "boot_cause %s (want %s)" % (
+        BOOT_CAUSES.get(v["boot_cause"], v["boot_cause"]), BOOT_CAUSES[want]))
+    if args.reboots_before is not None:
+        c.check(v["reboot_count"] == (args.reboots_before + 1) & 0xFF, "reboot_count %d (want %d + 1)" % (
+            v["reboot_count"], args.reboots_before))
+    else:
+        c.check(v["reboot_count"] >= 1, "reboot_count %d (at least 1 since power-on)" % v["reboot_count"])
+    c.check(st["mode"] == MODE_IDLE and st["abort_count"] == 0, "fresh boot: mode IDLE, abort_count 0 (%s)"
+            % _status_str(st))
+    c.note("console_ready %d (0 until a USB host completes the handshake)" % (1 if _ready(st) else 0))
+    return c.finish()
+
+
 def cmd_hello(port, args):
     info = do_hello(port, timeout=args.seconds)
     if info is None:
@@ -2049,8 +2336,19 @@ def positive_int_arg(text):
     return v
 
 
+def lead_ms_arg(text):
+    try:
+        v = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not an integer: %r" % text) from None
+    if not 0 <= v <= 60000:
+        raise argparse.ArgumentTypeError("must be in 0..60000 ms, got %d" % v)
+    return v
+
+
 # Story 2.7 subcommands: the heartbeat is on by default.
-HEARTBEAT_COMMANDS = ("linkup", "silence", "direct", "playing", "breaks", "p2check", "p2watch", "press")
+HEARTBEAT_COMMANDS = ("linkup", "silence", "direct", "playing", "breaks", "p2check", "p2watch", "press", "selfplay",
+                      "hangcheck")
 
 
 def main(argv=None):
@@ -2132,6 +2430,22 @@ def main(argv=None):
     p.add_argument("--hold-ms", type=positive_int_arg, default=150, help="1..1000 ms (default %(default)s)")
     p.add_argument("--gap-ms", type=positive_int_arg, default=500, help="1..1000 ms (default %(default)s)")
     p.add_argument("--count", type=positive_int_arg, default=5)
+    p = sub.add_parser("selfplay", help="H.18 (story 2.5): the built-in melody of fw-debug-timeline on the console, "
+                                        "with the firmware's self-timing")
+    p.add_argument("--lead-ms", type=lead_ms_arg, default=SELFPLAY_LEAD_MS, help="START lead (default %(default)s)")
+    p.add_argument("--wait-s", type=seconds_arg, default=SELFPLAY_WAIT_S,
+                   help="time to plug the controller into the console (default %(default)s)")
+    p.add_argument("--first-input", choices=("hat-down", "none"), default="hat-down",
+                   help="D-pad down x3 in DIRECT before the first run (never A; default %(default)s)")
+    p.add_argument("--runs", type=positive_int_arg, default=1, help="STOP, START repeated (default %(default)s)")
+    p.add_argument("--timeline", default=TIMELINE_DEFAULT,
+                   help="the expected-notes file of the table (default firmware/tests/testtl_expected.txt)")
+    p = sub.add_parser("hangcheck", help="H.2a/H.2b (story 2.5): after a liveness reboot, the boot cause in STATUS v4")
+    p.add_argument("--expect", choices=("core0", "core1"), required=True)
+    p.add_argument("--wait-s", type=seconds_arg, default=HANGCHECK_WAIT_S,
+                   help="time for the controller to come back (default %(default)s)")
+    p.add_argument("--reboots-before", type=int, default=None,
+                   help="the reboot_count before the hang, when known (then exactly one more is wanted)")
     args = ap.parse_args(argv)
     if args.cmd in HEARTBEAT_COMMANDS:
         args.hb_enabled = not args.no_heartbeat_global
@@ -2145,7 +2459,8 @@ def main(argv=None):
     handler = {"hello": cmd_hello, "watch": cmd_watch, "fill": cmd_fill, "soak": cmd_soak,
                "noise": cmd_noise, "try": cmd_try, "loopback": cmd_loopback, "linkup": cmd_linkup,
                "silence": cmd_silence, "direct": cmd_direct, "playing": cmd_playing,
-               "breaks": cmd_breaks, "p2check": cmd_p2check, "p2watch": cmd_p2watch, "press": cmd_press}[args.cmd]
+               "breaks": cmd_breaks, "p2check": cmd_p2check, "p2watch": cmd_p2watch, "press": cmd_press,
+               "selfplay": cmd_selfplay, "hangcheck": cmd_hangcheck}[args.cmd]
     rc = handler(port, args)
     if port.hb_running() and args.cmd not in HEARTBEAT_COMMANDS:
         print(port.hb_stats())

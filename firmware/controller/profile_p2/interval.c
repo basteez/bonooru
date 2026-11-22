@@ -3,15 +3,18 @@
  *
  * Median IN interval (story 2.3 D13, AC5b): the time between two IN
  * completions, measured on core 0, published as INFO.report_period_us.
+ * Story 2.5 D12 adds the spread of the same window (minimum, 95th
+ * percentile, maximum) and the count of slow intervals (above 1.5 x the
+ * median), for the jitter measurement of issue #21.
  *
  * Structure: a histogram of 401 bins of 50 us (bin k holds intervals in
  * [50k - 25, 50k + 25) us, so k * 50 is the bin's centre) and a ring of the
  * bin index of the last 256 samples, so the oldest sample leaves the
  * histogram when a new one enters. Cost: ocb_p2_interval_note is O(1)
- * (one ring slot, two bin updates); the median is recomputed in
- * ocb_p2_tick only when samples arrived, by one walk over at most 401 bins
- * (ops_median <= OCB_P2_IV_BINS, asserted by the F.29 test). Memory: 802 +
- * 512 bytes.
+ * (one ring slot, two bin updates, one compare for `slow`); the median,
+ * minimum, 95th percentile and maximum are recomputed in ocb_p2_tick only
+ * when samples arrived, by one walk over the 401 bins (ops_median <=
+ * OCB_P2_IV_BINS, asserted by the F.29 test). Memory: 802 + 512 bytes.
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -53,6 +56,10 @@ void ocb_p2_interval_note(ocb_p2 *p, uint64_t now_us)
     } else {
         iv->count++;
     }
+    /* Story 2.5 D12: 2 dt > 3 median, no division. */
+    if (iv->median_us != 0u && dt * 2u > iv->median_us * 3u && iv->slow != UINT32_MAX) {
+        iv->slow++;
+    }
     iv->ring[iv->ring_head] = bin;
     iv->ring_head = (uint16_t)((iv->ring_head + 1u) % OCB_P2_IV_WINDOW);
     if (bin < OCB_P2_IV_BINS) {
@@ -73,23 +80,65 @@ void ocb_p2_tick(ocb_p2 *p, uint64_t now_us)
     iv->ops_median = 0u;
     if (iv->count < OCB_P2_IV_MIN_SAMPLES) {
         iv->median_us = 0u;
+        iv->min_us = 0u;
+        iv->p95_us = 0u;
+        iv->max_us = 0u;
         return;
     }
-    /* Lower median: the k-th smallest sample, k = (count + 1) / 2. */
+    /* Lower median: the k-th smallest sample, k = (count + 1) / 2; 95th
+     * percentile: the k95-th smallest, k95 = ceil(0.95 * count). */
     const uint32_t k = ((uint32_t)iv->count + 1u) / 2u;
+    const uint32_t k95 = ((uint32_t)iv->count * 95u + 99u) / 100u;
     uint32_t seen = 0u;
+    bool have_min = false;
+    bool have_median = false;
+    bool have_p95 = false;
     for (uint32_t b = 0u; b < OCB_P2_IV_BINS; b++) {
         iv->ops_median++;
-        seen += iv->bins[b];
-        if (seen >= k) {
-            iv->median_us = b * OCB_P2_IV_BIN_US;
-            return;
+        if (iv->bins[b] == 0u) {
+            continue;
         }
+        seen += iv->bins[b];
+        if (!have_min) {
+            have_min = true;
+            iv->min_us = b * OCB_P2_IV_BIN_US;
+        }
+        if (!have_median && seen >= k) {
+            have_median = true;
+            iv->median_us = b * OCB_P2_IV_BIN_US;
+        }
+        if (!have_p95 && seen >= k95) {
+            have_p95 = true;
+            iv->p95_us = b * OCB_P2_IV_BIN_US;
+        }
+        iv->max_us = b * OCB_P2_IV_BIN_US;
     }
-    iv->median_us = 0u; /* unreachable: count samples are in the bins */
+    if (!have_median) {
+        iv->median_us = 0u; /* unreachable: count samples are in the bins */
+    }
 }
 
 uint32_t ocb_p2_report_period_us(const ocb_p2 *p)
 {
     return p->iv.median_us;
+}
+
+uint32_t ocb_p2_interval_min_us(const ocb_p2 *p)
+{
+    return p->iv.min_us;
+}
+
+uint32_t ocb_p2_interval_p95_us(const ocb_p2 *p)
+{
+    return p->iv.p95_us;
+}
+
+uint32_t ocb_p2_interval_max_us(const ocb_p2 *p)
+{
+    return p->iv.max_us;
+}
+
+uint32_t ocb_p2_interval_slow(const ocb_p2 *p)
+{
+    return p->iv.slow;
 }

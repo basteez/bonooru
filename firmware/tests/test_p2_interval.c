@@ -1,7 +1,10 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * F.29 (story 2.3 Task 5.2, AC5b): the median IN interval (D13).
+ * F.29 (story 2.3 Task 5.2, AC5b): the median IN interval (D13); story
+ * 2.5 D12: the minimum, 95th percentile and maximum of the same window and
+ * the count of slow intervals (above 1.5 x the median), all reset by a
+ * restart.
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -28,6 +31,88 @@ static void train(ocb_p2 *p, uint32_t step, int n)
 static bool near(uint32_t got, uint32_t want)
 {
     return got + 25u >= want && got <= want + 25u;
+}
+
+static void spread_is(const ocb_p2 *p, uint32_t mn, uint32_t p95, uint32_t mx, const char *what)
+{
+    OCB_CHECK(ocb_p2_interval_min_us(p) == mn && ocb_p2_interval_p95_us(p) == p95 &&
+                  ocb_p2_interval_max_us(p) == mx,
+              "%s: min %u p95 %u max %u, wanted %u %u %u", what, ocb_p2_interval_min_us(p),
+              ocb_p2_interval_p95_us(p), ocb_p2_interval_max_us(p), mn, p95, mx);
+}
+
+static void test_spread(ocb_p2 *p)
+{
+    /* Steady 8000 us: min = p95 = max = 8000, nothing slow. */
+    fx_init(p);
+    ocb_p2_interval_note(p, g_t);
+    train(p, 8000, 63);
+    spread_is(p, 0u, 0u, 0u, "under 64 samples");
+    train(p, 8000, 237);
+    spread_is(p, 8000u, 8000u, 8000u, "steady 8000");
+    OCB_CHECK(ocb_p2_interval_slow(p) == 0u, "steady: slow %u", ocb_p2_interval_slow(p));
+
+    /* A missed poll: one 16000 us interval in the 8000 train is slow. */
+    train(p, 16000, 1);
+    OCB_CHECK(ocb_p2_interval_slow(p) == 1u, "16 ms in an 8 ms train: slow %u", ocb_p2_interval_slow(p));
+    spread_is(p, 8000u, 8000u, 16000u, "with one missed poll");
+    /* Jitter below 1.5 x is not slow: 11950 us (2 x 11950 = 23900 <= 24000)
+     * and exactly 12000 (= 1.5 x); 12001 is slow. */
+    train(p, 11950, 1);
+    train(p, 12000, 1);
+    OCB_CHECK(ocb_p2_interval_slow(p) == 1u, "jitter below 1.5 x counted: slow %u", ocb_p2_interval_slow(p));
+    train(p, 12001, 1);
+    OCB_CHECK(ocb_p2_interval_slow(p) == 2u, "12001 us: slow %u", ocb_p2_interval_slow(p));
+    /* Short intervals (the host catching up) are not slow. */
+    train(p, 1000, 1);
+    OCB_CHECK(ocb_p2_interval_slow(p) == 2u, "a short interval counted as slow");
+
+    /* p95 is a percentile, not the maximum: 95 x 1000, 4 x 3000, 1 x 5000
+     * -> the 95th smallest of 100 is 1000. */
+    fx_init(p);
+    ocb_p2_interval_note(p, g_t);
+    train(p, 1000, 95);
+    train(p, 3000, 4);
+    train(p, 5000, 1);
+    spread_is(p, 1000u, 1000u, 5000u, "95/4/1 train");
+    /* One more 3000: 96th smallest of 101 is k95 = ceil(95.95) = 96 -> 3000. */
+    train(p, 3000, 1);
+    spread_is(p, 1000u, 3000u, 5000u, "95/5/1 train");
+
+    /* Mixed 80 % 1000, 20 % 2000: p95 2000. */
+    fx_init(p);
+    ocb_p2_interval_note(p, g_t);
+    for (int r = 0; r < 60; r++) {
+        train(p, 1000, 4);
+        train(p, 2000, 1);
+    }
+    spread_is(p, 1000u, 2000u, 2000u, "mixed");
+    OCB_CHECK(ocb_p2_interval_slow(p) > 0u, "2000 in a 1000 median train is slow");
+
+    /* The window forgets: 256 x 8000 after an outlier. */
+    fx_init(p);
+    ocb_p2_interval_note(p, g_t);
+    train(p, 8000, 100);
+    train(p, 15000, 1);
+    spread_is(p, 8000u, 8000u, 15000u, "outlier in the window");
+    train(p, 8000, 256);
+    spread_is(p, 8000u, 8000u, 8000u, "outlier left the window");
+    OCB_CHECK(ocb_p2_interval_slow(p) == 1u, "slow is since the restart, not the window: %u",
+              ocb_p2_interval_slow(p));
+
+    /* Restart zeroes all. */
+    ocb_p2_restart(p);
+    spread_is(p, 0u, 0u, 0u, "after restart");
+    OCB_CHECK(ocb_p2_interval_slow(p) == 0u, "restart: slow %u", ocb_p2_interval_slow(p));
+
+    /* slow saturates. */
+    p->iv.slow = UINT32_MAX;
+    p->iv.median_us = 8000u;
+    p->iv.have_last = true;
+    p->iv.last_us = (uint32_t)g_t;
+    g_t += 19000u;
+    ocb_p2_interval_note(p, g_t);
+    OCB_CHECK(ocb_p2_interval_slow(p) == UINT32_MAX, "slow saturates");
 }
 
 int main(void)
@@ -150,6 +235,8 @@ int main(void)
     /* Tick without new samples does no work. */
     ocb_p2_tick(&p, g_t);
     OCB_CHECK(p.iv.ops_median <= 401u, "idle tick");
+
+    test_spread(&p);
 
     return ocb_test_failures() == 0 ? 0 : 1;
 }

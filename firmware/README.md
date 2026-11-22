@@ -4,7 +4,8 @@ Single CMake project on pico-sdk + TinyUSB with two targets, `bridge` and `contr
 both for the Waveshare RP2040-Zero. Shared code lives in `common/`.
 
 Both targets blink the onboard RGB LED (Story 2.1): `bridge` blue at 1 Hz, `controller`
-amber at 2 Hz. The controller also runs the board link on core 1 (Story 2.6).
+amber at 2 Hz. The controller also runs the board link on core 1 (Story 2.6), in the AD-11
+super-loop with the liveness rules and the hardware watchdog (Story 2.5).
 
 ## Pinned toolchain (AD-1)
 
@@ -47,6 +48,14 @@ Presets (`CMakePresets.json`):
 - `fw-release`: release UF2s, `build/fw-release/bridge/bridge.uf2` and
   `build/fw-release/controller/controller.uf2`.
 - `fw-debug`: debug build, defines `OCB_DEBUG_BUILD=1` (debug-only pins and aids).
+- Story 2.5 bench flavours of the controller (one UF2 each, `Release` optimisation with the debug
+  counters): `fw-debug-timeline` (the built-in melody, H.18 and H.19), `fw-debug-hang0` and
+  `fw-debug-hang1` (core 0 or core 1 hangs 50 ms after the first note, H.2a to H.2c); and
+  `fw-release-xip` (the controller from flash instead of RAM: the RAM gate's self-test and the
+  comparison H.20). Options behind them: `OCB_DEBUG_TIMELINE`, `OCB_DEBUG_HANG`
+  (`NONE|CORE0|CORE1`), `OCB_DEBUG_HANG_DELAY_US` (default 50000), `OCB_CONTROLLER_RUN_FROM_RAM`
+  (default ON); the debug options need `OCB_DEBUG_BUILD=ON` (configure stops otherwise, with the
+  preset to use in the message). UF2s: `build/<preset>/controller/controller.uf2`.
 - The Story 2.7 bench-only preset `fw-debug-bench` (a faked `console_ready`) was removed by
   Story 2.3 D15: `console_ready` now comes from the real P2 handshake (the console, or
   `tools/p2_probe.py handshake --hold N` on the bench Mac).
@@ -97,10 +106,21 @@ pin number anywhere else in the firmware sources; use the `OCB_PIN_*` names.
   with a narrower allow-list (`ocb_proto/*` and `ocb_p2/*`, never `ocb_core` or `ocb_link`) and
   no TinyUSB (`tusb`, `class/hid`, `tinyusb*`); banned list in step with the core gate (CI step;
   ctest `p2_pure_check`).
-- `tools/check-release-nolog.sh ELF` (Story 2.3 AC5a): the release controller ELF has no symbol
-  of the P2 debug log (`ocb_dbglog_*`, `ocb_ctrl_dbglog`); `--expect-present` on the debug ELF
-  proves the gate is not vacuous (both run in CI; needs `arm-none-eabi-nm` from
-  `$OCB_ARM_TOOLCHAIN`).
+- `tools/check-release-nolog.sh ELF` (Story 2.3 AC5a, Story 2.5): the release controller ELF has
+  no symbol of the P2 debug log (`ocb_dbglog_*`, `ocb_ctrl_dbglog`), of the test melody
+  (`ocb_testtl_*`) or of the hang injectors (`debug_hang_*`); `--expect-present[=dbglog,testtl,hang]`
+  on the debug ELFs proves each family is found, so the gate is not vacuous (all run in CI; needs
+  `arm-none-eabi-nm` from `$OCB_ARM_TOOLCHAIN`).
+- `tools/check-barrier.sh ELF` (Story 2.5 D5): the published-state handoff of the controller holds
+  `dmb sy` in its writer and reader; `--self-test` compiles `pubstate.c` with and without the
+  barrier definition and must see the gate fail without it.
+- `tools/check-ram-hot-path.sh ELF` (Story 2.5 D2): the hot functions of the controller (scheduler,
+  link, handoff, USB task, liveness, timer read, codec) have RAM addresses; `--expect-flash` on the
+  XIP build (`fw-release-xip`) is the self-test.
+- `tools/check-stack.sh BUILD_DIR` (Story 2.5 D15, issue #21): the deepest static chain on core 1's
+  stack (the super-loop plus the UART RX interrupt and its exception frame), from the
+  `-fcallgraph-info=su` call graphs of the controller build, stays within 1536 bytes; a lower bound
+  (the hardware high-water mark of the debug STATUS v4 is the measurement).
 
 ## Host test names
 
@@ -115,7 +135,9 @@ ctest (`host-tests` preset): `test_pins`, `test_pins_debug`, `test_version`, `pi
 `test_link_ready`, `test_link_fuzz`, `test_link_watchdog` (Story 2.7, F.21), `link_pure_check`,
 `link_probe_selftest`, `docs_constants_check` (Story 2.7, F.22); Story 2.3: `test_p2_desc`,
 `test_p2_handshake`, `test_p2_subcmd`, `test_p2_report`, `test_p2_interval`, `test_p2_fuzz`,
-`p2_pure_check`, `test_link_dbglog`, `p2_probe_selftest` (F.24 to F.32).
+`p2_pure_check`, `test_link_dbglog`, `p2_probe_selftest` (F.24 to F.32); Story 2.5: `test_live`
+(F.34), `test_core_timing` (F.36), `test_testtl` (F.37), `testtl_drift` (F.38), and the updated
+`test_link_pubstate` (F.33).
 
 ## Bench sender (Story 2.6)
 
@@ -137,12 +159,21 @@ period) and `p2watch` (H.16: sleep, wake, Wired Communication off and on, `--doc
 `system_profiler` / `ioreg`, standard library only) and `handshake` (H.14, needs
 `pip install hidapi`; `--hold N` keeps `console_ready` 1 for another tool). ctest: F.32.
 
+Story 2.5 adds `link_probe.py selfplay` (H.18: the built-in melody of `fw-debug-timeline` on the
+console, the firmware's self-timing from the debug STATUS v4, `PASS` / `FAIL`, a `PASTE_LINE` per
+run and `T0_HOST_MONO` for the audio analysis), `link_probe.py hangcheck` (the boot cause after a
+liveness reboot) and `p2_probe.py stall` (H.2a/H.2b on the Mac: times a hang flavour's reboot from
+the first note; `--drive --port "$P"` runs selfplay and hangcheck itself). ctest runs them against
+the real link and profile code on fake clocks (F.23 style, F.32). The audio side of H.19 is
+`spikes/listen_trial.py --driver`.
+
 ## CI
 
 `.github/workflows/firmware.yml` runs on every push and pull request: it checks the
-submodule pins, installs the pinned tools, builds `fw-release` and `fw-debug`, runs the
-host tests, the pin check, the purity gates (proto, core, link, P2) and the release-has-no-debug-log
-gate, and uploads `bridge.uf2` and `controller.uf2` as the
+submodule pins, installs the pinned tools, builds `fw-release` and `fw-debug` and the Story 2.5
+flavours (`fw-debug-timeline`, `fw-debug-hang0`, `fw-debug-hang1`, `fw-release-xip`, with no
+warning), runs the host tests, the pin check, the purity gates (proto, core, link, P2), the
+release-has-no-debug-code gate, the barrier, RAM hot path and core 1 stack gates, and uploads `bridge.uf2` and `controller.uf2` as the
 `firmware-uf2` artifact. UF2s are never committed.
 
 Third-party notices: `THIRD_PARTY_NOTICES.md`.

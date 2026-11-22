@@ -19,6 +19,13 @@ void ocb_usb_mailbox_init(ocb_usb_mailbox *m)
     m->unmounts = 0u;
     m->bus_resets = 0u;
     m->report_period_us = 0u;
+    m->in_min_us = 0u;
+    m->in_p95_us = 0u;
+    m->in_max_us = 0u;
+    m->in_slow = 0u;
+    m->core0_pass_max_us = 0u;
+    m->seq_retries = 0u;
+    m->seq_fallbacks = 0u;
 }
 
 /* Single writer per counter: a plain load, add and store (no RMW atomics
@@ -51,6 +58,23 @@ void ocb_usb_mailbox_bus_reset(ocb_usb_mailbox *m)
 void ocb_usb_mailbox_set_report_period(ocb_usb_mailbox *m, uint32_t report_period_us)
 {
     m->report_period_us = report_period_us;
+}
+
+void ocb_usb_mailbox_set_in_spread(ocb_usb_mailbox *m, uint32_t min_us, uint32_t p95_us, uint32_t max_us,
+                                   uint32_t slow)
+{
+    m->in_min_us = min_us;
+    m->in_p95_us = p95_us;
+    m->in_max_us = max_us;
+    m->in_slow = slow;
+}
+
+void ocb_usb_mailbox_set_core0(ocb_usb_mailbox *m, uint32_t pass_max_us, uint32_t seq_retries,
+                               uint32_t seq_fallbacks)
+{
+    m->core0_pass_max_us = pass_max_us;
+    m->seq_retries = seq_retries;
+    m->seq_fallbacks = seq_fallbacks;
 }
 
 void ocb_ready_init(ocb_ready *r, const ocb_usb_mailbox *m, uint64_t now_us)
