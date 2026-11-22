@@ -117,6 +117,9 @@ jobs:
       - name: Controller core is pico-sdk free (AD-2)
         run: firmware/tools/check-core-pure.sh
 
+      - name: Controller link is pico-sdk free (AD-2)
+        run: firmware/tools/check-link-pure.sh
+
       - name: Job summary
         run: |
           version="$(sed -n 's/^#define OCB_VERSION_STRING "\(.*\)"$/\1/p' firmware/build/fw-release/generated/ocb_version/ocb_version.h)"

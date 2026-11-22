@@ -82,3 +82,32 @@ add_test(NAME proto_pure_check
 add_test(NAME core_pure_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/core_pure_selftest.sh"
             "${OCB_FW_DIR}/tools/check-core-pure.sh" "${OCB_FW_DIR}")
+
+# Controller link (story 2.6): one executable per test-plan block. F.14 RX
+# stream, F.15 session, F.1 go-back-N, F.2 NAK matrix, F.16 TX and STATUS,
+# F.10 console ready, F.17 byte-stream fuzz and lossy channel.
+set(OCB_LINK_TESTS test_link_rx test_link_session test_link_gbn test_link_nak test_link_tx test_link_ready
+    test_link_fuzz)
+foreach(_t IN LISTS OCB_LINK_TESTS)
+    add_executable(${_t} ${_t}.c)
+    target_link_libraries(${_t} PRIVATE ocb_link)
+    ocb_strict_warnings(${_t}.c)
+    add_test(NAME ${_t} COMMAND ${_t})
+endforeach()
+if(OCB_TEST_ENV)
+    set_tests_properties(${OCB_LINK_TESTS} PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
+endif()
+
+# F.18: ocb_link includes only the allowed headers and uses no heap, I/O or
+# clock identifiers (AD-2, story 2.6 D16); bad fixtures flagged, good
+# fixture and the real controller/link tree pass, the banned list equals
+# the core gate's.
+add_test(NAME link_pure_check
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/link_pure_selftest.sh"
+            "${OCB_FW_DIR}/tools/check-link-pure.sh" "${OCB_FW_DIR}")
+
+# F.19: tools/link_probe.py (the bench sender) against the shared vectors and
+# its AD-6 sender against an in-process fake link; stdlib only, no pyserial.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME link_probe_selftest
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_link_probe.py" "${OCB_FW_DIR}")

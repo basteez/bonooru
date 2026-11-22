@@ -394,6 +394,35 @@ static void test_two_cores(void)
     OCB_CHECK(a.core.abort_count == 1u && b.core.abort_count == 0u, "abort_count shared");
 }
 
+/* ocb_core_advance_expected (story 2.6 Task 1): expected = seq + 1, wraps
+ * at 255, no other field changes, instances independent. */
+static void test_advance_expected(void)
+{
+    static harness a;
+    static harness b;
+    h_init(&a, 4u, 1000u);
+    h_init(&b, 4u, 1000u);
+    h_enter_mode(&a, OCB_MODE_PLAYING);
+    const uint8_t b_expected = b.core.expected;
+    const uint8_t seqs[] = {0u, 1u, 41u, 127u, 128u, 254u, 255u};
+    const uint8_t want[] = {1u, 2u, 42u, 128u, 129u, 255u, 0u};
+    for (size_t i = 0; i < sizeof seqs / sizeof seqs[0]; i++) {
+        ocb_core before;
+        memcpy(&before, &a.core, sizeof before);
+        ocb_core_advance_expected(&a.core, seqs[i]);
+        OCB_CHECK(a.core.expected == want[i], "advance(%u): expected %u, wanted %u", seqs[i], a.core.expected,
+                  want[i]);
+        /* Every other field is unchanged: compare with the copy after
+         * restoring the one field that may differ. */
+        ocb_core after;
+        memcpy(&after, &a.core, sizeof after);
+        after.expected = before.expected;
+        OCB_CHECK(memcmp(&before, &after, sizeof before) == 0, "advance(%u) touched another field", seqs[i]);
+    }
+    OCB_CHECK(b.core.expected == b_expected, "advance leaked to the other core");
+    OCB_CHECK(a.core.mode == OCB_MODE_PLAYING && ocb_queue_count(&a.core.queue) == 2u, "advance changed the mode");
+}
+
 /* Property test (D10): fixed-seed LCG, three seeds x 20 000 steps. */
 static uint32_t g_rng;
 static uint32_t rnd(void)
@@ -552,6 +581,7 @@ int main(void)
     test_status_view();
     test_clock_above_2_32();
     test_two_cores();
+    test_advance_expected();
     test_property();
     const int f = ocb_test_failures();
     if (f != 0) {

@@ -1,0 +1,227 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Controller link TX (AD-19, story 2.6 D12, D15): slots instead of a byte
+ * FIFO, one whole frame per call by priority EVENT > NAK > INFO > ACK >
+ * STATUS, STATUS cadence and body, the closed-gate discard. Frames are
+ * built with the ocb_proto encoders only.
+ */
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "ocb_core/core.h"
+#include "ocb_link/config.h"
+#include "ocb_link/internal.h"
+#include "ocb_link/link.h"
+#include "ocb_link/ready.h"
+#include "ocb_link/txgate.h"
+#include "ocb_proto/consts.h"
+#include "ocb_proto/frame.h"
+#include "ocb_proto/msgs.h"
+
+/* Controller -> app bodies are small (STATUS with the debug counters is
+ * the largest, 18 bytes): keep the stack use of the TX path low. */
+#define TX_BODY_MAX 32u
+#define TX_WIRE_MAX 48u /* header 3 + body 32 + crc 2, COBS overhead 1, delimiter 1 */
+#define STATUS_PERIOD_US ((uint64_t)OCB_STATUS_PERIOD_MS * 1000u)
+#define STATUS_MIN_GAP_US ((uint64_t)OCB_STATUS_MIN_GAP_MS * 1000u)
+
+typedef char ocb_link_tx_body_fits[(OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_COUNTERS_LEN <= TX_BODY_MAX &&
+                                    OCB_BODY_LEN_INFO <= TX_BODY_MAX)
+                                       ? 1
+                                       : -1];
+
+OCB_CORE_RAMFUNC void ocb_link_q_event_(ocb_link *link, uint8_t code)
+{
+    if (code == OCB_EVT_NONE) {
+        return;
+    }
+    if (link->ev_count >= (uint8_t)OCB_LINK_TX_EVENT_CAP) {
+        link->cnt.tx_dropped++;
+        return;
+    }
+    const uint8_t i = (uint8_t)((link->ev_head + link->ev_count) % (uint8_t)OCB_LINK_TX_EVENT_CAP);
+    link->ev_buf[i] = code;
+    link->ev_count++;
+}
+
+OCB_CORE_RAMFUNC void ocb_link_q_nak_(ocb_link *link, uint8_t reason, uint8_t expected, uint8_t got)
+{
+    if (link->nak_count >= (uint8_t)OCB_LINK_TX_NAK_CAP) {
+        link->cnt.tx_dropped++;
+        return;
+    }
+    const uint8_t i = (uint8_t)((link->nak_head + link->nak_count) % (uint8_t)OCB_LINK_TX_NAK_CAP);
+    link->nak_buf[i].reason = reason;
+    link->nak_buf[i].expected = expected;
+    link->nak_buf[i].got = got;
+    link->nak_count++;
+}
+
+OCB_CORE_RAMFUNC void ocb_link_q_ack_(ocb_link *link, uint8_t seq)
+{
+    link->ack_pending = true;
+    link->ack_seq = seq;
+}
+
+OCB_CORE_RAMFUNC void ocb_link_q_info_(ocb_link *link)
+{
+    link->info_pending = true;
+}
+
+static OCB_CORE_RAMFUNC void put_u16(uint8_t *p, uint32_t v)
+{
+    const uint16_t s = v > 0xFFFFu ? (uint16_t)0xFFFFu : (uint16_t)v;
+    p[0] = (uint8_t)(s & 0xFFu);
+    p[1] = (uint8_t)(s >> 8);
+}
+
+static OCB_CORE_RAMFUNC bool status_due(const ocb_link *link, uint64_t now_us)
+{
+    if (!link->status_sent) {
+        return true;
+    }
+    if (now_us < link->last_status_us) {
+        return false;
+    }
+    const uint64_t since = now_us - link->last_status_us;
+    if (since >= STATUS_PERIOD_US) {
+        return true;
+    }
+    return link->status_requested && since >= STATUS_MIN_GAP_US;
+}
+
+static OCB_CORE_RAMFUNC int build_status(const ocb_link *link, uint64_t now_us, uint8_t *body, size_t cap)
+{
+    ocb_core_status_view v;
+    ocb_core_status(link->core, now_us, &v);
+    uint8_t flags = 0u;
+    if (link->link_ok) {
+        flags |= (uint8_t)OCB_STATUS_LINK_OK;
+    }
+    if (ocb_ready_is(&link->ready, now_us)) {
+        flags |= (uint8_t)OCB_STATUS_CONSOLE_READY;
+    }
+    uint8_t extra[OCB_LINK_DEBUG_COUNTERS_LEN];
+    put_u16(&extra[0], ocb_link_max_app_gap_ms(link));
+    extra[2] = 0u; /* watchdog_trips: Story 2.7 */
+    put_u16(&extra[3], ocb_link_dropped_bytes(link));
+    put_u16(&extra[5], link->cnt.tx_dropped);
+
+    ocb_msg_status m;
+    m.free = v.free;
+    m.now_us = v.now_us;
+    m.last_seq = v.last_seq;
+    m.mode = v.mode;
+    m.abort_count = v.abort_count;
+    m.last_event = v.last_event;
+    m.flags = (uint8_t)(flags & (uint8_t)~OCB_STATUS_RESERVED_MASK);
+    m.extra = link->cfg.debug_counters ? extra : NULL;
+    m.extra_len = link->cfg.debug_counters ? sizeof extra : 0u;
+    return ocb_msg_status_encode(&m, body, cap);
+}
+
+static OCB_CORE_RAMFUNC int build_info(const ocb_link *link, uint8_t *body, size_t cap)
+{
+    ocb_msg_info m;
+    m.proto_ver = (uint8_t)OCB_PROTO_VERSION;
+    memcpy(m.fw_ver, link->cfg.fw_ver, sizeof m.fw_ver);
+    memcpy(m.bridge_ver, link->bridge_ver, sizeof m.bridge_ver);
+    m.hid_profile = link->cfg.hid_profile;
+    m.queue_cap = link->core->queue.cap;
+    m.app_timeout_ms = link->cfg.app_timeout_ms;
+    m.report_period_us = link->report_period_us;
+    return ocb_msg_info_encode(&m, body, cap);
+}
+
+/* Closed gate (D15): nothing leaves, and nothing stale may leave later. */
+static OCB_CORE_RAMFUNC void discard_pending(ocb_link *link)
+{
+    link->cnt.tx_dropped += (uint32_t)link->ev_count + (uint32_t)link->nak_count + (link->info_pending ? 1u : 0u) +
+                            (link->ack_pending ? 1u : 0u);
+    link->ev_count = 0u;
+    link->ev_head = 0u;
+    link->nak_count = 0u;
+    link->nak_head = 0u;
+    link->info_pending = false;
+    link->ack_pending = false;
+    link->status_requested = false;
+}
+
+typedef enum { TX_NONE, TX_EVENT, TX_NAK, TX_INFO, TX_ACK, TX_STATUS } tx_kind;
+
+OCB_CORE_RAMFUNC size_t ocb_link_tx_next(ocb_link *link, uint64_t now_us, uint8_t *out, size_t cap)
+{
+    if (!ocb_txgate_is_open(&link->gate)) {
+        discard_pending(link);
+        return 0u;
+    }
+    uint8_t body[TX_BODY_MAX];
+    int n;
+    uint8_t type;
+    tx_kind kind;
+    if (link->ev_count > 0u) {
+        const ocb_msg_event m = {link->ev_buf[link->ev_head]};
+        n = ocb_msg_event_encode(&m, body, sizeof body);
+        type = OCB_MSG_EVENT;
+        kind = TX_EVENT;
+    } else if (link->nak_count > 0u) {
+        n = ocb_msg_nak_encode(&link->nak_buf[link->nak_head], body, sizeof body);
+        type = OCB_MSG_NAK;
+        kind = TX_NAK;
+    } else if (link->info_pending) {
+        n = build_info(link, body, sizeof body);
+        type = OCB_MSG_INFO;
+        kind = TX_INFO;
+    } else if (link->ack_pending) {
+        const ocb_msg_ack m = {link->ack_seq};
+        n = ocb_msg_ack_encode(&m, body, sizeof body);
+        type = OCB_MSG_ACK;
+        kind = TX_ACK;
+    } else if (status_due(link, now_us)) {
+        n = build_status(link, now_us, body, sizeof body);
+        type = OCB_MSG_STATUS;
+        kind = TX_STATUS;
+    } else {
+        return 0u;
+    }
+    if (n < 0) {
+        return 0u; /* unreachable: every body fits TX_BODY_MAX */
+    }
+    uint8_t wire[TX_WIRE_MAX];
+    const size_t len = ocb_frame_encode(type, link->tx_seq, body, (size_t)n, wire, sizeof wire);
+    if (len == 0u || len > cap) {
+        return 0u; /* stays pending; never split */
+    }
+    memcpy(out, wire, len);
+
+    switch (kind) {
+    case TX_EVENT:
+        link->ev_head = (uint8_t)((link->ev_head + 1u) % (uint8_t)OCB_LINK_TX_EVENT_CAP);
+        link->ev_count--;
+        break;
+    case TX_NAK:
+        link->nak_head = (uint8_t)((link->nak_head + 1u) % (uint8_t)OCB_LINK_TX_NAK_CAP);
+        link->nak_count--;
+        break;
+    case TX_INFO:
+        link->info_pending = false;
+        break;
+    case TX_ACK:
+        link->ack_pending = false;
+        link->status_requested = true; /* STATUS after ACKs (AD-19) */
+        break;
+    case TX_STATUS:
+    case TX_NONE:
+    default:
+        link->last_status_us = now_us;
+        link->status_sent = true;
+        link->status_requested = false;
+        break;
+    }
+    link->tx_seq = (uint8_t)(link->tx_seq + 1u);
+    link->cnt.tx_frames++;
+    return len;
+}

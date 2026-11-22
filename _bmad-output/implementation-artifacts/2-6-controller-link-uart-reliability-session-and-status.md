@@ -1,0 +1,520 @@
+---
+baseline_commit: 291fb55301e175d51198864207f0412538732bfb
+---
+
+# Story 2.6: Controller link: UART, reliability, session and STATUS
+
+Status: review
+
+<!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
+
+## Story
+
+As the owner,
+I want the controller to speak the full link protocol over UART,
+so that any PC-side sender can drive it reliably once the bridge exists.
+
+## Acceptance Criteria
+
+Copied verbatim from `_bmad-output/planning-artifacts/epics.md`, Story 2.6. These are the definition of done. The marking in brackets is added by this story file: **[HOST]** = verifiable by `host-tests` (ctest, fake clock, ASan and UBSan), **[HW]** = needs the RP2040-Zero board(s) on the bench (never the Switch 2: nothing here needs the console, D2).
+
+**AC1.** **[HOST + HW]**
+**Given** UART RX on GP1 at 460800, IRQ-driven and reading the data register's error bits (no 8-bit DMA)
+**When** frames arrive
+**Then** they are decoded by `ocb_proto` and fed to the core; core 1 is the only UART TX writer
+
+**AC2.** **[HOST]**
+**Given** host tests F.1 and F.2
+**When** they run
+**Then** go-back-N matches AD-6 (accept only `seq == expected`, stale window 64 → cumulative ACK, duplicate of `expected−1` → cached response, wrap) and the NAK matrix matches (transport NAKs never advance `expected`, at most one per `expected`; semantic NAKs advance it)
+
+**AC3.** **[HOST + HW smoke]**
+**Given** a HELLO with the matching `proto_ver`
+**When** it arrives in any state
+**Then** it has STOP semantics and is answered with INFO v1 (`proto_ver, fw_ver[3], bridge_ver[3]` from the last HEARTBEAT or zeros, `hid_profile, queue_cap, app_timeout_ms, report_period_us`); before a matching HELLO every app frame except STOP gets `NAK VERSION` (AD-7)
+
+**AC4.** **[HOST + HW]**
+**Given** a running controller
+**When** STATUS is built
+**Then** it carries `free, now_us, last_seq, mode, abort_count, last_event, flags` (+ debug counters), every 50 ms plus after ACKs, coalesced to ≤ 1 per 10 ms; TX priority EVENT > NAK > ACK > STATUS with lowest dropped on overflow and no blocking (AD-19)
+**And** F.10 passes with a fake profile: `flags` bit1 follows `ready()` (0 before handshake, 1 after, 0 on suspend/unmount/bus reset and after > 100 ms without an IN report); bits 2–7 always 0; NOT_READY uses the same predicate
+
+**AC5.** **[HW; the gate logic is HOST]**
+**Given** power-up (AD-20)
+**When** the board starts
+**Then** RX has an internal pull-down and TX stays high-Z until RX sees idle-high
+
+### Reading notes on the AC (what the story file adds, none of it changes the AC)
+
+- **Five blocks, two kinds of proof.** AC2 and the logic behind AC1, AC3, AC4 and AC5 are pure C and proven on the PC. What the PC cannot prove is the silicon: the IRQ and FIFO drain, the data-register error bits, the break, the pad pull-down and the high-Z TX. Those are owner bench tests H.4 to H.7 (Task 13), written below with exact steps. The story is **not done** until they are recorded or the owner defers them in writing (D2).
+- **"Core 1 is the only UART TX writer"** is AD-11. Story 2.5 (not done yet) writes the real core 1 super-loop. This story has to run the link on core 1 anyway to make the AC true, so it adds a small link runner that 2.5 later calls from its loop (D3).
+- **"decoded by `ocb_proto` and fed to the core"**: `ocb_rx` (streaming splitter, Story 2.2) already splits and decodes bytes. The link layer wraps it and adds what the codec deliberately leaves to the consumer: error bytes, session, seq, replies (D4 to D8).
+- **"Stale window 64 → cumulative ACK, duplicate of `expected−1` → cached response"**: the "cached response" is the same *content* (ACK or the same semantic NAK), not the same bytes (D6).
+- **"INFO v1 ... `bridge_ver` from the last HEARTBEAT"**: the link layer must receive `HEARTBEAT` (type `0x40`) frames to know the bridge version. It stores them and sets `link_ok`; the timeout and the break rule are Story 2.7 (D10).
+- **"flags bit1 follows `ready()` ... after > 100 ms without an IN report"**: the real `ready()` is Story 2.3 (USB). F.10 asks for it with a *fake profile*, so this story ships the pure `ready` predicate that 2.3's profile will feed, and the USB-event entry point that closes the deferred review point M6 (D11).
+- **The 2.4 notes that concern this story** (all addressed in Decisions): core tracks only `expected` and retransmission belongs here (2.4 D2 → D5, D6); NAK precedence and FULL as the only transport NAK (2.4 D3 → D7); read-only status view (2.4 D13 → D12); HELLO `proto_ver` checked before the core (2.4 D22 → D8); `ready()` sampled only at START/SET_STATE (2.4 M6 → D11); `now_us` u32 wraps at about 71 minutes (2.4 M7 → D13).
+
+## Scope boundaries (what is NOT in this story)
+
+| Not here | Where it is |
+|---|---|
+| USB, TinyUSB, the real `ready()`, `build_report`, the measured `report_period_us` | Story 2.3 (this story gives it the `ready` tracker and the USB-event mailbox, D11) |
+| The real core 1 super-loop, 1 MHz timer ownership, seqlock double buffer, hard-coded timeline, jitter self-timing, H.2 stall test | Story 2.5 (this story gives it `ocb_ctrl_link_step()`, D3) |
+| Link watchdog: `HEARTBEAT` timeout, UART break reaction, app timeout in DIRECT, DTR edge, `NAK NO_LINK`, clearing `link_ok`, `EVENT LINK_LOST`, the order "send EVENT then release TX" | Story 2.7 (this story provides the hooks: break counter, `last_heartbeat_us`, `link_ok` setter, TX gate release, D10) |
+| Bridge firmware, Rust link, app | Epics 3 to 6 |
+| Any wire change: no new message, constant or `PROTO_VERSION` bump; `consts.h` and the vectors are not edited (D17). Only text in `docs/link-protocol.md` and new local (non-wire) constants in `ocb_link/config.h` | n/a |
+
+## Tasks / Subtasks
+
+Tasks 1 to 12 are for the dev agent and need **no hardware**; they end with everything green on the host and the ARM presets compiling. Task 13 is the **owner's bench session**. The dev agent does not commit or push; the owner commits and pushes, and CI is verified afterwards by the owner's push (as in Stories 2.1, 2.2 and 2.4). Keep Completion Notes honest: anything CI-only is "unverified until pushed", anything on hardware is "unverified on hardware" until Task 13 is recorded.
+
+- [x] **Task 1: One small addition to `ocb_core`** (AC: #2, #3; D5, D8)
+  - [x] 1.1 `firmware/controller/core/`: add `void ocb_core_advance_expected(ocb_core *core, uint8_t seq)` (sets `expected = (uint8_t)(seq + 1)`; nothing else changes; `OCB_CORE_RAMFUNC`). The link layer uses it after it refuses a frame itself with a semantic NAK (`NAK VERSION` before the session is open), because the core owns `expected` (2.4 D2) and never saw that frame. No other core change: the core still never reads `proto_ver`, never checks `seq`.
+  - [x] 1.2 Test it inside `test_core_edge.c` (F.12): wraps at 255, touches no other field (compare a copy of the struct), two cores independent. `check-core-pure.sh` stays green. Update the header comment of `ocb_core_frame` only if it becomes untrue (it does not).
+
+- [x] **Task 2: `ocb_link` library skeleton and build wiring** (AC: all; D1, D17)
+  - [x] 2.1 Create `firmware/controller/link/` with `CMakeLists.txt`, `include/ocb_link/*.h`, sources. `add_library(ocb_link STATIC ...)`, public include dir, `target_link_libraries(ocb_link PUBLIC ocb_core ocb_proto)`, `C_STANDARD 99`, `C_EXTENSIONS OFF`, `ocb_strict_warnings(...)` plus `-Wpedantic -Wshadow -Wconversion` exactly as in `controller/core/CMakeLists.txt`. It links nothing else: no `pico_*`, no `hardware_*`, no `ocb_hw`, no `ocb_version`.
+  - [x] 2.2 `firmware/CMakeLists.txt` (UPDATE; today it does `add_subdirectory(common/proto)`, `common/hw`, `controller/core`, then `bridge` and `controller` in firmware builds or `tests` in host builds): add `add_subdirectory(controller/link)` right after `controller/core`, **in both build modes**. Do not touch sanitizer, toolchain or preset logic.
+  - [x] 2.3 Headers (names are a suggestion, behaviour is not): `ocb_link/config.h` (local, non-wire constants: `OCB_LINK_RX_RING_CAP` 512, `OCB_LINK_TX_EVENT_CAP` 8, `OCB_LINK_TX_NAK_CAP` 4, `OCB_LINK_TX_IDLE_HIGH_US` 1000, `OCB_LINK_DEBUG_COUNTERS_LEN` 7), `rxring.h`, `ready.h`, `link.h`, umbrella `ocb_link.h`. Allowed includes only `<stdint.h> <stddef.h> <stdbool.h> <string.h> <limits.h>`, `"ocb_proto/..."`, `"ocb_core/..."`, `"ocb_link/..."`. SPDX `MIT`, include guards, **no GPIO token and no `PICO_*` pin macro** in code, comments or fixtures (the pin grep scans `firmware/controller/` and `tests/`).
+  - [x] 2.4 Rules for every source: no heap, no recursion, no global mutable state (two `ocb_link` instances are independent: a test proves it), no libc beyond `string.h`, no `/` or `%` on `uint64_t`, no `printf`, no clock read (time comes in as `now_us`). Hot functions carry `OCB_CORE_RAMFUNC` from `ocb_core/ramfunc.h` (do not invent a second macro; the same caveats as in `ramfunc.h` apply and are 2.5's review).
+
+- [x] **Task 3: RX path: ring, error bytes, resync** (AC: #1; D4; test F.14 `test_link_rx`)
+  - [x] 3.1 `rxring.h/.c`: SPSC ring of `uint16_t` entries (the PL011 data register value, `dr & 0x0FFF`: bits 0-7 data, 8 FE, 9 PE, 10 BE, 11 OE), capacity `OCB_LINK_RX_RING_CAP`, `volatile` indices, single producer (the IRQ) and single consumer (the loop), both on core 1. Push on full: drop the new entry, count it, set a sticky `overflow` flag. No atomics (one core), but the producer must write the slot before it publishes the index, with a compiler barrier hook macro `OCB_LINK_BARRIER()` (empty on the host).
+  - [x] 3.2 `ocb_link_rx_entry(link, dr, now_us)` (or equivalent): data byte with no error bits → `ocb_rx_push` (controller side, Story 2.2); a frame result goes to admission (Task 5), a dropped run (`OCB_RX_DROPPED`) increments the transport-NAK request (D6) when `last_err` is COBS, CRC or overlong, but **not** for range errors or empty runs (AD-3: counted and dropped, no reply).
+  - [x] 3.3 Error policy (D4): an entry with any of FE, PE, BE, OE set is **not data**. The byte is discarded, `rx_err_bytes` is incremented, and a synthetic `0x00` delimiter is fed to `ocb_rx` so the run in progress is closed as a dropped frame and the next bytes start a fresh run. A BE entry also increments `breaks` (sticky counter for Story 2.7; `ocb_link_breaks(link)`), and the `0x00` data byte that the PL011 loads for a break is never mistaken for a real delimiter. A ring overflow (sticky flag seen by the consumer) is treated like one error byte.
+  - [x] 3.4 Counters (`uint32_t`, wrap): `rx_bytes`, `rx_err_bytes`, `rx_overflow`, `breaks`, plus the `ocb_rx_stats` of Story 2.2. `dropped_bytes` of the debug STATUS (D12) is `rx_err_bytes + rx_overflow + overlong bytes counted by the splitter`; document the exact formula in the header.
+  - [x] 3.5 `test_link_rx.c` (**F.14**): feed the same valid frames one byte at a time, in random chunk sizes, and with `0x00` idle bytes in between: all delivered, same result; garbage before, between and after frames resyncs at the next delimiter; a corrupted byte (every position of a frame, every single-bit flip of a small frame) drops that frame and never the next one; error flags on a byte (each of FE, PE, BE, OE alone and combined) close the run, the following valid frame is delivered, the bad byte is never data; the BE case counts `breaks`; an overlong run (263 to 5000 non-zero bytes) is dropped once and the next frame is delivered; ring wrap, full, `overflow` flag and counters; every counter matches a hand count. All expectations are written in the test, not computed by the code under test.
+
+- [x] **Task 4: `ready` tracker and USB-event entry** (AC: #4 F.10; D11; test F.10 `test_link_ready`)
+  - [x] 4.1 `ready.h/.c`: the pure predicate and the cross-core mailbox that feeds it (D11). Mailbox: a struct of `volatile uint32_t` counters, each written by **one** core only (core 0 writes: `handshakes`, `in_reports`, `suspends`, `unmounts`, `bus_resets`; no core-1 writes). Core 1 keeps its own copy of the last seen values, so no atomic read-modify-write exists anywhere (Cortex-M0+ has none; 32-bit aligned loads and stores are atomic). Functions for core 0 (called by Story 2.3): `ocb_usb_mailbox_handshake_done`, `_in_report`, `_suspend`, `_unmount`, `_bus_reset` (each one increment).
+  - [x] 4.2 Core 1 side: `ocb_ready_poll(r, mailbox, now_us)` returns which USB-down events were seen since the last poll (for the link to turn into aborts) and updates the predicate: `ready = handshake_seen && !down_since_handshake && (now_us - last_in_change_us) <= OCB_CONSOLE_POLL_STALL_MS * 1000` where `last_in_change_us` is core 1's own 64-bit time at which it last saw `in_reports` change (so no 32-bit timestamp wrap, D11). Exactly 100 ms is still ready, 100 ms + 1 µs is not. The stall clears the flag only; a new IN report restores it while the handshake still stands. A USB-down event clears the handshake: only a new `handshake_done` restores `ready`. At `handshake_done` the IN clock is restarted (grace period).
+  - [x] 4.3 `ocb_link_poll` (Task 6) calls `ocb_ready_poll` first, then for each USB-down event calls `ocb_core_abort(OCB_ABORT_USB_SUSPEND | _UNMOUNT | _BUS_RESET)` and queues the returned EVENT (`USB_SUSPENDED`), then ticks the core. This is the single wiring Story 2.3 needs; it closes review point M6 (D11).
+  - [x] 4.4 `test_link_ready.c` (**F.10**): fake profile = a test struct that calls the mailbox functions; fake clock. Cases: `flags` bit1 and `NOT_READY` agree at every step (sample both after every event); 0 before the handshake, 1 after `handshake_done`; each of suspend, unmount, bus reset sets it to 0 **and** aborts the core with the right cause and `EVENT USB_SUSPENDED` (once; none when already aborted) in IDLE, DIRECT and PLAYING; `ready` stays 0 after the down event until a new `handshake_done`; stall: IN reports every 1 ms keep it 1; 100 ms silence exactly keeps it 1, +1 µs clears it, one IN report restores it; the stall does **not** abort PLAYING (AD-19) and `START` / `SET_STATE` get `NAK NOT_READY` while it is 0 and are accepted again when it is 1; bits 2 to 7 of STATUS `flags` are 0 in every sample (also with `link_ok` set); mailbox counters wrap at 2^32 without a false event; two independent trackers.
+
+- [x] **Task 5: Session, admission, go-back-N and the NAK matrix** (AC: #2, #3; D5 to D9; tests F.1 `test_link_gbn`, F.2 `test_link_nak`, F.15 `test_link_session`)
+  - [x] 5.1 `link.h/.c`: `ocb_link` struct and API (suggested): `ocb_link_init(link, core, const ocb_link_cfg *cfg)` with `cfg = { fw_ver[3], hid_profile, app_timeout_ms, debug_counters }` (the library never reads the version header or a build macro: the glue passes them, so tests pass anything); `ocb_link_set_report_period(link, us)` (forwards to `ocb_core_set_report_period` and is the value of `INFO.report_period_us`); `ocb_link_rx_entry`, `ocb_link_poll`, `ocb_link_tx_next` (Task 6), read-only getters for counters.
+  - [x] 5.2 **Admission order** (D5), for every frame returned by `ocb_rx` (which already did COBS, length, CRC and type range): (1) record the arrival for the app-gap counter; (2) a bridge type (`0x40` HEARTBEAT) is handled link-locally (D10): no ACK, no seq, never reaches the core; (3) sync points `HELLO` and `STOP` (any seq, any state); (4) session gate: any other app frame while the session is not open gets `NAK VERSION`; (5) seq check: `seq == expected` goes to the core; `d = (expected − seq) mod 256` in 1..64 is stale: `d == 1` repeats the cached response, `d` in 2..64 gets `ACK(expected−1)`, no effect; anything else gets the transport `NAK SEQ`; (6) core semantics (`ocb_core_frame`). The order is pinned by F.15 and F.2.
+  - [x] 5.3 **Sync points**: `STOP` goes to the core with any seq and is ACKed (`expected = seq+1` is done by the core). A `HELLO` whose body decodes and whose `proto_ver == OCB_PROTO_VERSION` goes to the core (STOP semantics, `expected = seq+1`), opens the session and is answered with INFO (D8). A `HELLO` with a different `proto_ver` or a body of length 0 is answered with INFO too (byte 0 is the controller's own `proto_ver`, so the app sees the mismatch), closes the session and forces the core to neutral by passing it a synthetic `STOP` carrying the HELLO's seq (fail safe, `expected` stays in sync; the core's ACK is discarded, D8). Sync points are always executed, never treated as stale duplicates (D5).
+  - [x] 5.4 **Replies**: after `ocb_core_frame` returns, `kind ACK` → pending cumulative ACK of `seq`; `kind NAK` → NAK(reason, expected, got) with `expected` read from the core **after** the call and `got = frame seq` (D7); transport reasons (`CRC`, `SEQ`, `FULL`) obey the "at most one per `expected`" rule with one shared budget (D6); a non-`NONE` `out.event` is queued as EVENT. A semantic NAK or an ACK of a non-sync frame is stored as the **cached response** of that seq (D6); a sync point clears the cache. A CRC/COBS/overlong drop requests `NAK CRC` with `got = 0` through the same budget (D6).
+  - [x] 5.5 Session rules (D8): the session is closed at boot (the controller never boots with an open session) and by a mismatched HELLO; it is opened only by a matching HELLO; it is **not** closed by link loss, abort or USB events (those set the abort latch; the app recovers with STOP or HELLO). Opening and closing both reset the app-gap counter (D12).
+  - [x] 5.6 `test_link_gbn.c` (**F.1**): build wire frames with the real `ocb_frame_encode` and feed them byte by byte. In-order accept for 300 frames (wraps past 255); `seq == expected` is the only path to the core (count calls with a probe: the core's `queue` count and `last_seq`); stale frames at `d` = 1, 2, 63, 64 and the first outside values 65, 66, 128, 191, 255 mod 256 (ahead and behind): d 1 repeats the cached response (ACK or the same semantic NAK), d 2..64 get `ACK(expected−1)`, 65 and above get `NAK SEQ`; a stale `QUEUE_EVENT` never enqueues twice (queue count); stale frames never change `expected`, mode or queue; wrap at 255 → 0 including the window across the wrap; the cache is empty after a sync point (falls back to `ACK(expected−1)`); sync points with any seq are executed even at `d` 1..64.
+  - [x] 5.7 `test_link_nak.c` (**F.2**): every transport reason (`CRC` from a corrupted frame and from an overlong run, `SEQ`, `FULL` from a queue of capacity 2) never advances `expected` and is sent **at most once per value of `expected`** across the shared budget (a CRC drop followed by 10 in-flight frames gives exactly one NAK); a new value of `expected` re-arms it; a sync point re-arms it; every semantic reason that the controller can produce (`VERSION`, `BUSY`, `ORDER`, `BAD_STATE`, `UNKNOWN_TYPE`, `ABORTED`, `NOT_READY`) advances `expected` to `seq+1`, has no effect on mode or queue, and carries `expected` after handling and `got = seq`; `NO_LINK` is not produced yet (a test comment names Story 2.7); `NAK FULL` then a retry after a slot frees is accepted; NAK bodies decode with `ocb_msg_nak_decode`; the precedence of 2.4 D3 still holds through the link (one pair per reason is enough, the core owns the full matrix).
+  - [x] 5.8 `test_link_session.c` (**F.15**): before the first HELLO every app frame (`SET_STATE`, `QUEUE_EVENT`, `START`, `PING`, unassigned `0x07`, and a frame with a wild seq) gets `NAK VERSION` **before** the seq check (no `NAK SEQ`), and `expected` follows `seq+1`; `STOP` is accepted before HELLO; matching HELLO opens the session from any state (IDLE, DIRECT, PLAYING, aborted) with STOP semantics and INFO with every field checked against the cfg and the core (`proto_ver`, `fw_ver`, `bridge_ver` zeros before any HEARTBEAT and the last HEARTBEAT's after, `hid_profile`, `queue_cap` = queue capacity, `app_timeout_ms`, `report_period_us` 0 then the set value); HELLO with a longer body is accepted (trailing bytes ignored, vector `hello_trailing`) when `proto_ver` matches; HELLO with proto_ver 0, 2, 255 or an empty body: INFO is sent, the session is closed, the core is neutral (also when it was PLAYING with a held note), `expected = seq+1`, and the next app frame gets `NAK VERSION`; a duplicate HELLO (the app resends every 100 ms) is answered again and does no harm; a `NAK VERSION` after the controller "rebooted" (a freshly initialised link) with an app still sending seq 120 (no `NAK SEQ` storm: each frame one `NAK VERSION`, TX drops over the slot limit and counts them); the session is **not** closed by `ocb_core_abort` or a USB event.
+
+- [x] **Task 6: TX scheduler, STATUS and INFO** (AC: #4; D12, D13; test F.16 `test_link_tx`)
+  - [x] 6.1 Output model (D12): no byte FIFO in the link. Slots: an EVENT ring (cap 8), a NAK ring (cap 4), one INFO slot, one cumulative-ACK slot, one STATUS request flag. `size_t ocb_link_tx_next(link, now_us, uint8_t *out, size_t cap)` returns the next **whole wire frame** (COBS, with its `0x00`) by priority `EVENT > NAK > INFO > ACK > STATUS`, or 0 when nothing is due or `cap` is smaller than the frame (the frame then stays pending: it never blocks and never splits a frame). The caller (glue) calls it only when its TX buffer can take `OCB_MAX_WIRE_FRAME` bytes... or smaller if the glue passes a smaller `cap`; the link must handle both.
+  - [x] 6.2 Overflow rule (the "lowest dropped" of AD-19, interpreted in D12): EVENT ring full → the new EVENT is dropped and counted in `tx_dropped`; NAK ring full → the new NAK is dropped and counted; ACK and STATUS cannot overflow (cumulative, so a newer value replaces the older one; not counted); INFO slot is overwritten by the newer INFO. Nothing waits on anything.
+  - [x] 6.3 STATUS cadence: due when `now_us >= last_status_us + 50 ms` (periodic) or when requested (an ACK was just sent) and `now_us >= last_status_us + 10 ms`; the first STATUS after boot is due immediately; at most one per 10 ms whatever the cause. Body = `ocb_msg_status`: `free` (queue free), `now_us` (u32 µs since t0, 0 outside PLAYING after the lead), `last_seq`, `mode`, `abort_count`, `last_event` from `ocb_core_status` (2.4 D13), `flags` = `OCB_STATUS_LINK_OK` if `link_ok` | `OCB_STATUS_CONSOLE_READY` if the `ready` predicate; bits 2 to 7 always 0 (`OCB_STATUS_RESERVED_MASK` is never set). Built with `ocb_msg_status_encode` and `ocb_frame_encode`, never by hand.
+  - [x] 6.4 Controller→app frames carry a rolling u8 tx seq (one counter for all outbound frames, wraps). It is diagnostic only: the app ignores it (D12).
+  - [x] 6.5 Debug counters (`cfg.debug_counters`; the glue sets it from `OCB_DEBUG_BUILD`): STATUS `extra` of exactly 7 bytes, little-endian: `max_app_gap_ms u16` (largest gap between two consecutive valid app frames seen since the last HELLO or session close, ms, saturating at 65535), `watchdog_trips u8` (always 0 until Story 2.7 fills it), `dropped_bytes u16` (Task 3.4 formula, saturating), `tx_dropped u16` (saturating). Without the flag the body is the base 11 bytes (the app ignores trailing bytes either way, `docs/link-protocol.md`).
+  - [x] 6.6 TX gate (AD-20, AC5; `txgate.h/.c`): pure state machine `closed → open`: starts closed; `ocb_txgate_sample(g, rx_level_high, now_us)` opens only after RX has been high continuously for `OCB_LINK_TX_IDLE_HIGH_US` (1000 µs, a hypothesis to tune at the bench, H.7); `ocb_txgate_release(g)` closes it at once (Story 2.7 calls it on break and link loss; it may drain TX first, its call to make). While closed, `ocb_link_tx_next` returns 0 **and discards** pending EVENT/NAK/INFO/ACK (counted in `tx_dropped`): a stale burst must never leave when the gate reopens. STATUS is simply not due while closed.
+  - [x] 6.7 `ocb_link_poll(link, now_us)`: in this order: `ocb_ready_poll` and USB aborts (Task 4), `ocb_core_tick`, queue any EVENT from either. It is the only thing the glue calls besides `rx_entry` and `tx_next`.
+  - [x] 6.8 `test_link_tx.c` (**F.16**): priority with all five pending at once → exact order EVENT, NAK, INFO, ACK, STATUS (decode every output frame with `ocb_frame_decode(OCB_RX_APP, ...)`); a 64-frame prefill burst within 1 ms produces cumulative ACKs and at most one STATUS per 10 ms; periodic STATUS every 50 ms ± 0 on a fake clock (no drift over 1000 periods), the first immediately; ACK-triggered STATUS never earlier than 10 ms after the previous; `free`, `now_us`, `last_seq`, `mode`, `abort_count`, `last_event`, `flags` correct in each mode and after each abort cause; reserved bits 2-7 zero; extra bytes exactly 7 with the debug flag and absent without; overflow: 9th EVENT and 5th NAK dropped and counted, ACK and STATUS replaced; `cap` smaller than the frame returns 0 and keeps it pending, a later call with enough room returns it; every output frame is a valid controller frame and ≤ `OCB_MAX_WIRE_FRAME`; gate closed discards and counts, opens only after 1000 µs of continuous high, a low sample restarts the wait, `release` closes at once; two independent links.
+
+- [x] **Task 7: Byte-stream fuzz and lossy-channel property test** (AC: #1, #2, #3; test F.17 `test_link_fuzz`)
+  - [x] 7.1 Fuzz (fixed seeds, 3 seeds × at least 200 000 steps, a few seconds): random byte streams, valid streams with random single/multi-bit flips, truncations, insertions, duplications of whole frames, random `0x00` runs, 300-byte non-zero runs, random error flags, random clock jumps and random `ocb_core_abort` / USB mailbox events, then valid HELLO and traffic again. Invariants checked after **every** step: no crash or sanitizer report (ASan and UBSan are on in the preset); `link` and core fields stay in range (`mode` ≤ 2, `aborted` implies IDLE and an empty queue, IDLE implies NEUTRAL published, queue count ≤ cap, `expected` equals the value implied by the last handled frame); the published state in PLAYING never has a button outside the allow-list; every frame `ocb_link_tx_next` returns decodes with `OCB_RX_APP` and has a type in {INFO, STATUS, ACK, NAK, EVENT} with a valid body; no more than one transport NAK per value of `expected`; counters never decrease except by wrap; and a valid frame sent right after a `0x00` delimiter is **always** delivered no matter what junk came before (resync property).
+  - [x] 7.2 Lossy-channel model: a small reference **sender** in the test (go-back-N exactly as AD-6 describes it: window `min(credit, 64 − unacked)`, resend from the oldest unACKed frame after 50 ms, rewind only on a NAK with `expected` ahead of its last rewind point, `HELLO` first, credits from STATUS) talks to the real link over a simulated wire that drops bytes, flips bits, duplicates frames and delays, at several loss rates up to 10 % of frames. Property: every `QUEUE_EVENT` it sends is enqueued **exactly once and in order** (compare the queue content with the sent list, `t_us` strictly increasing), nothing is enqueued twice, nothing deadlocks (finishes within a bounded number of fake milliseconds), and no more frames are accepted than the queue can hold. Run with the queue at 512 and at 5 (credits near zero). Keep the model to what the doc says; where the doc is silent, the model follows D5 to D8 (and the test file says so in a comment).
+  - [x] 7.3 The test prints its seeds and iteration counts on failure so a failing run can be replayed (`OCB_FUZZ_SEED` env var optional).
+
+- [x] **Task 8: Purity gate for the link library, red and green** (AC: all; D1, D16; test F.18 `link_pure_check`)
+  - [x] 8.1 `firmware/tools/check-link-pure.sh`: same style, portability rules, exit codes and usage handling as `check-core-pure.sh` (default root `firmware/controller/link`, one optional argument, exit 0/1/2, POSIX `grep -E`). Differences: the allowed `ocb_` include prefixes are `ocb_proto`, `ocb_core` and `ocb_link`; the banned identifier list is **identical** to the core gate's (D16) and the CMake rule is the same (`pico_`, `hardware_`, `ocb_hw` forbidden on a non-comment line; `ocb_core` and `ocb_proto` allowed).
+  - [x] 8.2 `firmware/tests/link_pure_selftest.sh CHECK FW_DIR` plus `tests/link_pure_fixtures/bad/*` and `good/*`, same pattern as `core_pure_selftest.sh` (one file per violation class, including `#include "pico/stdlib.h"`, `"hardware/uart.h"`, `"hardware/irq.h"`, `"ocb_hw/uart_link.h"`, `<stdio.h>`, `<stdlib.h>`, `time_us_64()`, `malloc(`, `multicore_`, `__not_in_flash_func`, a CMakeLists linking `hardware_uart`, a `.cpp` with an SDK include; good: allowed includes, an `"ocb_link/link.h"` include, a CMakeLists linking `ocb_core ocb_proto`). No GPIO token or `PICO_*` pin macro in fixtures. The self-test also checks that the `banned_word_re=` line of `check-link-pure.sh` equals the one in `check-core-pure.sh` (guards against drift of the two copies) and runs the gate on the real `controller/link` tree and a usage error (exit 2).
+  - [x] 8.3 ctest `link_pure_check`; `.github/workflows/firmware.yml` (UPDATE; steps after "Host tests": "Pin grep (AD-20)", "Proto version vs vectors (AD-14)", "Proto library is pico-sdk free (AD-2)", "Controller core is pico-sdk free (AD-2)", "Job summary", upload): add a step **"Controller link is pico-sdk free (AD-2)"** running `firmware/tools/check-link-pure.sh` right after the core step, as its own red step. Nothing else in the workflow changes (artifact name `firmware-uf2` and paths stay). `actionlint` clean when available.
+
+- [x] **Task 9: Hardware glue, thin and separate** (AC: #1, #5; D3, D14, D15; **builds on the host machine with the ARM presets, runs only on the board**)
+  - [x] 9.1 `firmware/common/hw/`: add `uart_link.c` and `include/ocb_hw/uart_link.h` to the `ocb_hw` library (firmware builds only, like `led.c`; link `hardware_uart`, `hardware_gpio`, `hardware_irq` headers/INTERFACE libraries exactly like `led.c` does for PIO; update `common/hw/CMakeLists.txt`, keep `ocb_hw_pins` as is). It is shared with the bridge in Epic 3 and knows **nothing** about frames. Pins come from `ocb_hw/pins.h` only (`OCB_PIN_UART_TX`, `OCB_PIN_UART_RX`); no GPIO number and no `PICO_DEFAULT_UART*` anywhere else (the pin grep scans it). API (suggested): `ocb_uart_link_init(void)` (UART0, `OCB_LINK_BAUD` 460800 from `ocb_proto/consts.h`, 8N1, FIFOs on, **RX pull-down on the RX pin** and TX pad left as a high-Z input, no DMA channel claimed), `ocb_uart_link_rx_irq_enable(void (*sink)(uint16_t dr))` or a ring owned by the glue, `bool ocb_uart_link_rx_level(void)`, `ocb_uart_link_tx_enable(bool)` (switches the TX pad between UART function and high-Z input, no pull), `size_t ocb_uart_link_tx_space(void)`, `bool ocb_uart_link_tx_write(const uint8_t*, size_t)` (all-or-nothing into a 128-byte software ring that the TX IRQ or the step drains into the 32-entry hardware FIFO; never blocks, never spins), debug-build assertion `get_core_num() == 1` in the TX write path (AC1 "core 1 is the only TX writer").
+  - [x] 9.2 RX IRQ handler (placed in RAM with the SDK's section macro; the macro lives in this file, not in the pure libraries; installed and **enabled from core 1** so the NVIC enable is on core 1): drain the hardware FIFO until `RXFE`, push **each full data-register value** (`dr & 0x0FFF`, data and error bits) into the `ocb_link` RX ring, then clear the RX and RX-timeout interrupts. Enable only the RX and RX-timeout interrupts (the SDK's `uart_set_irqs_enabled(uart0, true, false)` does exactly this; the error bits are read from the data register, no separate error interrupt). **No DMA.** The ring is 512 entries (1 KB): at 460800 baud a character takes 21.7 µs, so 512 entries cover more than 11 ms of a stalled loop.
+  - [x] 9.3 Why this matches the SDK (read from the submodule while writing this story, `firmware/external/pico-sdk/src/rp2_common/hardware_uart/include/hardware/uart.h` and `rp2040/hardware_regs/.../uart.h`): `uart_set_irqs_enabled(rx=true)` enables both the RX interrupt (at RXIFLSEL 0, i.e. at least 4 characters in the FIFO) and the RX-timeout interrupt (at least one character and nothing new for 32 bit periods, about 70 µs at this baud); the data register carries FE (bit 8), PE (9), BE (10) and OE (11) with each character; a break loads **one** zero character with BE set and the next character is enabled only after the line returns high; `uart_init` always sets the DMA request enables but no channel is claimed, so no DMA is used; `uart_init` returns the achieved baud rate (a debug-build assertion that it is within 1 % of `OCB_LINK_BAUD`; the controller has no stdio, so nothing is printed).
+  - [x] 9.3b Use the SDK as documented; do **not** copy code from pico-examples or other projects. If a snippet from the SDK or pico-examples (BSD-3-Clause) is adapted, say so in a comment with the file name, and add a line to `firmware/THIRD_PARTY_NOTICES.md`. None is expected: the calls are plain SDK API.
+  - [x] 9.4 `firmware/controller/platform/` (new; the structural seed's directory): `link_runner.c/.h` with `ocb_ctrl_link_init(...)` (builds the `ocb_core` with a 512-event static queue (6 KB), the `ocb_link`, the TX gate; passes `fw_ver` from the generated `ocb_version` header, `hid_profile` `OCB_HID_PROFILE_P2`, `app_timeout_ms` `OCB_APP_TIMEOUT_MS_DEFAULT`, `debug_counters` from `OCB_DEBUG_BUILD`) and `ocb_ctrl_link_step(void)` (**core 1 only**; one pass: sample RX level into the gate and open/close TX, drain the RX ring into `ocb_link_rx_entry`, `ocb_link_poll`, then while the gate is open and the TX ring has room, `ocb_link_tx_next` → `ocb_uart_link_tx_write`). Hot functions are `__not_in_flash_func` here (glue only). The USB mailbox instance lives here with its core-0 functions exported for Story 2.3; nothing calls them yet.
+  - [x] 9.5 `firmware/controller/main.c` (UPDATE; today it blinks the LED amber at 2 Hz on core 0): keep the blink on core 0, and before the loop `multicore_launch_core1(core1_entry)` where `core1_entry` calls `ocb_ctrl_link_init`, enables the UART IRQ **on core 1**, and loops `ocb_ctrl_link_step()`. This is a bring-up arrangement: Story 2.5 replaces `core1_entry` with the real super-loop (liveness counters, seqlock, 1 MHz timer) and keeps calling `ocb_ctrl_link_step()` from it; say so in a comment. `ready` comes from the mailbox, which nothing posts to yet, so on this firmware `console_ready` is always 0 and `START`/`SET_STATE` always get `NAK NOT_READY` (this is expected and tested on the bench, D2). The LED colour/rhythm of Story 2.1 does not change. `firmware/controller/CMakeLists.txt` (UPDATE; links `ocb_hw ocb_proto ocb_core ocb_version`): add `ocb_link` and `pico_multicore`; keep stdio disabled (the UART pins are ours).
+  - [x] 9.6 `fw-release` and `fw-debug` build with `-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion` clean on our sources and both UF2s still come out (`bridge.uf2`, `controller.uf2`; artifact name `firmware-uf2` unchanged). The pin grep (`check-pins.sh`) stays green: no GPIO number, no `PICO_DEFAULT_*` outside `pins.h`. If the bridge target links `ocb_hw`, it must still build (the new file is compiled into the shared archive; keep it free of controller-only symbols).
+
+- [x] **Task 10: Bench sender `link_probe.py` and its self-test** (AC: #1 to #4 for the bench; D2, D18; test F.19 `link_probe_selftest`)
+  - [x] 10.1 `firmware/tools/link_probe.py`: Python 3 standard library plus `pyserial` imported **lazily** (only when a port is opened, so the self-test needs no pyserial). A small, readable bench tool, not the Rust app and not a reusable library: COBS, CRC-16/CCITT-FALSE and frame encode/decode written from `docs/link-protocol.md` (not from the C sources), and the subcommands `hello` (HELLO until INFO, print INFO and bridge/fw versions), `watch` (print STATUS fields and debug counters, ACK/NAK/EVENT as they arrive, STATUS interval statistics), `fill` (prefill N `QUEUE_EVENT` with strictly increasing `t_us`, then check `free` and `last_seq`; `--stop` sends STOP), `soak` (D2: repeated fill / STOP cycles, `--corrupt P` flips a random bit in a fraction P of frames, `--drop P` drops a fraction of frames, `--garbage` inserts junk bytes between frames; implements the AD-6 sender: window 64, 50 ms resend, one rewind per NAK with `expected` ahead; ends with a pass/fail line and the counters) `noise --count N` (write N random non-zero bytes then a valid HELLO, check INFO arrives) and `try` (send one `SET_STATE` and one `START` and print the replies, used to see `NAK NOT_READY`). Options: `--port`, `--baud` (default 460800), `--seed`. It sends nothing at all until `hello` has been answered, except what a subcommand says it does.
+  - [x] 10.2 `firmware/tests/test_link_probe.py` (stdlib `unittest`) run by ctest as `link_probe_selftest` with `python3 -I`: the module is loaded by file path with `importlib`; it checks the codec against the shared vectors (`common/proto/vectors/cobs.txt`, `crc16.txt`, `frames.txt`, `messages.txt`: parse `name: hex` lines exactly as `vectors/README.md` says; every vector must pass) and the sender logic against an in-process fake link (no serial port). CMake: `find_package(Python3 COMPONENTS Interpreter REQUIRED)` in `tests/CMakeLists.txt`. The CI runner has `python3`; the workflow needs no new step.
+  - [x] 10.3 No pyserial in CI, no `requirements.txt` for the tool beyond a one-line comment in its header (`pip install pyserial`). The file starts with SPDX `MIT`. No copied code: the COBS and CRC routines are the ones in the project's own vectors' spirit, written from the spec (cite `docs/link-protocol.md` in the docstring).
+
+- [x] **Task 11: Docs** (AC: all)
+  - [x] 11.1 `docs/test-plan.md` (UPDATE): "Firmware host tests": keep IDs; rewrite rows **F.1**, **F.2** and **F.10** with what is now checked (Story 2.6, test names); add **F.14** (RX stream), **F.15** (session), **F.16** (TX and STATUS), **F.17** (fuzz and lossy channel), **F.18** (link purity gate), **F.19** (`link_probe.py` vs vectors). "Hardware-in-the-loop checks": add **H.4** to **H.7** exactly as written in Task 13 (with an empty Result column); leave H.0 to H.3 untouched (H.1 stays: it needs the real bridge; H.7 is its controller-only subset). Add a short "Bench rig for the controller link (Story 2.6)" block to "Test environment" naming the extra items to record (D2).
+  - [x] 11.2 `docs/link-protocol.md` (UPDATE; keep every existing sentence): after "Rules the controller core applies (Story 2.4)" add **"Rules the controller link applies (Story 2.6)"**: the admission order and the fact that the session gate comes before the seq check (D5), stale and cached response (D6), NAK `expected`/`got` fields and the shared once-per-`expected` budget including CRC with `got = 0` (D6, D7), mismatched HELLO (INFO + neutral + session closed) (D8), RX error-byte policy and why a break's zero byte is not a delimiter (D4), TX slots and priority including INFO between NAK and ACK and the overflow interpretation (D12), controller→app tx seq is diagnostic (D12), STATUS debug counters v1 layout (D12), `link_ok` handling in this story (D10), the `ready` predicate and the three USB-down causes becoming aborts (D11), the TX gate (D15). State that **no wire value changed**. This is the text Story 3.3 (Rust sans-IO link) must follow; point out the three app-side consequences: the app resends a HELLO until INFO, after `NAK VERSION` it must HELLO again, and it must not send frames after a STOP until the ACK arrives (a late duplicate STOP is executed again, D5).
+  - [x] 11.3 `firmware/controller/README.md`: one paragraph on `link/` and one on `platform/` and the bring-up `main.c` (what runs where, that `console_ready` is always 0 until Story 2.3); `firmware/README.md`: bullets for `tools/check-link-pure.sh` and `ctest link_pure_check`, and for `tools/link_probe.py`; `firmware/common/README.md`: the new `ocb_hw/uart_link`; `firmware/THIRD_PARTY_NOTICES.md` (create only if it does not exist, otherwise append): "ocb_link, uart_link, link_probe: written from `docs/link-protocol.md` and the pico-sdk API, no third-party code".
+  - [x] 11.4 Do **not** edit `_bmad-output/specs/`, `docs/ocarina-input-mechanics.md`, `common/proto/**` (vectors, `consts.h`) or anything under `_bmad/`. Mention in the Completion Notes that risk register rows C5 (back-powering) stays `open` until H.1 with the real bridge, and that H.7 is the first measurement.
+
+- [x] **Task 12: Local verification, red checks and notes** (AC: all host parts)
+  - [x] 12.1 From `firmware/` with the Story 2.1 setup: `cmake --preset host-tests && cmake --build --preset host-tests && ctest --preset host-tests` all green (the 14 existing tests plus `test_link_rx`, `test_link_session`, `test_link_gbn`, `test_link_nak`, `test_link_tx`, `test_link_ready`, `test_link_fuzz`, `link_pure_check`, `link_probe_selftest`: 23; recount before writing the number); `cmake --preset fw-release && cmake --build --preset fw-release`, same for `fw-debug`, zero warnings, both UF2s produced; `check-pins.sh`, `check-proto-pure.sh`, `check-proto-version.sh`, `check-core-pure.sh`, `check-link-pure.sh` pass; `shellcheck` on the new scripts and `actionlint` on `firmware.yml` when available.
+  - [x] 12.2 **Red checks**, each reverted afterwards, each recorded in the Debug Log with the failing output line (every new gate and every new rule is proven red once): (a) add `#include "pico/stdlib.h"` to a link source: `check-link-pure.sh` exits 1 naming file and line, and the host build also fails; (b) add a `malloc(` to `ocb_link`: the gate exits 1; (c) change one word in the banned list of one gate copy: `link_pure_check` fails on the drift check; (d) make the stale window 65 instead of 64 (or `d` 0..64): `test_link_gbn` fails; (e) remove the once-per-`expected` memory: `test_link_nak` fails; (f) move the session gate after the seq check: `test_link_session` fails; (g) swap ACK and INFO priority: `test_link_tx` fails; (h) remove the 10 ms coalescing: `test_link_tx` fails; (i) feed an errored byte as data (skip the discard): `test_link_rx` fails; (j) drop the synthetic delimiter on error: `test_link_rx` and the fuzz resync property fail; (k) `ready` stall with `>=` instead of `>`: `test_link_ready` fails on the exact 100 ms case; (l) do not abort the core on a bus reset: `test_link_ready` fails; (m) accept a mismatched HELLO without neutralising the core: `test_link_session` fails; (n) flip one expected byte in a CRC vector copy or break `crc16` in `link_probe.py`: `link_probe_selftest` fails; (o) in the lossy-channel model, make the link accept `seq != expected`: `test_link_fuzz` fails (duplicate or reordered enqueue). Confirm ASan and UBSan are active (`-fsanitize=address,undefined` in the compile commands).
+  - [x] 12.3 Completion Notes: exact commands, the ctest summary line, ASan/UBSan status on the local compiler, `arm-none-eabi-size` of the `ocb_link` objects and the RAM added by `controller` (informational, for Story 2.5's budget; expected: queue 6 KB + RX ring 1 KB + TX ring 128 B + `ocb_rx` buffer 262 B), the CI status ("verified green after the owner's push" or "unverified until pushed") and, for each of H.4 to H.7, "unverified on hardware" until Task 13 is recorded.
+
+- [ ] **Task 13: Owner bench session on hardware** (AC: #1, #3, #4, #5 on silicon; **owner, not the dev agent**; D2)
+  - [ ] 13.1 Follow "Hardware checks" below exactly, record the results in `docs/test-plan.md` (H.4 to H.7 Result column and the environment block), then set the story to `done` after the code review (or write the deferral). If a result is a FAIL, open a follow-up and keep the story in `review`.
+
+## Dev Notes
+
+### What this story is
+
+The controller's link layer: it turns the UART byte stream into frames, enforces the session and the go-back-N rules of AD-6 and AD-7, drives the core of Story 2.4, and sends ACK, NAK, INFO, EVENT and STATUS back within the priority and cadence rules of AD-19. As with Story 2.4, the rules live in pure C that the PC tests with a fake clock; the hardware part (UART registers, IRQ, pad pull-down, high-Z TX) is a thin glue layer with no protocol knowledge. Everything that can silently corrupt a piece (a duplicated or lost `QUEUE_EVENT`, a NAK storm that livelocks the app, a version-mismatched app driving the board, a break byte read as a delimiter) is decided here, so each open point has a recorded decision (D1 to D18).
+
+### Design in one page
+
+```text
+ UART0 RX (GP1) --IRQ, core 1--> ring (512 x u16 = DR value incl. FE/PE/BE/OE)
+        core 1 loop: ocb_ctrl_link_step()
+          RX level --> txgate (closed until RX idle-high >= 1 ms)            [AD-20]
+          ring --> ocb_link_rx_entry --> ocb_rx (COBS, len, CRC, range)
+                     error byte? -> drop it, close the run (synthetic 0x00), count, break counter
+                     frame -> admission: HEARTBEAT (link-local) | HELLO/STOP | session gate | seq check
+                                       | ocb_core_frame (modes, queue, safety, NAK reasons)
+          ocb_link_poll: ready/USB mailbox -> aborts, ocb_core_tick, events
+          ocb_link_tx_next --> EVENT > NAK > INFO > ACK > STATUS --> uart tx ring (128 B) --> UART0 TX (GP0)
+ core 0 (later 2.3): ocb_usb_mailbox_* counters (single writer each)
+```
+
+### Decisions (made autonomously, 2026-11-22; the owner can overrule any of them)
+
+Each was researched in the repo first (AD-3 to AD-8, AD-11, AD-19, AD-20, `docs/link-protocol.md`, Story 2.2 and 2.4, the epics, the test plan) and, for the silicon, in the pico-sdk 2.3.1 sources of the submodule (UART API and register definitions). Where an AD already fixed a rule the decision only records it. No external code is copied.
+
+**D1. Three layers: pure `ocb_link`, shared `ocb_hw/uart_link`, controller `platform/` glue.**
+`firmware/controller/link/` (library `ocb_link`, pure C99, no pico-sdk, purity gate in CI, F.18) holds byte-stream handling, session, go-back-N front, `ready`, TX scheduling, STATUS and the TX-gate state machine. `firmware/common/hw/uart_link.c` (in `ocb_hw`, as AD-2 lists "UART helpers") is the register-level driver, shared with the bridge in Epic 3 and ignorant of frames. `firmware/controller/platform/link_runner.c` connects the two on core 1 (the structural seed's `controller/platform/`). *Alternative rejected:* putting the link in `controller/core` (it would grow a second job and the core's purity gate and tests are already tuned to it); one library per concern costs one more CMake file.
+
+**D2. Everything host-verifiable is verified on the host; the silicon is an owner bench session with no console.**
+No AC needs the Switch 2: the controller is powered from a PC USB port (no USB stack runs yet), wired to a peer that speaks UART at 460800. The peer is the PC through (a) a **3.3 V USB-UART adapter** (preferred; never connect its VCC or 5 V pin), or (b) the owner's existing Zero running 2wiCC_Comms **only if** a loopback check shows it is binary-clean (the 2wiCC repository describes it only as a USB-serial adapter; it is not documented as byte-transparent, so Task 13 starts with a 256-value loopback and falls back to the adapter). The bench sender is `link_probe.py` (D18). *Alternative rejected:* waiting for the bridge firmware (Epic 3): it would leave AC1 and AC5 unproven for several stories and hide a silicon problem until M4. The story stays in `review` until H.4 to H.7 are recorded or the owner defers them in writing.
+
+**D3. The link runs on core 1 now, behind one function that Story 2.5 keeps.**
+AC1 says core 1 is the only TX writer (AD-11). Story 2.5 is not done, so this story launches core 1 from `main.c` with a bring-up loop that calls `ocb_ctrl_link_step()`; 2.5 replaces the loop (liveness counters, seqlock, 1 MHz timer) and keeps the call. The UART IRQ is installed and enabled **from core 1** so its NVIC enable is on core 1 (the vector table is shared, the enable is per core). In debug builds the TX write path asserts `get_core_num() == 1`. Core 0 keeps the LED blink. *Alternative rejected:* running the link on core 0 (breaks AC1 and AD-11, and 2.5 would have to move it).
+
+**D4. Error bytes are not data; they close the run.**
+The PL011 data register carries FE, PE, BE, OE with each character (bits 8 to 11); a break loads one zero character with BE set. A zero character from a break must never act as a frame delimiter, and a character with a framing error must never be trusted as data. Rule: an entry with any error bit is discarded, counted (`rx_err_bytes`), and a synthetic `0x00` is fed to `ocb_rx`, so the run in progress ends as one dropped frame and the next bytes start clean (a good frame that follows without a leading delimiter is not swallowed). BE also increments a sticky `breaks` counter for Story 2.7. A ring overflow is treated as one error byte. The extra drop when the error hit the middle of a frame (the tail becomes a second dropped run) is accepted: go-back-N repairs it. *Alternative rejected:* feeding a poison byte and waiting for the real delimiter (swallows the next good frame when no idle `0x00` separates them).
+
+**D5. Admission order: the session gate comes before the seq check; sync points come before both.**
+AD-3's receive order ends "... CRC → type range → seq → semantics" and AD-7 says that before a matching HELLO every app frame except STOP gets `NAK VERSION`. Applied literally in the AD-3 order, a rebooted controller (`expected = 0`) would answer an app that is still sending seq 120 with `NAK SEQ`, never `NAK VERSION`, and the app's recovery rule (AD-7: "`NAK VERSION` mid-session = the controller rebooted, send HELLO") would never trigger: a deadlock. So the order is: decode (codec) → link-local types → sync points (`HELLO`, `STOP`, any seq) → session gate → seq check → core semantics. Sync points are always executed and never treated as stale duplicates (AD-6: accepted with any seq in any state). Consequence documented for Story 3.3: a late duplicate `STOP` is executed again (harmless, it goes neutral), so the app must not send new frames after a STOP until it is ACKed. `NAK VERSION` is semantic (advances `expected` through `ocb_core_advance_expected`, Task 1).
+
+**D6. Stale window, cached response and the NAK budget.**
+`d = (expected − seq) mod 256`. `d == 1`: the cached response (the reply that the controller gave to that seq the first time: an ACK, or the same semantic NAK; same content, a new tx seq, so bytes may differ). `2 ≤ d ≤ 64`: `ACK(expected−1)`, no effect. Any other `seq != expected` (ahead or older than the window): transport `NAK SEQ`. The cache holds only the last core-handled non-sync frame and is empty after a sync point (then the fallback is `ACK(expected−1)`). Transport NAKs (`CRC`, `SEQ`, `FULL`) share **one** budget of one per value of `expected` (AD-6: "at most one per value of `expected`"): after one damaged frame, the 10 frames already in flight produce one NAK, not eleven. The budget re-arms when `expected` changes or at a sync point. A CRC, COBS or overlong drop requests `NAK CRC` with `got = 0` (the seq is unreliable); range errors and empty runs get no reply (AD-3). If the NAK is lost, the app's 50 ms resend timer repairs it (AD-6).
+
+**D7. NAK body fields.**
+`NAK(reason, expected, got)`: `expected` is the controller's `expected` **after** handling the frame (so `seq+1` for a semantic NAK, unchanged for a transport NAK), `got` is the offending frame's seq (0 for `CRC`). The docs say only "reason, expected, got"; this fixes it for both ends and goes into `docs/link-protocol.md`. It matches the app rule "rewind only on a NAK whose `expected` is ahead of its last rewind point".
+
+**D8. Session: only a matching HELLO opens it; a mismatched one answers INFO, forces neutral and closes it.**
+This is the open point 2.4 D22 left to this story. A mismatched or empty-body HELLO is answered with INFO (byte 0 is the controller's own `proto_ver`, frozen, so the app can see the mismatch; AD-7 says HELLO is "always answered with INFO"), closes the session, and the core is forced neutral by a synthetic `STOP` carrying the HELLO's seq (fail safe: an unknown peer never leaves a held input; `expected` stays in step). The core's ACK for that synthetic STOP is discarded. The session is closed at boot and by a mismatched HELLO only: link loss, abort and USB events set the abort latch (2.4 D5) and the app recovers with STOP/HELLO, so a USB suspend does not force a re-HELLO. `INFO.bridge_ver` is the last HEARTBEAT's, zeros if none; `INFO.report_period_us` is the value set by Story 2.3 through `ocb_link_set_report_period` (0 unknown, which also selects the core's 8000 µs LATE fallback, 2.4 D6 / M5); `INFO.queue_cap` is the queue's capacity; `app_timeout_ms` is a cfg value (default 1000, W.1 later).
+
+**D9. Hot-path discipline.**
+The link functions called per byte and per pass carry `OCB_CORE_RAMFUNC`; the glue uses the SDK's RAM section macro. The caveat of `ocb_core/ramfunc.h` (the `ocb_proto` functions, `OCB_NEUTRAL` and compiler tables stay in flash) is unchanged and remains Story 2.5's review; this story does not claim "runs from RAM".
+
+**D10. HEARTBEAT is stored here; the watchdog is Story 2.7.**
+The link layer must see type `0x40` (the controller-side `ocb_rx` accepts `0x01..0x7F`): it never reaches the core, is never ACKed or NAKed, and is outside the app seq space (AD-3). It records `bridge_ver[3]`, the DTR flag, `last_heartbeat_us`, a counter, and sets `link_ok` on the **first valid** heartbeat (a short body is counted and ignored). Clearing `link_ok`, the 80 ms timeout, the break rule, `NAK NO_LINK` and `EVENT LINK_LOST` are Story 2.7 and use hooks provided here: `ocb_link_breaks()`, `ocb_link_last_heartbeat_us()`, `ocb_link_set_link_ok()`, `ocb_txgate_release()`. Until 2.7, `link_ok` stays 1 after the first heartbeat (documented as a placeholder in `link.h`); no AC of this story depends on it falling.
+
+**D11. A pure `ready` predicate fed by a wait-free mailbox; USB-down events become aborts here (closes review M6).**
+Story 2.3 owns the real profile; F.10 needs a fake one, so this story defines the predicate and its inputs. `ready = handshake_seen && no USB-down since the handshake && (now − last IN-report change) ≤ 100 ms`, with the 100 ms measured on core 1's own 64-bit clock from the moment it saw the counter `in_reports` change (so core 0 shares no timestamp and a 32-bit wrap cannot fake a recovery). Core 0 posts counters (one writer per counter, no atomic read-modify-write on Cortex-M0+), core 1 compares with its own last-seen copies. If a down event and a new handshake are seen in the same poll, down is handled first (an unrealistic race: a handshake takes milliseconds). **M6 (2.4): confirmed, no core change.** The core samples `ready` only at `START`/`SET_STATE`. Losing readiness *during* PLAYING is covered by the USB abort causes (suspend, unmount, bus reset → `ocb_core_abort`, `EVENT USB_SUSPENDED`), which the link now issues from the mailbox; the IN-poll stall is deliberately **not** an abort cause (AD-19: it clears the flag only), so a piece continues to its end or underrun and the Switch simply does not poll. Story 2.3 only has to post the mailbox counters.
+
+**D12. TX model: slots, not a byte FIFO; "lowest dropped" means newest of a full class; INFO ranks with replies.**
+AD-19 says "EVENT > NAK > ACK > STATUS, lowest dropped on overflow, no blocking". There is no queue of heterogeneous frames to drop from; each class has a slot: EVENT ring (8), NAK ring (4), INFO (1), cumulative ACK (1), STATUS request (1). A full EVENT or NAK ring drops the **new** entry and counts it (`tx_dropped`); ACK and STATUS are cumulative and replace their older value (not a loss). INFO is the answer to HELLO and sits between NAK and ACK (the AC lists four classes; INFO is the fifth, no more than a reply). A frame is produced whole or not at all (`cap` too small → stays pending, returns 0), so the glue never splits a frame and nothing blocks. STATUS: every 50 ms, after an ACK is sent, never closer than 10 ms. Controller→app frames carry a rolling u8 tx seq (diagnostic; the app ignores it; the doc is silent). Debug counters (7 bytes: `max_app_gap_ms u16`, `watchdog_trips u8`, `dropped_bytes u16`, `tx_dropped u16`) are an addition of text only, appended after the 11 base bytes, ignored by every decoder (`STATUS` accepts `≥ 11`). `max_app_gap_ms` restarts at each HELLO or session close so each W.1 soak starts clean.
+
+**D13. `now_us` u32 wrap (2.4 M7) is accepted.**
+`STATUS.now_us` is a u32 on the wire and wraps after about 71 minutes of one piece. The link takes it from `ocb_core_status` unchanged; pieces are minutes long, the wire width cannot change (D17) and the app derives mode from `STATUS.mode`, not from `now_us` alone. A comment in `link.h` says so. No work item.
+
+**D14. UART configuration and the IRQ.**
+UART0, GP0 TX / GP1 RX from `pins.h`, 460800 8N1, FIFOs on, `uart_set_irqs_enabled(rx=true)` semantics (RX interrupt at ≥ 4 characters in the FIFO plus the RX-timeout interrupt after 32 bit periods, about 70 µs), error bits read from the data register (AD-5 break rule), no DMA channel (AC1: "no 8-bit DMA"). Drain until `RXFE` per interrupt. The ring (512 × u16) absorbs a loop stall of more than 11 ms. SDK baud divisor: `uart_init` returns the achieved rate; at 125 MHz peripheral clock the rate is within 0.1 % of 460800, and the debug build checks it stays within 1 %. The hardware FIFO depth (32 entries on the RP2040's PL011 per the datasheet) is only a margin: the design does not rely on it beyond "at least 4".
+
+**D15. TX gate: pull-down RX, TX high-Z, open after RX is high for 1 ms.**
+AD-20 text made concrete. At init: RX pad pull-down on, TX pad as a plain high-Z input (no pull). RX level is sampled with `gpio_get`-style read of the pad (the input path is enabled by the UART function select, so the level is readable while UART owns the pin; **to be confirmed at the bench in H.7**, fallback: sample before switching functions). The pure `txgate` opens after RX has been high for `OCB_LINK_TX_IDLE_HIGH_US` = 1000 µs (460 bit times: far longer than any in-frame run of ones, shorter than the 20 ms heartbeat gap; a **hypothesis** tuned in H.7). While closed the link discards pending output (never a stale burst on reopening). `ocb_txgate_release()` closes at once; 2.7 calls it on break and link loss and decides whether to drain TX first. The constant is local to `ocb_link/config.h`, not in `consts.h`, so no vector or Rust mirror changes (D17).
+
+**D16. A second purity gate script, kept in step with the first by a drift test.**
+`check-link-pure.sh` is a copy of `check-core-pure.sh` with `ocb_link` added to the allowed prefixes (as 2.4 D9 did for proto → core). The cost of duplication is drift, so the self-test compares the banned-identifier line of both scripts. *Alternative rejected:* parameterising `check-core-pure.sh` (its self-test pins "two arguments exit 2" and its fixtures; changing a green gate to save a copy is riskier than a drift test).
+
+**D17. No wire change.**
+No new message, NAK reason, EVENT code, `consts.h` constant or `PROTO_VERSION` bump; the vectors are not edited. Local constants live in `ocb_link/config.h`. The docs gain clarifying text only (NAK field meaning, admission order, debug-counter layout), which is in the spirit of the "Rules the controller core applies" section of Story 2.4. If the dev finds a rule that seems to need a wire change, stop and record it as an open point (AD-14).
+
+**D18. A Python bench sender in the repo, tested against the vectors.**
+The bench needs a sender that speaks the binary protocol, and the Rust one does not exist until Epic 3. `firmware/tools/link_probe.py` (stdlib + lazy `pyserial`) is small, written from the spec, and its codec is checked against the shared vectors in ctest (F.19), so the tool cannot silently disagree with the firmware. It is a bench tool, not a product component, and Story 3.4's `ocb-dev` replaces its role later. *Alternative rejected:* hand-typed hex frames in a terminal (not repeatable, cannot do the soak or the 50 ms resend), and a second throw-away firmware for the bridge side (new binaries to flash and maintain).
+
+**Decisions added during implementation (dev agent, 2026-11-22; researched in the repo, the pinned SDK sources and the RP2040 datasheet; the owner can overrule any of them)**
+
+**D19. The error byte closes the run by resetting the splitter, and a ring overflow is an in-stream marker.**
+Feeding `ocb_rx` a literal `0x00` on an error (the wording of Task 3.3) would *decode* a complete run that only lost its delimiter, which contradicts D4's "closed as a dropped frame" and "a break's zero byte is never a delimiter". So the link abandons the run in progress directly (`rx.len = 0`, `rx.discarding = false`, public fields of `ocb_rx`; `common/proto` is not edited), counts it in `rx_err_runs` and requests `NAK CRC` through the budget. For the ring, a full ring drops the new entry (`dropped`, sticky `overflowed`) and the next push that finds two free slots first stores `OCB_LINK_RX_OVERFLOW_MARK` (bit 12, not a register bit): the consumer then sees the gap at the exact stream position, not "somewhere before the next pop", and handles it like one error byte. Each ring field keeps a single writer (no consumer-cleared flag). *Alternative rejected:* a consumer-cleared sticky flag (two writers, and the gap position is lost).
+
+**D20. Silicon facts confirmed (the story drafter's "from memory" items).**
+(1) PL011 FIFO depth: the RP2040 datasheet, section 4.2 (UART) feature list, gives separate 32×8 TX and 32×12 RX FIFOs; the pinned SDK agrees (`uart_set_irqs_enabled`: "RX asserts when >=4 characters are in the RX FIFO (for RXIFLSEL=0)", and RXIFLSEL 0 = 1/8 full, so 32 deep). The comment in `uart_link.c` states it. (2) RX level while the UART owns the pin: the SDK's `gpio_set_function` sets the pad's input enable (`hardware_gpio/gpio.c`), and `gpio_get` reads `SIO GPIO_IN`, so the level is readable without switching functions. H.7 still checks it on silicon. (3) At reset a pin's function is NULL (not driven), and the TX pad is set to an SIO input with no pull before `uart_init`; the UART function is selected only when the gate opens.
+
+**D21. The core-1 TX assertion lives in the controller glue; TX is drained from the step, not by a TX interrupt.**
+`ocb_hw/uart_link` is shared with the bridge (Epic 3), whose TX writer may be a different core, so the debug assertion `get_core_num() == 1` sits in `ocb_ctrl_link_step()` right before the TX write. The software TX ring (128 B) is single-writer and drained by `ocb_uart_link_tx_pump()` once per pass while the hardware FIFO has room, so no interrupt shares the TX ring. 32 FIFO entries at 21.7 µs per character cover about 0.7 ms between passes; Story 2.5's loop is far faster.
+
+**D22. Two fuzz details beyond the task text.**
+The resync property also covers "a valid frame right after an **error byte**", not only after a `0x00`; without it, red check (j) left the fuzz green (the explicit delimiter hides the missing run reset). The "one transport NAK per `expected`" invariant is checked on the `expected` field of the NAKs that come out, with a re-arm flag set by a change of `expected` or a sync point, and TX is drained before a frame that follows a prefix, so a NAK generated before a sync point in the same step is not charged to the next epoch.
+
+**D23. `link_probe.py` gains `loopback` and `fill --no-hello`.**
+Rig check R0 needs a self-loopback of all 256 byte values (`loopback --repeat 100`) and H.4 step 7 needs a `fill` without HELLO (`fill --no-hello`, expects `NAK VERSION`). Both only send what their name says. The probe's sender treats a NAK's `expected` as a cumulative ACK of `expected − 1` (D7) and counts semantic NAKs as failures in `soak`.
+
+**D24. `tx_dropped` also counts pending INFO and ACK discarded by the closed gate.**
+D15 says discarded output is counted in `tx_dropped`; INFO and ACK are slots, not rings, so they cannot overflow, but a closed gate discards them like EVENT and NAK. The debug counter therefore means "replies that never left", which is what W.1 and H.5 need. Documented in `docs/link-protocol.md`.
+
+### Behaviour reference (the tables the tests encode)
+
+**Admission (D5), per decoded frame** (after COBS, length, CRC and type range in `ocb_rx`):
+
+| Step | Condition | Result |
+|---|---|---|
+| 1 | any valid app frame | update the app-gap counter |
+| 2 | type `0x40` HEARTBEAT | store `bridge_ver`, DTR, time, `link_ok`; no reply; stop |
+| 3a | `STOP` (any seq, any state, any body) | core handles it: neutral, queue cleared, IDLE, latch cleared, `expected = seq+1`; ACK |
+| 3b | `HELLO`, `proto_ver` matches | core handles it (same as STOP), session open; INFO |
+| 3c | `HELLO`, other `proto_ver` or empty body | INFO; session closed; synthetic STOP to the core; no ACK |
+| 4 | session closed (any other app frame) | `NAK VERSION`; `expected = seq+1` |
+| 5a | `seq == expected` | core handles it (ACK, semantic NAK, or transport `NAK FULL`) |
+| 5b | `d == 1` | repeat the cached response (or `ACK(expected−1)`) |
+| 5c | `2 ≤ d ≤ 64` | `ACK(expected−1)` |
+| 5d | otherwise | `NAK SEQ` (budget: one per `expected`) |
+
+**Replies and `expected`:**
+
+| Outcome | Reply | `expected` after |
+|---|---|---|
+| accepted | ACK(seq) | `seq+1` |
+| semantic NAK (core or session gate) | `NAK(reason, seq+1, seq)` | `seq+1` |
+| `NAK FULL` | `NAK(FULL, expected, seq)` once per `expected` | unchanged |
+| `NAK SEQ` | `NAK(SEQ, expected, seq)` once per `expected` | unchanged |
+| CRC/COBS/overlong drop | `NAK(CRC, expected, 0)` once per `expected` | unchanged |
+| range error, empty run | none | unchanged |
+
+**RX entries (D4):**
+
+| Entry | Effect |
+|---|---|
+| data byte, no error bits | `ocb_rx_push` |
+| any of FE, PE, BE, OE | discard byte, `rx_err_bytes++`, feed synthetic `0x00`; BE also `breaks++` |
+| ring overflow seen | like one error byte, `rx_overflow++` |
+
+**TX priority (D12):** EVENT, NAK, INFO, ACK, STATUS. STATUS: every 50 ms; after an ACK is sent; never closer than 10 ms.
+
+### Consumers (what later stories need from this one)
+
+- **Story 2.7**: `ocb_link_breaks()`, `ocb_link_last_heartbeat_us()`, `ocb_link_set_link_ok()`, `ocb_txgate_release()`, the slot for `NAK NO_LINK` in the admission order (after the session gate and before the core's `BUSY`, as 2.4 D3 says: the core owns the NAK precedence, so `NO_LINK` needs a core input `env.link_ok`; 2.7 adds it), the `watchdog_trips` byte of the debug counters, `ocb_core_abort(LINK_LOST | APP_TIMEOUT)` and queuing the returned EVENT through the link's event ring.
+- **Story 2.3**: the mailbox functions `ocb_usb_mailbox_handshake_done/_in_report/_suspend/_unmount/_bus_reset`, `ocb_link_set_report_period`, and the contract that `ready` is derived, not called.
+- **Story 2.5**: `ocb_ctrl_link_step()` inside its core 1 super-loop; `core->published` is still read after each call exactly as in 2.4; the RAM-placement review of D9; the loop period budget (the link adds the RX drain, one `ocb_link_poll` and at most one TX frame per pass).
+- **Story 3.1 (bridge)**: `ocb_hw/uart_link` (no frame knowledge), the UART pad and pull-down rules of AD-20.
+- **Story 3.3 (Rust link)**: the text of Task 11.2 and the behaviour tables above; the vectors are unchanged.
+- **Story 4.x (status LEDs)**: `STATUS.flags` bit semantics are exactly AD-19.
+
+### Developer guardrails
+
+- **Read before editing (UPDATE files):** `firmware/CMakeLists.txt` (adds `common/proto`, `common/hw`, `controller/core`, then `bridge` and `controller` or `tests`), `firmware/controller/CMakeLists.txt` (executable `controller`, links `ocb_hw ocb_proto ocb_core ocb_version`, stdio disabled, UF2 output), `firmware/controller/main.c` (LED blink loop on core 0 using `time_us_32`), `firmware/common/hw/CMakeLists.txt` (`ocb_hw_pins` INTERFACE in every build, `ocb_hw` STATIC only in firmware builds, SDK `*_headers` + INTERFACE libs, PIO header generation), `firmware/common/hw/include/ocb_hw/pins.h` (read-only for this story: `OCB_PIN_UART_TX` 0, `OCB_PIN_UART_RX` 1), `firmware/tests/CMakeLists.txt`, `firmware/controller/core/include/ocb_core/core.h`, `.github/workflows/firmware.yml`, `docs/test-plan.md` F and H tables, `docs/link-protocol.md` "Controller modes" and "Rules the controller core applies". Preserve all of it.
+- The link must leave the system working end to end: `controller` **and `bridge`** still build in `fw-release` and `fw-debug`, both UF2s still come out, the LED still blinks as in Story 2.1 (H.0 behaviour must not regress; recheck it by eye at the bench).
+- Use `ocb_msg_*` encoders and decoders and `ocb_frame_*` only; never cast bytes to structs; never hand-code a frame in the library. In tests, build frames with `ocb_frame_encode` and decode outputs with `ocb_frame_decode(OCB_RX_APP, ...)`; the Python tool is the only independent implementation.
+- `uint8_t` seq arithmetic: cast explicitly (`-Wconversion` is on); the window test uses `(uint8_t)(expected - seq)`.
+- No GPIO number and no `PICO_DEFAULT_UART*` outside `pins.h`. No `printf`/stdio on the controller (the UART pins are the link). Debug information leaves only as STATUS debug counters or EVENT (consistency convention "Logging").
+- Never block: no loop waits on a FIFO, a flag or the clock anywhere in `ocb_ctrl_link_step()`.
+- Do not use 2wiCC code or text, and do not copy code from pico-examples or other firmware; cite the SDK file if an idea is taken (D14 notes).
+- The core must not be modified beyond Task 1. If a core rule looks wrong, record an open point.
+
+### Architecture compliance
+
+- AD-2: pure C99 `ocb_link` next to `ocb_proto` and `ocb_core`, no SDK; `ocb_hw` holds the UART helpers; `host-tests` builds the pure parts with the native compiler.
+- AD-3: receive order and type ranges (D5); bridge frames never ACKed, outside the app seq space (D10).
+- AD-5: IRQ-driven RX reading the data register's error bits, no 8-bit DMA; the break is *seen* and counted here, *acted on* in 2.7.
+- AD-6: accept only `seq == expected`, stale window 64, cached response, cumulative ACK, transport vs semantic NAKs, one transport NAK per `expected` (D5 to D7).
+- AD-7: session start, HELLO with STOP semantics, INFO v1, `NAK VERSION` before HELLO, only an exact `PROTO_VERSION` (D5, D8).
+- AD-8: the core is unchanged except one accessor; NOT_READY uses the same predicate as STATUS (D11).
+- AD-11: link on core 1 only; core 0 → core 1 traffic through single-writer counters (D3, D11); TX writer is core 1 only (debug assertion).
+- AD-19: STATUS content, cadence, priority, no blocking (D12); `console_ready` flag semantics (D11).
+- AD-20: pins only from `pins.h`; RX pull-down; TX high-Z until RX idle-high (D15).
+
+### Library and framework requirements
+
+None external for the firmware. C99 for the pure libraries (`C_STANDARD 99`, `C_EXTENSIONS OFF`); the SDK 2.3.1 APIs `hardware_uart`, `hardware_gpio`, `hardware_irq`, `pico_multicore` in the glue only (all in the pinned submodule, AD-1; nothing fetched). No test framework (Story 2.2 D7). Python 3 with the standard library for `link_probe.py`'s tests; `pyserial` only on the owner's bench machine. Compile-time checks use the C99 negative-array idiom. Cortex-M0+: no hardware divide, no 64-bit atomics, no LDREX/STREX (hence D11's single-writer counters); 32-bit aligned loads and stores are atomic.
+
+### File structure requirements
+
+```text
+firmware/controller/link/
+  CMakeLists.txt
+  include/ocb_link/config.h  rxring.h  ready.h  txgate.h  link.h  ocb_link.h
+  rxring.c  ready.c  txgate.c  link.c   (split link.c if it passes ~600 lines: admission.c, tx.c)
+firmware/controller/platform/
+  link_runner.c  link_runner.h
+firmware/common/hw/uart_link.c  include/ocb_hw/uart_link.h
+firmware/tests/
+  link_fixture.h  (wire builder, fake clock, reference sender helpers)
+  test_link_rx.c  test_link_session.c  test_link_gbn.c  test_link_nak.c
+  test_link_tx.c  test_link_ready.c  test_link_fuzz.c
+  link_pure_selftest.sh  link_pure_fixtures/bad/*  link_pure_fixtures/good/*
+  test_link_probe.py
+firmware/tools/check-link-pure.sh  link_probe.py
+```
+
+Updated: `firmware/CMakeLists.txt`, `firmware/controller/CMakeLists.txt`, `firmware/controller/main.c`, `firmware/common/hw/CMakeLists.txt`, `firmware/controller/core/{core.h,modes.c}` (Task 1 only), `firmware/tests/CMakeLists.txt`, `firmware/tests/test_core_edge.c`, `.github/workflows/firmware.yml`, `docs/test-plan.md`, `docs/link-protocol.md`, `firmware/controller/README.md`, `firmware/README.md`, `firmware/common/README.md`, `firmware/THIRD_PARTY_NOTICES.md`. Not touched: `common/proto/**` (consts, vectors), `common/hw/include/ocb_hw/pins.h`, `bridge/**` sources, `_bmad/**`, `_bmad-output/specs/**`.
+
+### Testing requirements
+
+All under ctest `host-tests`, ASan and UBSan on, hand-written expectations, frames built with the real encoder.
+
+| Test (ctest name) | Test-plan ID | Must cover |
+|---|---|---|
+| `test_link_gbn` | **F.1** | Task 5.6 |
+| `test_link_nak` | **F.2** | Task 5.7 |
+| `test_link_ready` | **F.10** | Task 4.4 |
+| `test_link_rx` | **F.14** | Task 3.5 |
+| `test_link_session` | **F.15** | Task 5.8 |
+| `test_link_tx` | **F.16** | Task 6.8 |
+| `test_link_fuzz` | **F.17** | Task 7 |
+| `link_pure_check` | **F.18** | Task 8 |
+| `link_probe_selftest` | **F.19** | Task 10.2 |
+
+CI mapping: "Host tests" runs all of it; the separate step "Controller link is pico-sdk free (AD-2)" runs the gate on the real tree. The ARM builds compile the link and the glue with the strict warnings.
+
+### Hardware checks (owner bench session; Task 13)
+
+**Rig (record in the test-plan environment block):** controller Zero with `controller.uf2` from the build under test (fw-debug for H.4 to H.6 so the debug counters exist; fw-release for H.7 as a cross-check), flashed by BOOTSEL. Powered from a PC USB port **through the Zero's own USB-C** (no console, no bridge firmware, no USB stack running on it: it will not enumerate and that is expected). Peer on the PC: **(a)** a 3.3 V USB-UART adapter (model and chip recorded) or **(b)** the owner's second Zero with 2wiCC_Comms after the loopback check below. Wiring, as in the test plan's hardware safety list: crossed TX/RX (peer TX → controller GP1, controller GP0 → peer RX) and **GND↔GND**, nothing on 5V or 3V3, rewire only with both USB cables unplugged, GND continuity measured first (expect about 0 Ω; unbridged breadboard rails corrupted replies in Story 1.2). Never connect the adapter's VCC or 5 V pin. PC: `link_probe.py` (`pip install pyserial`), OS and version recorded, port name recorded. The Switch 2 is **not** needed.
+
+**Rig check R0 (only for option b):** jumper the bridge Zero's own GP0↔GP1 together (loopback, nothing else connected), run `link_probe.py` self-loopback of all 256 byte values 100×. Expected: every byte returns unchanged. Record PASS, or use the adapter instead.
+
+| ID | Test | Exact steps | Expected | Record |
+|---|---|---|---|---|
+| H.4 | UART bring-up: HELLO, INFO, STATUS cadence, ACK, NAK VERSION, NOT_READY | 1. Power the controller (fw-debug). LED amber 2 Hz as in H.0. 2. `link_probe.py watch --port P` for 5 s before any HELLO: expect STATUS frames (or none yet), no crash. 3. `link_probe.py hello`: INFO arrives. 4. `watch` 30 s: STATUS every 50 ms (statistics printed). 5. `fill --count 10 --stop`: ACKs, `free` = cap−10, `last_seq` correct, then 512 − `free` back to 0 after STOP. 6. Send `SET_STATE` and `START` (probe subcommand `try`): both get `NAK NOT_READY` (the board has no USB profile yet, so `console_ready` must read 0). 7. Power-cycle the controller, send a `fill` **without** HELLO: expect `NAK VERSION`, then HELLO again and it works. | INFO fields: `proto_ver` 1, `fw_ver` = the build's version, `bridge_ver` 000000 (no heartbeat sent), `hid_profile` 2, `queue_cap` 512, `app_timeout_ms` 1000, `report_period_us` 0. STATUS interval median 50 ms, 95th percentile ≤ 60 ms, never closer than 10 ms; `flags` = 0 or 1 in bit 0 only after a heartbeat (none sent: 0), bit 1 = 0, bits 2-7 = 0. `NAK VERSION` seen at step 7. LED still blinking. | INFO bytes, STATUS interval stats (median, p95, min), the NAK lines, LED observation, the probe's output saved as a log next to the test plan row |
+| H.5 | Reliability soak on the real wire | `link_probe.py soak --cycles 40 --events 500 --corrupt 0.02 --drop 0.02 --garbage --seed 1`, then the same with `--seed 2` and with no impairment at all. | Each run ends with the probe's PASS line: every event enqueued exactly once and in order (the probe checks `free` and `last_seq` after each cycle), no deadlock, 20 000 events per run. Debug counters: `dropped_bytes` rises only in the impaired runs; `tx_dropped` stays small and is reported (not a failure by itself); `abort_count` unchanged. Non-impaired run: `dropped_bytes` 0, and the NAK count printed. | the three PASS lines, counters before/after, the probe's retransmission and NAK statistics, run time |
+| H.6 | UART error bits and break are seen and survived | 1. After H.4 step 3 (session open), connect a jumper wire from the controller's GP1 pad to the GND pin **for about 50 ms, then remove it** (GP1 is an input; no 3V3 anywhere). 2. Run `watch`: the debug `dropped_bytes` rises by at least 1. 3. Send `fill --count 5` right after, with no HELLO. 4. Repeat the jumper 10 times with a `fill` after each. 5. (Adapter only, optional) `link_probe.py noise --count 2000` and `send_break` from the adapter while a `soak` runs. | `dropped_bytes` rises on each break; the frame sent after the break is always accepted (ACK, `free` consistent); the session stays open (no `NAK VERSION`); no crash or hang (STATUS keeps coming). This proves the data register's error bits reach the link on silicon. | counter before/after each jumper, the 10 results, whether the optional step ran |
+| H.7 | Power-up TX high-Z and RX pull-down (AD-20, controller-only subset of H.1) | 1. Unplug both USB cables. Leave only GND connected between the boards/adapter and the controller's GP0 wire to a **multimeter** (DC volts, red on the controller's GP0, black on GND); peer's TX not connected to GP1 (GP1 open). 2. Power the controller only: read GP0. 3. Move the meter to GP1 and read it. 4. Now connect the powered, idle peer TX to GP1: read GP0 within 1 s. 5. Disconnect the peer TX (GP1 open again) and read GP0 again. 6. Repeat 4-5 once more. 7. With the peer connected and the session open, jumper GP1 to GND for 50 ms (as H.6) and read GP0 immediately after. | Step 2: GP0 reads about 0 V or a few tenths of a volt floating (high-Z; **not** a solid 3.3 V: a solid 3.3 V means TX is driving before RX saw idle-high, FAIL). Step 3: GP1 about 0 V (internal pull-down holds it low). Step 4: GP0 goes to about 3.3 V (TX enabled after RX idle-high). Step 5: GP0 returns to high-Z/near 0 V only if the gate is released, which this story does not do (2.7 does): record what is seen; high stays high is acceptable here and is **not** a failure of this story. Step 7: record, informational. The firmware must not drive GP0 high in steps 2-3. Also measure with the peer unpowered and wired to GP0: the peer's RX pin must read about 0 V (no back-powering, risk C5). | meter model, each voltage, a note per step, any measured delay in step 4; if a 1 ms idle-high gate is too short or long, the value to change (`OCB_LINK_TX_IDLE_HIGH_US`) |
+
+Safety: the meter in H.7 is the only thing connected to GP0; never connect a meter probe to 3V3 or 5V as a "reference". Pin check before power: GP0/GP1/GND only.
+
+What to record, once, in `docs/test-plan.md`: rows H.4 to H.7 (Result column) and the environment block: peer type and model, `link_probe.py` commit, controller UF2 CI run or local build commit, host OS, port, cable.
+
+### Previous story intelligence (Story 2.4, done; PR #17, merged)
+
+- The pure-library pattern is established: `ocb_strict_warnings` plus `-Wpedantic -Wshadow -Wconversion` per source, a SPDX `MIT` header, the `check-*-pure.sh` gate with a self-test using bad and good fixtures **and the real tree**, a dedicated CI step, and `OCB_CORE_RAMFUNC` on the hot functions. Copy it, do not reinvent it.
+- Review lessons from 2.4 that apply here: (1) the gate scanned too little at first (M1): scan `*.c *.h *.cpp *.cc *.S *.inc` and `CMakeLists.txt`; (2) the helper functions of a hot path also need the RAM macro (M2); (3) rules that the app must mirror have to be written in `docs/link-protocol.md` (M3, M4): do Task 11.2 properly; (4) deferred M5 to M7 are addressed in D8, D11, D13.
+- The core's public struct fields are readable (`core->expected`, `core->published`) but the link must change only through the API; the one new accessor is Task 1.
+- Core behaviour the link relies on: `ocb_core_frame` is called only with `seq == expected` or a sync point, builds ACK / NAK / HELLO kinds (the link builds INFO), `NAK FULL` is the only transport NAK from the core, `PING` is ACKed in every mode, an unassigned app type gets `NAK UNKNOWN_TYPE`, aborts latch and return an EVENT that the caller must send (this story's event ring), `ocb_core_status` gives `free, now_us, last_seq, mode, abort_count, last_event`.
+- Story 2.2: `ocb_rx` (controller side) is the byte splitter: it counts empty, COBS, CRC, range and overlong runs and returns `OCB_RX_FRAME` / `OCB_RX_DROPPED`; the `0x00` that opens a session is an empty run, never an error. Test helpers: `tests/ocb_test.h` (`OCB_CHECK`, `OCB_CHECK_MEM`, static inline), `tests/core_fixture.h` for the harness style; vectors `hello.wire`, `info.wire` and the stream vectors are the ready-made frames.
+- Honest Completion Notes: reviews caught overclaims. Use the exact words "unverified until pushed" and "unverified on hardware".
+- The pin grep prunes only `tests/pin_check_fixtures` and `common/proto/vectors`: any new fixture directory is scanned, so keep GPIO tokens and `PICO_*PIN` macros out of `link_pure_fixtures/`.
+
+### Git intelligence
+
+Recent commits: `291fb55` merge of PR #17 (Story 2.4), `e6396d0` Mark Story 2.4 done, `7b9f060` review follow-ups, `3664f57` the 2.4 implementation, `fb27406` merge of PR #16 (Story 2.2). Pattern: one story branch (this one: `story/2-6-controller-link-uart-reliability-session-and-status`), an implementation commit plus a review follow-up commit, merge by PR; the owner commits and pushes. Files under `firmware/controller/` today: `CMakeLists.txt`, `README.md`, `main.c` (LED blink), `core/`. Stories 2.3 (USB profile) and 2.5 (core 1 loop) are still backlog, so this story must not assume either exists (D2, D3, D11).
+
+### Latest tech information
+
+Read from the pinned pico-sdk 2.3.1 submodule while writing this story (no network needed): `uart_set_irqs_enabled(uart, rx_has_data, tx_needs_data)` enables the RX and RX-timeout interrupts and sets RXIFLSEL to 0 (RX interrupt at 4 characters for a 32-entry FIFO, RX timeout at 32 bit periods with at least one character); the data register `UARTDR` carries FE (bit 8), PE (9), BE (10), OE (11) beside the data byte (BE: only one zero character enters the FIFO on a break, the next one only after the line returns high); `uart_init` sets 8N1 with FIFOs and also the DMA request enables (no channel is claimed, so no DMA runs); `uart_set_baudrate` computes `ibrd/fbrd` from the peripheral clock and returns the achieved rate; `multicore_launch_core1(entry)` starts core 1 at `entry`; the UART IRQ enable (`irq_set_enabled`) acts on the calling core's NVIC. The datasheet statement that the PL011 FIFOs are 32 deep (TX 32×8, RX 32×12) is from memory of the RP2040 datasheet's UART chapter: the dev confirms the number before quoting it in a comment; the design needs only "at least 4". Toolchain pins unchanged (Arm GNU Toolchain 15.2.Rel1, CMake ≥ 3.25, pico-sdk 2.3.1, TinyUSB 0.18.0).
+
+### Project Context Rules
+
+No `project-context.md` exists in the repo. Project rules that apply, from the owner's notes and the repo: all repo files in English (chat in Italian); never commit `_bmad/` or `bmad-*`/`gds-*` skills (only `_bmad-output/`); never edit `~/Documents/org/`; no game screenshots, never reference `ux-designs/*/imports/`; no binaries and no 2wiCC code (NFR-07, ADR-004); do not create temp files in the repo; the dev agent does not commit or push; breadboard GP0/GP1/GND wiring is not rechecked each session unless rewired (but H.7 asks for the GND continuity check once because the rig changes).
+
+### References
+
+- [Source: `_bmad-output/planning-artifacts/epics.md`#Story 2.6, #Story 2.3, #Story 2.4, #Story 2.5, #Story 2.7, #Story 3.1, #Story 3.3, #Epic 2 Notes]
+- [Source: `_bmad-output/planning-artifacts/architecture/architecture-bonooru-2026-11-19/ARCHITECTURE-SPINE.md`#AD-2, AD-3, AD-4, AD-5, AD-6, AD-7, AD-8, AD-11, AD-12, AD-19, AD-20, #Consistency Conventions (Logging), #Structural Seed]
+- [Source: `docs/link-protocol.md`#Framing, #Messages, #Reliability (AD-6), #Session start and versioning (AD-7), #Controller modes (AD-8), #Rules the controller core applies (Story 2.4), #Controller → app reporting (AD-19), #Watchdog]
+- [Source: `docs/test-plan.md`#Hardware safety, #Test environment, #Firmware host tests F.0 to F.13, #Hardware-in-the-loop checks H.0 to H.3, #Watchdog tests, #Spike 0b]
+- [Source: `docs/usb-controller-emulation.md`#Profile interface (AD-12)]
+- [Source: `_bmad-output/specs/spec-bonooru/decisions.md` (ADR-003, ADR-004), `requirements.md` (NFR-02, NFR-05, NFR-07, FR-23), `risk-register.md` (C5, C7)]
+- [Source: `_bmad-output/implementation-artifacts/2-4-controller-core-modes-queue-scheduler-and-safety-mask.md`#Decisions D1 to D22, #Review Findings M1 to M7]
+- [Source: `_bmad-output/implementation-artifacts/2-2-protocol-library-and-conformance-vectors.md`]
+- [Source: `firmware/common/proto/include/ocb_proto/{frame,msgs,consts,err}.h`; `firmware/controller/core/include/ocb_core/{core,queue,ramfunc}.h`; `firmware/tools/check-core-pure.sh`; `firmware/tests/{CMakeLists.txt,core_pure_selftest.sh,core_fixture.h,ocb_test.h}`; `firmware/common/hw/{CMakeLists.txt,include/ocb_hw/pins.h}`; `.github/workflows/firmware.yml`]
+- [Source: pico-sdk 2.3.1, `src/rp2_common/hardware_uart/{uart.c,include/hardware/uart.h}`, `src/rp2040/hardware_regs/include/hardware/regs/uart.h`, `src/rp2_common/pico_multicore/include/pico/multicore.h` (read from the submodule)]
+
+### Open points for the owner (none block the story)
+
+- **D2:** the bench peer. A 3.3 V USB-UART adapter is the safe choice; if the owner has none, the 2wiCC_Comms Zero works only if rig check R0 passes. Say which one will be used before the bench session.
+- **D5/D8:** two clarifications that go beyond the AD text (session gate before the seq check; a mismatched HELLO forces neutral and closes the session). Both are reversible text-and-test changes.
+- **D6/D7:** the CRC NAK uses `got = 0`; the NAK `expected` field is the value after handling. If the owner wants a different convention, it is a doc and test change before Story 3.3 mirrors it.
+- **D15:** the 1 ms idle-high window and "sample the RX pad while UART owns it" are hypotheses to confirm in H.7; the fix, if needed, is one constant or sampling before the function switch.
+- **Risk:** Story 2.5 will replace the bring-up core 1 loop; if its loop period budget (< 50 µs) is tighter than the link's per-pass work, the TX drain and the RX drain may need a bounded per-pass byte count (not decided here; the step already does at most one TX frame per pass).
+
+## Dev Agent Record
+
+### Agent Model Used
+
+Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow, run autonomously (no questions to the owner; open points resolved by research and recorded as D19 to D24).
+
+### Debug Log References
+
+Red checks (Task 12.2), each applied to the source, run, and reverted (the backup copied back; the final full run below is green):
+
+- (a) `#include "pico/stdlib.h"` in `controller/link/txgate.c`: `check-link-pure.sh` exit 1, `.../controller/link/txgate.c:7:#include "pico/stdlib.h"`; host build: `txgate.c:7:10: fatal error: 'pico/stdlib.h' file not found`.
+- (b) `(void)malloc(1);` in `ocb_link_init`: `check-link-pure.sh` exit 1, `.../controller/link/link.c:29:    (void)malloc(1);`.
+- (c) `sleep_` changed to `delay_` in the banned list of `check-link-pure.sh`: `link_pure_check` failed, `FAIL: banned_word_re differs between check-core-pure.sh and check-link-pure.sh`.
+- (d) stale window 65 (`d <= OCB_ACK_WINDOW + 1`): `test_link_gbn` failed, `FAIL: window mid-range: wanted one NAK(0x02, 72, 7), got 1 frame(s), type 0x84` (and `d 65 across the wrap`).
+- (e) once-per-`expected` memory removed: `test_link_nak` failed, `FAIL: CRC then 10 in flight: wanted one NAK(0x01, 1, 0), got 4 frame(s)`, `FAIL: suppressed 0`.
+- (f) session gate only for `seq == expected` (after the seq check): `test_link_session` failed, `FAIL: PING with a wild seq: wanted one NAK(0x10, 201, 200), got 1 frame(s), type 0x84`; `QUEUE_EVENT with a wild seq: ... NAK(0x02, 5, 77)`.
+- (g) ACK before INFO: `test_link_tx` failed, `test_link_tx.c:52: FAIL: priority: frame 2 is 0x84, wanted 0x81`.
+- (h) 10 ms coalescing removed: `test_link_tx` failed, `FAIL: burst: 64 ACK, 64 STATUS (wanted 64, 0)`, `FAIL: ACK alone at +2 ms (2)`.
+- (i) errored byte fed as data: `test_link_rx` failed, `FAIL: flags 0x1 before B: 0 delivered`, `FAIL: flags 0x1: err bytes 0 runs 0`.
+- (j) run not closed on an error byte: `test_link_rx` failed, `FAIL: flags 0x1 mid-frame: 0 delivered`; `test_link_fuzz` failed, `seed 0x12345678 step 1: a valid frame after a 0x00 or an error byte was not delivered (resync)`. The first attempt left the fuzz green (the property only covered frames after a `0x00`); the property was extended (D22) and the check repeated red.
+- (k) stall predicate `<` instead of `<=` (stall at exactly 100 ms): `test_link_ready` failed, `test_link_ready.c:81: FAIL: 100 ms without an IN report: predicate 0 STATUS bit1 0 NOT_READY gate 0, wanted 1`.
+- (l) no abort on a bus reset: `test_link_ready` failed, `FAIL: down 2 in mode 0: 0 frames, wanted one EVENT USB_SUSPENDED`, `core not aborted`.
+- (m) mismatched HELLO only advances `expected` (no synthetic STOP): `test_link_session` failed, `test_link_session.c:50: FAIL: mismatched HELLO: mode 1 aborted 0 neutral 0 queue 3`.
+- (n) `crc16` broken in `link_probe.py` (`crc ^= (b ^ 1) << 8`): `link_probe_selftest` failed, `FAIL: test_crc16 ... AssertionError: b'E\xb0' != b'\xb1)' : check`, `FAIL: test_frames`.
+- (o) link accepts out-of-window seqs (`d == 0u || d > 64u`): `test_link_fuzz` failed, `lossy seed 0xc0ffee00 cap 512 loss 100: deadlock (base 3000 of 3000, enqueued 2919)` (events lost or reordered) in every impaired run.
+
+Other notes: the first fuzz run flagged "two transport NAKs for one value of expected" where a NAK for the old `expected` was drained after `expected` moved in the same step; a harness accounting issue, fixed in the test (D22), not in the link. A lossy run with a seed XOR giving 0 stuck the xorshift generator at 0 (found with `OCB_FUZZ_SEED=3`); fixed in the test. `tests/test_link_probe.py` sets `sys.dont_write_bytecode` so no `__pycache__` appears in `firmware/tools/`.
+
+### Completion Notes List
+
+- Commands (from `firmware/`, Story 2.1 setup, `OCB_ARM_TOOLCHAIN` and `OCB_PICOTOOL_DIR` exported): `cmake --preset host-tests && cmake --build --preset host-tests && ctest --preset host-tests` → `100% tests passed out of 23` (the 14 earlier tests plus `test_link_rx`, `test_link_session`, `test_link_gbn`, `test_link_nak`, `test_link_tx`, `test_link_ready`, `test_link_fuzz`, `link_pure_check`, `link_probe_selftest`); host build 0 warnings. `cmake --preset fw-release && cmake --build --preset fw-release --clean-first` and the same for `fw-debug`: exit 0, 0 warnings, `bridge.uf2` and `controller.uf2` produced in both. From the repo root: `check-pins.sh`, `check-proto-pure.sh`, `check-proto-version.sh`, `check-core-pure.sh`, `check-link-pure.sh` all ok; `shellcheck` clean on `check-link-pure.sh` and `link_pure_selftest.sh`; `actionlint` clean on `firmware.yml`.
+- ASan and UBSan are active in host-tests on the local compiler (Apple clang 21, macOS arm64): `-fsanitize=address,undefined -fno-sanitize-recover=undefined` on every compile line of `build/host-tests/build.ninja`. LeakSanitizer is Linux only (CI).
+- Implemented: `ocb_core_advance_expected` (Task 1, F.12 extended); `ocb_link` (rxring, ready + USB mailbox, txgate, link admission/session/go-back-N/NAK budget, TX slots/STATUS/INFO) as pure C99 with the strict warnings and `OCB_CORE_RAMFUNC` on hot functions; `ocb_hw/uart_link` (UART0 at `OCB_LINK_BAUD`, IRQ RX draining the full data-register values, RX pull-down, TX high-Z until enabled, 128-byte TX ring drained without waiting, no DMA); `controller/platform/link_runner.c` and the core 1 bring-up loop in `main.c` (LED blink on core 0 unchanged); `tools/link_probe.py` with its self-test; the purity gate with fixtures, drift check, ctest and CI step; docs.
+- Sizes (fw-release, informational for Story 2.5): `ocb_link` objects text link.c 1636 B, tx.c 1000 B, ready.c 288 B, rxring.c 252 B, txgate.c 128 B (no data, no bss); `controller.elf` text 20544 B, bss 11416 B, of which `s_queue` 6144 B (512 × 12), `s_link` 1800 B (RX ring 1 KB, splitter buffer 262 B, frame scratch), TX ring 128 B; `core1_stack` is the SDK default 2 KB. Estimated worst-case core 1 stack of one step is under 1 KB (a 263-byte frame buffer plus the codec's 260-byte raw buffer); Story 2.5 should measure it.
+- Wire unchanged (D17): `common/proto/**` (consts, vectors) not edited; no new message, constant or `PROTO_VERSION` bump. `docs/link-protocol.md` gains "Rules the controller link applies (Story 2.6)" (text only, every existing sentence kept); `docs/test-plan.md` F.1, F.2, F.10 rewritten, F.14 to F.19 added, H.4 to H.7 added with an empty Result column, and the "Bench rig for the controller link" block.
+- CI: unverified until pushed (the new step "Controller link is pico-sdk free (AD-2)" runs right after the core step; `link_probe_selftest` needs only `python3`, present on the runner).
+- Hardware: H.4, H.5, H.6 and H.7 are unverified on hardware (Task 13, owner's bench session; no board was used by the dev agent). AC1, AC3, AC4 and AC5 are proven on the host for their logic only; the silicon parts (IRQ and FIFO drain, error bits, pad pull-down, high-Z TX, the 1 ms idle-high value, reading the RX pad while the UART owns it) stay open until Task 13.
+- Risk register row C5 (back-powering) stays `open` until H.1 with the real bridge; H.7 is the first measurement.
+- Deviations from the task text, all recorded as decisions: the run is closed by resetting the splitter instead of feeding a literal `0x00`, and a ring overflow is an in-stream marker (D19); the core-1 TX assertion is in the controller glue, TX drained from the step (D21); the fuzz resync property also covers error bytes (D22); `link_probe.py` has `loopback` and `fill --no-hello` (D23); `tx_dropped` counts INFO/ACK discarded by the closed gate (D24). The `ocb_link_init` signature takes the mailbox and `now_us` in addition to the suggested arguments.
+
+### File List
+
+Added:
+- `firmware/controller/link/CMakeLists.txt`
+- `firmware/controller/link/include/ocb_link/config.h`
+- `firmware/controller/link/include/ocb_link/internal.h`
+- `firmware/controller/link/include/ocb_link/link.h`
+- `firmware/controller/link/include/ocb_link/ocb_link.h`
+- `firmware/controller/link/include/ocb_link/ready.h`
+- `firmware/controller/link/include/ocb_link/rxring.h`
+- `firmware/controller/link/include/ocb_link/txgate.h`
+- `firmware/controller/link/link.c`
+- `firmware/controller/link/ready.c`
+- `firmware/controller/link/rxring.c`
+- `firmware/controller/link/tx.c`
+- `firmware/controller/link/txgate.c`
+- `firmware/controller/platform/link_runner.c`
+- `firmware/controller/platform/link_runner.h`
+- `firmware/common/hw/uart_link.c`
+- `firmware/common/hw/include/ocb_hw/uart_link.h`
+- `firmware/tests/link_fixture.h`
+- `firmware/tests/test_link_rx.c`
+- `firmware/tests/test_link_session.c`
+- `firmware/tests/test_link_gbn.c`
+- `firmware/tests/test_link_nak.c`
+- `firmware/tests/test_link_tx.c`
+- `firmware/tests/test_link_ready.c`
+- `firmware/tests/test_link_fuzz.c`
+- `firmware/tests/test_link_probe.py`
+- `firmware/tests/link_pure_selftest.sh`
+- `firmware/tests/link_pure_fixtures/bad/` (`allocates.c`, `includes_irq.c`, `includes_sdk.c`, `includes_stdio.c`, `includes_stdlib.c`, `includes_uart.c`, `includes_uart_link.c`, `multicore.c`, `ram_section.c`, `reads_clock.c`, `cmake_links_uart/CMakeLists.txt`, `ext_cpp/sdk.cpp`)
+- `firmware/tests/link_pure_fixtures/good/` (`allowed.c`, `CMakeLists.txt`)
+- `firmware/tools/check-link-pure.sh`
+- `firmware/tools/link_probe.py`
+
+Modified:
+- `.github/workflows/firmware.yml`
+- `docs/link-protocol.md`
+- `docs/test-plan.md`
+- `firmware/CMakeLists.txt`
+- `firmware/README.md`
+- `firmware/THIRD_PARTY_NOTICES.md`
+- `firmware/common/README.md`
+- `firmware/common/hw/CMakeLists.txt`
+- `firmware/controller/CMakeLists.txt`
+- `firmware/controller/README.md`
+- `firmware/controller/core/include/ocb_core/core.h`
+- `firmware/controller/core/modes.c`
+- `firmware/controller/main.c`
+- `firmware/tests/CMakeLists.txt`
+- `firmware/tests/test_core_edge.c`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `_bmad-output/implementation-artifacts/2-6-controller-link-uart-reliability-session-and-status.md` (this file)
+
+## Change Log
+
+- 2026-11-22: Story 2.6 implemented by the dev agent (Tasks 1 to 12): `ocb_link` pure link layer with purity gate and CI step, `ocb_core_advance_expected`, `ocb_hw/uart_link`, core 1 link runner and bring-up `main.c`, host tests F.1, F.2, F.10, F.14 to F.19 (23 ctest tests green under ASan/UBSan), `link_probe.py` bench sender, docs. Decisions D19 to D24 added. Task 13 (bench H.4 to H.7) open for the owner; status `review`.

@@ -1,9 +1,11 @@
-# controller firmware: at this stage it only blinks the onboard LED (Story 2.1).
-add_executable(controller main.c)
-ocb_strict_warnings(main.c)
-# ocb_core is linked so the ARM build compiles it with the strict warnings;
-# main.c does not call it yet (Story 2.5 does).
-target_link_libraries(controller PRIVATE ocb_hw ocb_proto ocb_core ocb_version)
+# controller firmware: the LED blink of Story 2.1 on core 0 and, on core 1,
+# the board link of Story 2.6 (platform/link_runner.c: ocb_hw UART glue,
+# ocb_link, ocb_core).
+add_executable(controller main.c platform/link_runner.c)
+target_include_directories(controller PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/platform")
+ocb_strict_warnings(main.c platform/link_runner.c)
+set_property(SOURCE platform/link_runner.c APPEND PROPERTY COMPILE_OPTIONS -Wpedantic -Wshadow -Wconversion)
+target_link_libraries(controller PRIVATE ocb_hw ocb_proto ocb_core ocb_link ocb_version pico_multicore)
 
 # No stdio: keeps the UART pins untouched and TinyUSB unlinked (AC2).
 pico_enable_stdio_uart(controller 0)

@@ -136,4 +136,10 @@ OCB_CORE_RAMFUNC void ocb_core_abort(ocb_core *core, ocb_core_abort_cause cause,
 
 void ocb_core_status(const ocb_core *core, uint64_t now_us, ocb_core_status_view *v);
 
+/* Sets expected = seq + 1 and changes nothing else (story 2.6 D5). For the
+ * link layer only, after it has refused a frame itself with a semantic NAK
+ * (NAK VERSION before the session is open): the core owns `expected` but
+ * never saw that frame. */
+OCB_CORE_RAMFUNC void ocb_core_advance_expected(ocb_core *core, uint8_t seq);
+
 #endif /* OCB_CORE_CORE_H */

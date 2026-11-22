@@ -3,8 +3,8 @@
 Single CMake project on pico-sdk + TinyUSB with two targets, `bridge` and `controller`,
 both for the Waveshare RP2040-Zero. Shared code lives in `common/`.
 
-At this stage (Story 2.1) both targets only blink the onboard RGB LED: `bridge` blue at
-1 Hz, `controller` amber at 2 Hz.
+Both targets blink the onboard RGB LED (Story 2.1): `bridge` blue at 1 Hz, `controller`
+amber at 2 Hz. The controller also runs the board link on core 1 (Story 2.6).
 
 ## Pinned toolchain (AD-1)
 
@@ -83,6 +83,17 @@ pin number anywhere else in the firmware sources; use the `OCB_PIN_*` names.
   same standard headers, `ocb_proto/*` and `ocb_core/*`, names no heap, I/O, clock, sleep or
   multicore identifier, and its `CMakeLists.txt` links no `pico_*`, `hardware_*` or `ocb_hw`
   library (CI step; ctest `core_pure_check` with a self-test).
+- `tools/check-link-pure.sh`: the same rules for `controller/link/` (`ocb_link`), which may also
+  include `ocb_link/*`; its banned identifier list must equal the core gate's (CI step; ctest
+  `link_pure_check` with a self-test and the drift check).
+
+## Bench sender (Story 2.6)
+
+`tools/link_probe.py` speaks the binary link protocol over a serial port (a 3.3 V USB-UART
+adapter on the controller's UART pins): `hello`, `watch`, `fill`, `soak`, `noise`, `try`,
+`loopback`. Python 3 plus `pyserial` (`pip install pyserial`, needed only to open a port). Its
+codec is written from `docs/link-protocol.md` and checked against the shared vectors by ctest
+`link_probe_selftest`. Bench procedure: `docs/test-plan.md`, H.4 to H.7.
 
 ## CI
 

@@ -21,6 +21,7 @@ Third-party material in `firmware/` and in the firmware binaries
   - Used: initialised and pinned, not linked until Stories 2.3 / 3.1. Licence text: MIT, below.
 - ocb_proto: COBS and CRC-16 implemented from the published descriptions, no third-party code (references in the source headers).
 - ocb_core: written from the project's own architecture decisions (AD-8, AD-9), no third-party code.
+- ocb_link, uart_link, link_probe (Story 2.6): written from `docs/link-protocol.md` and the pico-sdk API, no third-party code.
 - No 2wiCC code in this tree (NFR-07, ADR-004).
 
 ## BSD-3-Clause licence text (pico-sdk and pico-examples)
