@@ -625,6 +625,69 @@ Fixed in `f8900f1`:
 - (b) `tests/fuzz/fuzz_p2.c` (libFuzzer target) is not run in CI (Apple clang lacks libFuzzer). The deterministic `test_p2_fuzz` (F.28) under ASan and UBSan covers CI.
 - (c) A reply-queue overflow is counted in `cnt.queue_full` but is not surfaced in the STATUS debug log.
 
+### Bench H.15 attempt 1 (FAILED) and the fix (D34), 2026-11-22
+
+**What happened** (story lead's bench run: fw-debug of the branch, top USB-C port, Wired Communication ON). `link_probe.py p2check` printed PASS: `console_ready` 1 after 24 s, `report_period_us` 8000, no NAK VERSION. But no controller icon appeared on the console.
+
+The P2 log held 77 records: restart bus-reset, restart mount, report 00, report 00, usb 80 05, report 00, usb 80 01, usb 80 02, sub 03, HANDSHAKE, usb 80 04, sub 02, sub 08, sub 10, sub 10, sub 01, REFUSED 01. Then `sub 01, REFUSED 01` repeated about 30 times until the log was full. This is the D26 risk: the console retries the refused pairing request (subcommand 01) forever and never finishes its init.
+
+**Research (read-only, clean-room; no GPL source, no 2wiCC).** Two new data sources, used for values only:
+- **S12:** mzyy94's `bypass_procon_log.txt`, the capture behind S7 (gist 60ae253a…). It holds every output report a real Switch 1 sent to a real wired Pro Controller during init, with the controller's real replies.
+  - Pairing: the console sends `01` with type `04`, then its address and name (`04 18 53 95 d6 03 04 00 04 3c "Nintendo Switch" … 68 00 ac 90 11 3f 59 00`). The real reply is `21 .. 81 01 03`.
+  - MCU: the console sends `21 21 00` (MCU to standby). The real reply is `A0 21` and 34 bytes, `01 00 FF 00 03 00 05 01`, 25 × `00`, `5C`.
+  - The capture's `03` argument is `30`; mzyy94's own summary table says `48`, which is wrong.
+- **S13:** riking's comment in dekuNukem's issue #7. A Joy-Con answers `01` with `81 01 0C` (and `0B`), the same shape: ack `81`, id `01`, one status byte.
+- **S3** (dekuNukem subcommand notes) documents the pairing types 01/02/03 and "ACK xA0 x20 and 34 bytes" for `21`. S12 shows the real reply echoes id `21`; S12 is followed.
+- **Not read:** the code of nxbt, GP2040-CE and joycontrol. The session's permission classifier refused those reads, consistent with D2.
+
+**D34 (new; supersedes D26's NACK for `01` and `21`).** The console's pairing request and MCU configuration now get the real controller's replies. Neither has any effect.
+- `01` (any argument) → ack `81`, id `01`, data `03`. Nothing is paired or stored; the host address and name are discarded.
+- `21` (any argument) → ack `A0`, id `21`, the 34-byte standby state report above. There is no MCU; nothing is configured.
+- Both are counted as handled, not refused.
+- C7 still holds. Nothing writes flash or the emulated SPI (the SPI image has no writable state). The firmware-update path stays refused: SPI write (`80 11 01`), SPI erase (`80 12 01`), `22 02` (NACK), output report `0x03`, feature reports `0x70`–`0x74`. Also still refused with a NACK: `06` (HCI), `07` (reset pairing), `20` (MCU reset); none of them appears in S12's init.
+- Every other id S12's init sends gets the real controller's ack and id:
+
+| Request | Reply |
+|---|---|
+| `80 05`, `80 04` | none |
+| `80 01`, `80 02` | `81 01`, `81 02` |
+| `03 30` | `80 03` |
+| `08` | `80 08` |
+| `02` | `82 02` |
+| `04` | `83 04` |
+| `10` | `90 10` + the echo |
+| `40` | `80 40` |
+| `48` | `80 48` |
+| `30` | `80 30` |
+| `38`, `22 00`, `22 01` | `80` (no change) |
+
+- A replay of the whole S12 init (28 output reports) is now a host test. It checks each reply's ack and id, the data for `01`, `21` and the SPI echoes, zero refusals, one handshake and the stream on.
+
+**Debug log, for the next bench run.**
+- New kind `0x08`: the first argument of subcommands `01`, `03`, `21` and `22`. A profile log can now hold 3 records per report (`OCB_P2_LOG_MAX`).
+- New kind `0x09`: repeat. In the link's window, a record equal to the two before it, or continuing a two-record cycle (A B A B) from the second B, is not stored. One repeat record counts them, updated in place and saturating at 255; `p2_log_total` counts it once. The H.15 loop now shows as `sub 01, REFUSED 01, sub 01, (repeated 57 more)`.
+- `link_probe.py`'s decoder and tracker know both kinds; the tracker refreshes an in-place repeat count.
+- `docs/link-protocol.md` documents them. `test_docs_constants.py` is unaffected: the STATUS v3 sizes did not change.
+
+**Tooling.** `p2_probe.py enum` and `handshake` print "check for a macOS 'Allow accessory' prompt, or replug" when 057E:2009 cannot be found or opened. `handshake` now also sends S12's `01` pairing request and `21 21 00`, and checks the D34 replies byte for byte.
+
+**Red proofs** (real output, each reverted):
+- `01` refused again (the attempt-1 firmware): `test_p2_handshake.c:130: FAIL: S12 step 14 (010e…5900): result 1`, then `…:142: FAIL: S12 step 14: reply 21 00 01, want 21 .. 81 01`.
+- `21` refused again: `S12 step 25 (010ec218037200014040212100): result 1`, `reply 21 00 21, want 21 .. a0 21`.
+- Repeat compression off: `test_link_dbglog.c:95: FAIL: pair loop: n 16 total 62`.
+- The old expectations failed first against the new code too (`test_p2_subcmd.c:261: FAIL: subcommand 01 must be refused (got 0)`, `test_p2_fuzz.c:96: FAIL: subcommand 01: 0`). They were updated: `01` and `21` are now expected to be answered, and the fuzz test checks that they are never refused.
+
+**Verification** (real output, fresh build directories):
+- host-tests: 0 warnings; ctest `100% tests passed out of 34`.
+- fw-release: build=0, warnings=0. fw-debug: build=0, warnings=0.
+- `check-pins: ok`; `check-proto-version: ok (proto_version 01, 7 files)`; `check-proto-pure: ok (14 files)`; `check-core-pure: ok (11 files)`; `check-link-pure: ok (18 files)`; `check-p2-pure: ok (9 files)`.
+- `check-release-nolog: ok, no debug-log symbol in build/fw-release/controller/controller.elf`; `--expect-present: ok, debug build carries the debug log (7 symbols)`.
+- Release ELF: 39096 text / 15268 bss.
+
+**Risk register note (not edited; evidence first, D22).** C7 holds by design and by test (F.26, F.28), but is not yet observed on the console; R13 is untested. Attempt 1 adds one fact for the register's next update: the Switch 2 does not tolerate a refused pairing request during its wired init. Neither cell is marked passed.
+
+**Next bench step.** H.15 attempt 2 with this build, the same command. The owner's glance at the controller icon stays part of the pass criterion, because `p2check` alone printed PASS in attempt 1.
+
 ### File List
 
 New:
@@ -680,3 +743,4 @@ Modified:
 - 2026-11-22: Story 2.3 created (ready-for-dev) by the create-story workflow, run autonomously. Decisions D1 to D25 recorded; sources S1 to S11 cited; `fw-debug-bench` superseded (D15); issues #20 and #21 left open by design (D13, D16).
 - 2026-11-22: Implementation (dev-story): `ocb_p2` profile, TinyUSB glue, P2 debug log and STATUS v3 tail, measured report period through the mailbox, purity and release-no-log gates, `p2_probe.py`, `p2check` / `p2watch`, 9 new ctest tests (F.24 to F.32; 34 in all, green), docs; `fw-debug-bench` removed; decisions D26 to D33 added. Status review; hardware ACs pending the owner's bench (Task 11).
 - 2026-11-22: Review follow-ups: 7 MINOR fixes (no effect for dropped requests plus a test, median fed by 0x30 completions only, notices and docs consistency, fuzz note, MAC comment); 34 ctest tests green.
+- 2026-11-22: Bench H.15 attempt 1 FAILED (the console repeated the refused pairing request 01 forever). D34: `01` and `21` get the real controller's replies from the S12 capture and change nothing; the log records arguments and counts repeats; `p2_probe.py` checks the new replies and hints at the macOS accessory prompt. 34 ctest tests green. H.15 attempt 2 pending.

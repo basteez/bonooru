@@ -17,7 +17,9 @@
  * count. ready() is true once the host asked for the input stream (USB
  * command 0x80 0x04, or subcommand 0x03 with argument 0x30, whichever comes
  * first) and false again after 0x80 0x05 or a restart. Anything that writes,
- * erases, pairs, resets or updates is refused and changes nothing (C7, D9).
+ * erases, resets or updates is refused and changes nothing (C7, D9). The
+ * console's Bluetooth pairing request (0x01) and MCU configuration (0x21)
+ * get the replies a real controller gives, and also change nothing (D34).
  *
  * Every pointer argument but `log` must be non-NULL unless stated. One
  * owner per instance (core 0 on the board).
@@ -47,11 +49,13 @@ typedef enum {
     OCB_P2_RX_QUEUE_FULL    /* a reply was due but the queue was full: dropped */
 } ocb_p2_rx;
 
-/* Up to two debug-log records per OUT report (kind, id), OCB_P2_LOG_*. */
+/* Up to three debug-log records per OUT report (kind, id), OCB_P2_LOG_*:
+ * e.g. subcommand, its argument, then a refusal or the handshake. */
+#define OCB_P2_LOG_MAX 3u
 typedef struct {
     uint8_t n;
-    uint8_t kind[2];
-    uint8_t id[2];
+    uint8_t kind[OCB_P2_LOG_MAX];
+    uint8_t id[OCB_P2_LOG_MAX];
 } ocb_p2_log;
 
 /* Counters, u32, wrap (monotonic between wraps). */

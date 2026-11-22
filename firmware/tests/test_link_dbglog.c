@@ -77,6 +77,48 @@ static void test_window(void)
     OCB_CHECK(w.total == 0u, "total wraps");
 }
 
+/* Story 2.3 (after bench H.15 attempt 1): repeated records are counted, not
+ * stored, so a console that loops cannot fill the window. */
+static void test_repeats(void)
+{
+    static ocb_dbglog_window w;
+    ocb_dbglog_window_init(&w);
+    /* The H.15 loop: sub 01, REFUSED 01, 30 times. */
+    ocb_dbglog_window_add(&w, rec(0x02, 0x10));
+    for (int i = 0; i < 30; i++) {
+        ocb_dbglog_window_add(&w, rec(0x02, 0x01));
+        ocb_dbglog_window_add(&w, rec(0x04, 0x01));
+    }
+    ocb_dbglog_window_add(&w, rec(0x02, 0x30));
+    /* sub 10, sub 01, REFUSED 01, sub 01, REPEAT 57, sub 30. */
+    static const uint16_t want[6] = {0x0210, 0x0201, 0x0401, 0x0201, 0x0939, 0x0230};
+    OCB_CHECK(w.n == 6u && w.total == 6u, "pair loop: n %u total %u", w.n, w.total);
+    for (unsigned i = 0; i < 6u && i < w.n; i++) {
+        OCB_CHECK(w.rec[(w.start + i) % 16u] == want[i], "pair loop %u: %04x want %04x", i,
+                  w.rec[(w.start + i) % 16u], want[i]);
+    }
+    /* A A A A: A, A, REPEAT 2. */
+    ocb_dbglog_window_init(&w);
+    for (int i = 0; i < 4; i++) {
+        ocb_dbglog_window_add(&w, rec(0x01, 0x02));
+    }
+    OCB_CHECK(w.n == 3u && w.rec[2] == 0x0902, "same record: n %u last %04x", w.n, w.rec[2]);
+    /* The handshake 80 02, 80 03, 80 02 is stored whole (no cycle yet). */
+    ocb_dbglog_window_init(&w);
+    ocb_dbglog_window_add(&w, rec(0x01, 0x01));
+    ocb_dbglog_window_add(&w, rec(0x01, 0x02));
+    ocb_dbglog_window_add(&w, rec(0x01, 0x03));
+    ocb_dbglog_window_add(&w, rec(0x01, 0x02));
+    ocb_dbglog_window_add(&w, rec(0x01, 0x04));
+    OCB_CHECK(w.n == 5u && w.total == 5u, "handshake stored whole: n %u", w.n);
+    /* The count saturates at 255. */
+    ocb_dbglog_window_init(&w);
+    for (int i = 0; i < 400; i++) {
+        ocb_dbglog_window_add(&w, rec(0x02, 0x01));
+    }
+    OCB_CHECK(w.n == 3u && w.rec[2] == 0x09FF, "saturation: %04x", w.rec[2]);
+}
+
 static bool get_status(lh *h, ocb_msg_status *m)
 {
     static lh_out o[16];
@@ -211,6 +253,7 @@ int main(void)
 {
     test_ring();
     test_window();
+    test_repeats();
     test_status_tail();
     test_report_period();
     const int f = ocb_test_failures();

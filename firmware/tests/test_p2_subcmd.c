@@ -246,11 +246,9 @@ int main(void)
             {0x11, {0x00, 0x80, 0x00, 0x00, 0x01, 0x00}, 6, 0x80, 0x01, 1}, /* SPI write at 0x8000: write protected */
             {0x11, {0x3D, 0x60, 0x00, 0x00, 0x01, 0xAA}, 6, 0x80, 0x01, 1}, /* SPI write over the calibration */
             {0x12, {0x00, 0x60, 0x00, 0x00, 0, 0}, 4, 0x80, 0x01, 1},       /* sector erase: write protected (S3) */
-            {0x01, {0x01, 0x16, 0x30, 0xAA, 0x82, 0xBB}, 6, 0x00, 0, 0},     /* BT manual pairing */
             {0x07, {0}, 0, 0x00, 0, 0},                                      /* reset pairing */
             {0x06, {0x02}, 1, 0x00, 0, 0},                                   /* HCI: reboot to pair */
             {0x20, {0}, 0, 0x00, 0, 0},                                      /* MCU reset */
-            {0x21, {0x21, 0x00, 0x01}, 3, 0x00, 0, 0},                       /* MCU config (firmware data) */
             {0x22, {0x02}, 1, 0x00, 0, 0},                                   /* MCU resume for update */
         };
         for (size_t k = 0; k < sizeof refused / sizeof refused[0]; k++) {
@@ -259,7 +257,8 @@ int main(void)
             ocb_p2_log log;
             const ocb_p2_rx r = fx_sub(&p, refused[k].id, refused[k].args, refused[k].nargs, &log);
             OCB_CHECK(r == OCB_P2_RX_REFUSED, "subcommand %02x must be refused (got %d)", refused[k].id, (int)r);
-            OCB_CHECK(log.n == 2u && log.kind[0] == 0x02 && log.kind[1] == 0x04 && log.id[1] == refused[k].id,
+            OCB_CHECK(log.n >= 2u && log.kind[0] == 0x02 && log.kind[log.n - 1u] == 0x04 &&
+                          log.id[log.n - 1u] == refused[k].id,
                       "refusal log of %02x", refused[k].id);
             const size_t n = fx_in(&p, got);
             uint8_t want[64] = {0};
@@ -303,6 +302,65 @@ int main(void)
                 OCB_CHECK(log.n == 2u && log.kind[0] == 0x03 && log.id[0] == f && log.kind[1] == 0x04,
                           "log of feature %02x", f);
                 check_unchanged(&before, &p, "feature report");
+            }
+        }
+        /* D34: the console's pairing request and MCU configuration get the
+         * real controller's replies (S12 capture), are not refusals, and
+         * change nothing: no pairing stored, no MCU configured. */
+        {
+            /* S12: the Switch 1's request, 01 04 + host address and name. */
+            static const uint8_t pair_args[39] = {
+                0x04, 0x18, 0x53, 0x95, 0xd6, 0x03, 0x04, 0x00, 0x04, 0x3c, 0x4e, 0x69, 0x6e,
+                0x74, 0x65, 0x6e, 0x64, 0x6f, 0x20, 0x53, 0x77, 0x69, 0x74, 0x63, 0x68, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x68, 0x00, 0xac, 0x90, 0x11, 0x3f, 0x59, 0x00, 0x00};
+            static const uint8_t pair_reply[1] = {0x03};           /* S12: 81 01 03 */
+            static const uint8_t mcu_reply[34] = {0x01, 0x00, 0xFF, 0x00, 0x03, 0x00, 0x05, 0x01, 0, 0, 0, 0,
+                                                  0,    0,    0,    0,    0,    0,    0,    0,    0, 0, 0, 0,
+                                                  0,    0,    0,    0,    0,    0,    0,    0,    0, 0x5C};
+            const uint8_t mcu_args[2] = {0x21, 0x00};             /* S12: 21 21 00 */
+            const uint8_t mcu_other[3] = {0x21, 0x04, 0x01};      /* any other configuration */
+            for (int k = 0; k < 5; k++) {
+                ocb_p2 before;
+                memcpy(&before, &p, sizeof before);
+                ocb_p2_log log;
+                if (k < 2) {
+                    OCB_CHECK(fx_sub(&p, 0x01, pair_args, k == 0 ? sizeof pair_args : 1u, &log) == OCB_P2_RX_HANDLED,
+                              "01 pairing request answered");
+                    OCB_CHECK(log.n == 2u && log.kind[1] == 0x08 && log.id[1] == 0x04, "log of 01: sub, argument 04");
+                } else if (k < 4) {
+                    OCB_CHECK(fx_sub(&p, 0x21, k == 2 ? mcu_args : mcu_other, k == 2 ? 2u : 3u, &log) ==
+                                  OCB_P2_RX_HANDLED,
+                              "21 MCU config answered");
+                    OCB_CHECK(log.n == 2u && log.kind[1] == 0x08 && log.id[1] == 0x21, "log of 21: sub, argument 21");
+                } else {
+                    /* fx_sub pads to 64 bytes: the argument byte reads 00. */
+                    OCB_CHECK(fx_sub(&p, 0x01, NULL, 0, &log) == OCB_P2_RX_HANDLED && log.n == 2u &&
+                                  log.id[1] == 0x00,
+                              "01 without arguments answered");
+                }
+                const size_t n = fx_in(&p, got);
+                uint8_t want[64] = {0};
+                want[0] = 0x21;
+                want[1] = got[1];
+                memcpy(&want[2], k_hdr, sizeof k_hdr);
+                if (k == 2 || k == 3) {
+                    want[13] = 0xA0;
+                    want[14] = 0x21;
+                    memcpy(&want[15], mcu_reply, sizeof mcu_reply);
+                } else {
+                    want[13] = 0x81;
+                    want[14] = 0x01;
+                    want[15] = pair_reply[0];
+                }
+                OCB_CHECK_MEM(got, n, want, sizeof want, "D34 reply");
+                ocb_p2 a;
+                memcpy(&a, &before, sizeof a);
+                a.cnt = p.cnt;
+                a.timer = p.timer;
+                memcpy(a.q, p.q, sizeof a.q);
+                a.q_head = p.q_head;
+                OCB_CHECK(memcmp(&a, &p, sizeof a) == 0, "D34 request %d changed the profile state", k);
+                OCB_CHECK(p.cnt.refusals == before.cnt.refusals, "D34 request %d counted as a refusal", k);
             }
         }
         /* Every SPI region reads back the same after all refusals. */

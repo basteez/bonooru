@@ -56,6 +56,105 @@ static void full_sequence(ocb_p2 *p, int round)
     OCB_CHECK(fx_in(p, out) == 64u && out[0] == 0x30, "round %d: 0x30 stream after 80 04", round);
 }
 
+/* S12: the whole init a real Switch 1 sent to a real wired Pro Controller
+ * (mzyy94's bypass_procon_log.txt), replayed in order. Each request must
+ * get the reply the real controller gave (ack and id; for 01, 03 and 21
+ * the data too), no request may be refused (story 2.3 D34: a refusal made
+ * the Switch 2 repeat 0x01 forever), and the stream must be on at the end.
+ * Output reports and expected replies are copied from the capture. */
+typedef struct {
+    const char *out;   /* the output report, hex, zero padded to 64 */
+    uint8_t ack;       /* expected [13] of the 0x21 reply, or 0 for none */
+    uint8_t usb;       /* expected [1] of a 0x81 reply, or 0 */
+    const char *data;  /* expected reply bytes from [15], hex, or NULL */
+} s12_step;
+
+static size_t hex_bytes(const char *h, uint8_t *out, size_t cap)
+{
+    size_t n = 0;
+    while (h[0] != 0 && h[1] != 0 && n < cap) {
+        unsigned v = 0;
+        for (int k = 0; k < 2; k++) {
+            const char c = h[k];
+            v = (v << 4) | (unsigned)(c >= 'a' ? c - 'a' + 10 : c >= 'A' ? c - 'A' + 10 : c - '0');
+        }
+        out[n++] = (uint8_t)v;
+        h += 2;
+    }
+    return n;
+}
+
+static void test_s12_replay(void)
+{
+    static const s12_step steps[] = {
+        {"0000", 0, 0, NULL},
+        {"0000", 0, 0, NULL},
+        {"8005", 0, 0, NULL},
+        {"0000", 0, 0, NULL},
+        {"8001", 0, 0x01, NULL},
+        {"8002", 0, 0x02, NULL},
+        {"01000000000000000000033000", 0x80, 0, NULL},
+        {"8004", 0, 0, NULL},
+        {"01080000000000000000480000", 0x80, 0, NULL},
+        {"01090000000000000000020000", 0x82, 0, NULL},
+        {"010a0000000000000000020000", 0x82, 0, NULL},
+        {"010b0000000000000000080000", 0x80, 0, NULL},
+        {"010c00000000000000001000600000100000", 0x90, 0, "0060000010"},
+        {"010d000000000000000010506000000d0000", 0x90, 0, "506000000d"},
+        {"010e00000000000000000104185395d6030400043c4e696e74656e646f2053776974636800000000006800ac90113f5900",
+         0x81, 0, "03"},
+        {"010f0001404000014040033000", 0x80, 0, NULL},
+        {"01000000000000000000040000", 0x83, 0, NULL},
+        {"01010000000000000000108060000018", 0x90, 0, "8060000018"},
+        {"01020000000000000000109860000012", 0x90, 0, "9860000012"},
+        {"01030001404000014040101080000018", 0x90, 0, "1080000018"},
+        {"01040000000000000000103d60000019", 0x90, 0, "3d60000019"},
+        {"01050000000000000000102880000018", 0x90, 0, "2880000018"},
+        {"01060000000000000000400100", 0x80, 0, NULL},
+        {"10070001404000014040", 0, 0, NULL},
+        {"010d0000000000000000480100", 0x80, 0, NULL},
+        {"010ec218037200014040212100", 0xA0, 0,
+         "0100ff0003000501000000000000000000000000000000000000000000000000005c"},
+        {"100f0001404000000000", 0, 0, NULL},
+        {"01000000000000000000300100", 0x80, 0, NULL},
+    };
+    ocb_p2 p;
+    fx_init(&p);
+    int handshakes = 0;
+    for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+        uint8_t b[64] = {0};
+        const size_t len = hex_bytes(steps[i].out, b, sizeof b);
+        const uint8_t sc = b[0] == 0x01 ? b[10] : 0u;
+        const ocb_p2_rx r = ocb_p2_on_output(&p, b, len < 2u ? len : sizeof b, NULL);
+        OCB_CHECK(r != OCB_P2_RX_REFUSED && r != OCB_P2_RX_QUEUE_FULL, "S12 step %zu (%s): result %d", i,
+                  steps[i].out, (int)r);
+        handshakes += ocb_p2_take_handshake(&p) ? 1 : 0;
+        uint8_t got[64];
+        int replies = 0;
+        while (ocb_p2_reply_pending(&p)) {
+            (void)fx_in(&p, got);
+            replies++;
+            if (steps[i].usb != 0u) {
+                OCB_CHECK(got[0] == 0x81 && got[1] == steps[i].usb, "S12 step %zu: 81 %02x", i, steps[i].usb);
+            } else {
+                OCB_CHECK(got[0] == 0x21 && got[13] == steps[i].ack && got[14] == sc,
+                          "S12 step %zu: reply %02x %02x %02x, want 21 .. %02x %02x", i, got[0], got[13], got[14],
+                          steps[i].ack, sc);
+                if (steps[i].data != NULL) {
+                    uint8_t want[64];
+                    const size_t n = hex_bytes(steps[i].data, want, sizeof want);
+                    OCB_CHECK_MEM(&got[15], n, want, n, "S12 reply data");
+                }
+            }
+        }
+        const int want_replies = (steps[i].ack != 0u || steps[i].usb != 0u) ? 1 : 0;
+        OCB_CHECK(replies == want_replies, "S12 step %zu: %d replies, want %d", i, replies, want_replies);
+    }
+    OCB_CHECK(ocb_p2_ready(&p) && handshakes == 1, "S12 init: stream on (%d), one handshake (%d)", ocb_p2_ready(&p),
+              handshakes);
+    OCB_CHECK(p.cnt.refusals == 0u, "S12 init: %u refusals", p.cnt.refusals);
+}
+
 int main(void)
 {
     ocb_p2 p;
@@ -87,7 +186,9 @@ int main(void)
         ocb_p2_log log;
         (void)fx_sub(&p, 0x03, m30, 1, &log);
         OCB_CHECK(ocb_p2_ready(&p), "03 30 starts the stream");
-        OCB_CHECK(log.n == 2u && log.kind[0] == 0x02 && log.id[0] == 0x03 && log.kind[1] == 0x06, "log of 03 30");
+        OCB_CHECK(log.n == 3u && log.kind[0] == 0x02 && log.id[0] == 0x03 && log.kind[1] == 0x08 &&
+                      log.id[1] == 0x30 && log.kind[2] == 0x06,
+                  "log of 03 30 (subcommand, argument, handshake)");
         OCB_CHECK(ocb_p2_take_handshake(&p), "03 30 posts the handshake");
     }
 
@@ -203,6 +304,9 @@ int main(void)
         OCB_CHECK(ocb_p2_on_output(&p, two, 2, NULL) == OCB_P2_RX_HANDLED, "2-byte 80 02");
         OCB_CHECK(fx_in(&p, out) == 64u && out[0] == 0x81 && out[1] == 0x02, "reply to 2-byte 80 02");
     }
+
+    /* 11. The real Switch 1 init of the S12 capture, replayed (D34). */
+    test_s12_replay();
 
     return ocb_test_failures() == 0 ? 0 : 1;
 }

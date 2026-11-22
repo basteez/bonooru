@@ -196,6 +196,15 @@ class Vectors(unittest.TestCase):
         self.assertEqual([i for _, _, i in log.records][:4], [1, 2, 3, 4])
         self.assertEqual(len(log.records), 4 + 16)
         self.assertEqual(log.gaps, 4)
+        # Story 2.3: a repeat record counted up in place (total unchanged)
+        # refreshes the tracker's last record; a new record after it is added.
+        log = probe.P2Log()
+        log.feed({"p2_log_total": 4, "p2_log": [(2, 1), (4, 1), (2, 1), (9, 1)]}, 0.0)
+        log.feed({"p2_log_total": 4, "p2_log": [(2, 1), (4, 1), (2, 1), (9, 30)]}, 0.05)
+        log.feed({"p2_log_total": 5, "p2_log": [(2, 1), (4, 1), (2, 1), (9, 57), (2, 0x30)]}, 0.10)
+        self.assertEqual([(k, i) for _, k, i in log.records], [(2, 1), (4, 1), (2, 1), (9, 57), (2, 0x30)])
+        self.assertEqual(probe.p2_log_str(9, 57), "(repeated 57 more)")
+        self.assertEqual(probe.p2_log_str(8, 4), "arg 04")
 
     def test_splitter_resync(self):
         sp = probe.Splitter("APP")
@@ -1145,7 +1154,8 @@ class ConsoleModel:
         self.connected = False
         self.sequence = sequence if sequence is not None else [
             (0x01, 0x05), (0x01, 0x01), (0x01, 0x02), (0x02, 0x03), (0x01, 0x04), (0x06, 0x00),
-            (0x02, 0x48), (0x02, 0x02), (0x02, 0x10), (0x02, 0x01), (0x04, 0x01), (0x02, 0x30)]
+            (0x02, 0x48), (0x02, 0x02), (0x02, 0x10), (0x02, 0x01), (0x08, 0x04), (0x02, 0x21), (0x08, 0x21),
+            (0x02, 0x30)]
         self.period_us = period_us
         self.in_every_s = in_every_s
         self.next_in = 0.0
@@ -1223,7 +1233,8 @@ class P2BenchSteps(unittest.TestCase):
         self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
         self.assertIn("H.15 median IN interval: 1000 us", text)
         self.assertIn("usb 80 05, usb 80 01, usb 80 02, sub 03, usb 80 04, HANDSHAKE", text)
-        self.assertIn("refused by the profile (C7): 01", text)
+        self.assertIn("sub 01, arg 04, sub 21, arg 21, sub 30", text)
+        self.assertNotIn("refused by the profile", text)
 
     def test_p2check_negative_controls(self):
         # The console never answers (setting OFF before the plug): no ready.

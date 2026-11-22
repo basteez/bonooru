@@ -75,8 +75,9 @@ The Story 2.7 bench-only build (`fw-debug-bench`, a faked `console_ready`) was r
 `profile_p2/` is `ocb_p2`, the P2 profile of AD-12 as a pure C99 library: the USB descriptors
 (`desc.c`: the real controller's bytes, `bInterval` as a build constant), the reactive handshake
 and subcommand answers with a reply queue of 4 (`p2.c`), the emulated SPI flash as a function of
-the address, the refusals of C7 (SPI write and erase, pairing, resets, the MCU update path,
-feature reports), the `0x30` report from a `const ocb_state *` (`report.c`) and the median IN
+the address, the refusals of C7 (SPI write and erase, reset pairing, resets, the MCU update
+path, feature reports; the console's pairing request and MCU configuration get the real
+controller's replies and change nothing, D34), the `0x30` report from a `const ocb_state *` (`report.c`) and the median IN
 interval (`interval.c`). Clean-room from public reverse-engineering documents, every value cited
 (sources and tables: `docs/usb-controller-emulation.md`, "P2 wire protocol"); no 2wiCC code.
 Purity: `tools/check-p2-pure.sh` (no SDK, no TinyUSB, never `ocb_core` or `ocb_link`). Tests

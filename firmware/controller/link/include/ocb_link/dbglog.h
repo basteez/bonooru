@@ -31,6 +31,8 @@
 #define OCB_DBGLOG_OVERFLOW 0x05u     /* id: records dropped by a full ring (saturated at 255) */
 #define OCB_DBGLOG_HANDSHAKE 0x06u    /* id: 0; the profile became ready */
 #define OCB_DBGLOG_RESTART 0x07u      /* id: the cause, OCB_DBGLOG_RESTART_* */
+#define OCB_DBGLOG_ARG 0x08u          /* id: the first argument of the subcommand before it */
+#define OCB_DBGLOG_REPEAT 0x09u       /* id: records not shown because they repeated (saturates at 255) */
 
 #define OCB_DBGLOG_RESTART_MOUNT 0x01u
 #define OCB_DBGLOG_RESTART_UNMOUNT 0x02u
@@ -47,13 +49,23 @@ typedef struct {
     volatile uint32_t drops; /* producer: records lost to a full ring */
 } ocb_dbglog_ring;
 
-/* Window of the newest records (core 1 only). */
+/* Window of the newest records (core 1 only).
+ *
+ * Repeats (story 2.3, after bench H.15 attempt 1, where one pair of records
+ * filled the log): a record equal to the one before it (A A A ...) from
+ * the third, or continuing a two-record cycle (A B A B ...) from the
+ * fourth, is not stored; a REPEAT record follows the last stored one and
+ * counts them (its id is updated in place, saturating at 255; `total`
+ * counts it once, when it is added). Any other record ends the run. */
 typedef struct {
     uint16_t rec[OCB_DBGLOG_WINDOW]; /* circular, oldest at `start` */
     uint8_t start;
     uint8_t n;          /* 0..16 */
-    uint16_t total;     /* records ever added, wraps at 65536 */
+    uint16_t total;     /* records ever added to the window, wraps at 65536 */
     uint32_t seen_drops; /* ring drops already reported */
+    uint16_t hist[3];   /* the last three records offered (stored or not), newest first */
+    uint8_t nhist;      /* valid entries of hist, 0..3 */
+    bool repeating;     /* the newest stored record is a REPEAT being counted */
 } ocb_dbglog_window;
 
 void ocb_dbglog_ring_init(ocb_dbglog_ring *r);
@@ -70,7 +82,8 @@ bool ocb_dbglog_pop(ocb_dbglog_ring *r, uint16_t *rec);
  * the ring dropped some since the last drain. Returns the records added. */
 uint32_t ocb_dbglog_drain(ocb_dbglog_window *w, ocb_dbglog_ring *r);
 
-/* Adds one record to the window (the newest 16 are kept). */
+/* Adds one record to the window (the newest 16 are kept), or counts it in
+ * the REPEAT record when it repeats (above). */
 void ocb_dbglog_window_add(ocb_dbglog_window *w, uint16_t rec);
 
 #endif /* OCB_LINK_DBGLOG_H */

@@ -68,7 +68,7 @@ typedef char ocb_p2_log_kinds_agree[(OCB_P2_LOG_USB_CMD == OCB_DBGLOG_USB_CMD &&
                                      OCB_P2_LOG_OTHER_REPORT == OCB_DBGLOG_OTHER_REPORT &&
                                      OCB_P2_LOG_REFUSAL == OCB_DBGLOG_REFUSAL &&
                                      OCB_P2_LOG_HANDSHAKE == OCB_DBGLOG_HANDSHAKE &&
-                                     OCB_P2_LOG_RESTART == OCB_DBGLOG_RESTART)
+                                     OCB_P2_LOG_RESTART == OCB_DBGLOG_RESTART && OCB_P2_LOG_ARG == OCB_DBGLOG_ARG)
                                         ? 1
                                         : -1];
 typedef char ocb_p2_binterval_ok[(OCB_P2_BINTERVAL >= 1 && OCB_P2_BINTERVAL <= 16) ? 1 : -1];
@@ -96,7 +96,7 @@ static void log_push(uint8_t kind, uint8_t id)
 static void log_records(const ocb_p2_log *log)
 {
 #ifdef OCB_DEBUG_BUILD
-    for (uint8_t i = 0u; i < log->n && i < 2u; i++) {
+    for (uint8_t i = 0u; i < log->n && i < OCB_P2_LOG_MAX; i++) {
         log_push(log->kind[i], log->id[i]);
     }
 #else

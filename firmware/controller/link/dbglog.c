@@ -53,7 +53,7 @@ bool ocb_dbglog_pop(ocb_dbglog_ring *r, uint16_t *rec)
     return true;
 }
 
-void ocb_dbglog_window_add(ocb_dbglog_window *w, uint16_t rec)
+static void window_store(ocb_dbglog_window *w, uint16_t rec)
 {
     if (w->n < OCB_DBGLOG_WINDOW) {
         w->rec[(uint8_t)((w->start + w->n) % OCB_DBGLOG_WINDOW)] = rec;
@@ -63,6 +63,34 @@ void ocb_dbglog_window_add(ocb_dbglog_window *w, uint16_t rec)
         w->start = (uint8_t)((w->start + 1u) % OCB_DBGLOG_WINDOW);
     }
     w->total = (uint16_t)(w->total + 1u);
+}
+
+void ocb_dbglog_window_add(ocb_dbglog_window *w, uint16_t rec)
+{
+    /* A A A: from the third A; A B A B: from the second B. */
+    const bool same = w->nhist >= 2u && rec == w->hist[0] && rec == w->hist[1];
+    const bool cycle = w->nhist >= 3u && rec == w->hist[1] && w->hist[0] == w->hist[2] && rec != w->hist[0];
+    w->hist[2] = w->hist[1];
+    w->hist[1] = w->hist[0];
+    w->hist[0] = rec;
+    if (w->nhist < 3u) {
+        w->nhist++;
+    }
+    if ((same || cycle) && w->n > 0u) {
+        const uint8_t last = (uint8_t)((w->start + w->n - 1u) % OCB_DBGLOG_WINDOW);
+        if (w->repeating) {
+            const uint8_t count = (uint8_t)(w->rec[last] & 0xFFu);
+            if (count < 0xFFu) {
+                w->rec[last] = (uint16_t)((w->rec[last] & 0xFF00u) | (uint16_t)(count + 1u));
+            }
+        } else {
+            window_store(w, (uint16_t)(((uint16_t)OCB_DBGLOG_REPEAT << 8) | 1u));
+            w->repeating = true;
+        }
+        return;
+    }
+    w->repeating = false;
+    window_store(w, rec);
 }
 
 uint32_t ocb_dbglog_drain(ocb_dbglog_window *w, ocb_dbglog_ring *r)
@@ -80,7 +108,8 @@ uint32_t ocb_dbglog_drain(ocb_dbglog_window *w, ocb_dbglog_ring *r)
         const uint32_t lost = drops - w->seen_drops;
         w->seen_drops = drops;
         const uint8_t id = lost > 0xFFu ? (uint8_t)0xFFu : (uint8_t)lost;
-        ocb_dbglog_window_add(w, (uint16_t)(((uint16_t)OCB_DBGLOG_OVERFLOW << 8) | id));
+        w->repeating = false;
+        window_store(w, (uint16_t)(((uint16_t)OCB_DBGLOG_OVERFLOW << 8) | id));
         added++;
     }
     return added;

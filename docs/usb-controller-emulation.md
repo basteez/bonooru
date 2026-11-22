@@ -82,6 +82,8 @@ Clean-room (NFR-07, ADR-004): written from the public documents below, used for 
 | S7 | mzyy94, [Pro Controller USB gadget](https://mzyy94.com/blog/2020/03/20/nintendo-switch-pro-controller-usb-gadget/) | the 203-byte report descriptor (hex), strings (hex), a real `0x30` capture, a Switch 1 init sequence seen between a real console and a real controller |
 | S8 | tmk, [lsusb -v of a Pro Controller](https://gist.github.com/tmk/9725596c6726b561ad2bf1f1e07e1523) | device and configuration descriptors (hex and decoded) |
 | S9 | [joycontrol](https://github.com/mart1nro/joycontrol) (values only) | stick calibration values, acks `82` / `83` / `90`, device-info firmware `04 00` |
+| S12 | mzyy94, [bypass_procon_log.txt](https://gist.github.com/mzyy94/60ae253a45e2759451789a117c59acf9) (the capture behind S7; data only) | every output report a real Switch 1 sent to a real wired Pro Controller during init, and the controller's real replies |
+| S13 | riking's comment in dekuNukem's [issue #7](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/issues/7) (data only) | a Joy-Con's reply to subcommand `01`: ack `81`, id `01`, one status byte |
 | S11 | TinyUSB 0.18.0 (pinned submodule) | `hid_device.c`, `usbd.c`: which callback sees what |
 
 ### Descriptors (D3, D4)
@@ -125,9 +127,13 @@ Every report is 64 bytes on the wire, the id included; TinyUSB sends our 64 byte
 | `30` player lights, `40` IMU, `48` vibration | `80` | | argument stored | S3 |
 | `10` SPI read | `90` | address LE32, length, data; length > `0x1D`: NACK | none | S3 |
 | `11` SPI write, `12` sector erase | `80` | `01` (write protected) | **refused** (C7) | S3 |
-| `01` pairing, `06` HCI, `07` reset pairing, `20` MCU reset, `21` MCU config, `22 02` resume for update | `00` (NACK) | | **refused** (C7) | S2, S3 |
+| `01` Bluetooth pairing request | `81` | `03` | none: nothing paired or stored, the host's address discarded (D34) | S12 (real reply), S13, S3 |
+| `21` MCU configuration | `A0` | `01 00 FF 00 03 00 05 01`, 25 × `00`, `5C` (34 bytes: the MCU's standby state report) | none: there is no MCU; the same report answers any `21` (D34) | S12 (real reply), S3 |
+| `06` HCI, `07` reset pairing, `20` MCU reset, `22 02` resume for update | `00` (NACK) | | **refused** (C7) | S2, S3 |
 | `22 00`, `22 01` | `80` | | none | S3 |
 | any other | `80` | `03` | none | S3 |
+
+Answers that keep the console's init going (D34, from S12): every id S12's init sends is answered as the real controller did, `01` and `21` included; a replay of the whole S12 init is a host test (F.25).
 
 Reply queue: 4 replies of 64 bytes, sent before any `0x30` report. A request that arrives while the queue is full gets no reply and has no effect (no setting is stored, the stream is not started); it is only counted (`cnt.queue_full`, no log kind of its own), and the host's resend recovers it. A refusal in that case is still counted as a refusal.
 
@@ -158,7 +164,8 @@ Canonical state to report: Y `[3] 01`, X `[3] 02`, B `[3] 04`, A `[3] 08`, R `[3
 - `80 05`: S1 "allows the controller to time out", S5 names it "enable USB timeout"; nobody says whether the stream stops. Cautious: stream off, `ready()` false (D5).
 - Device-info firmware bytes: S3's sample is `03 48` and names 3.89 as the latest without its encoding; S9 uses `04 00`. We send `04 00` (newer than any 3.x, so no update is offered; D10, D26).
 - S3 lists `0x12` (erase) with an ack `80 12` and a status byte; the story's first draft had a NACK. Implemented as S3: `80 12 01` (write protected).
-- S7's Switch 1 capture shows the console itself sending subcommands `01` (pairing) and `21` (MCU config) during its init, and `80 05` before `80 01`. They are refused with a NACK (C7); whether the Switch 2 tolerates that is what H.15 shows (D26).
+- S12 (the capture behind S7) shows the console itself sending subcommands `01` (pairing request, type `04`, with its address and name) and `21 21 00` (MCU to standby) during its init, and `80 05` before `80 01`. The first build refused both with a NACK; on the Switch 2 that stalled the init: the console repeated `01` forever (bench H.15, attempt 1). Since story 2.3 D34 both get the real controller's replies from S12 (`81 01 03`; `A0 21` and the 34-byte standby report) and still change nothing. S3's text names the reply to `21` as `A0 20`; S12's real reply echoes `21`, which we follow. S12 also shows mzyy94's own summary table naming the `03` argument `48`; the capture's bytes say `30`.
+- The C7 refusals that remain (SPI write and erase, `06`, `07`, `20`, `22 02`, output `0x03`, feature reports) do not appear in S12's init.
 - Nothing public fixes the Switch 2's sequence; the profile answers whatever arrives, and the debug log records it (below).
 
 ## Measured on the Switch 2
@@ -168,7 +175,7 @@ Filled by the owner's bench session (story 2.3 Task 11: H.15, H.16, H.17). Empty
 | What | Value | Source |
 |---|---|---|
 | VID:PID listed by the console | | H.15 |
-| Handshake sequence the console sends (P2 debug log) | | H.15 `p2check` |
+| Handshake sequence the console sends (P2 debug log) | attempt 1 (stalled, before D34): restart bus-reset, restart mount, report 00 ×2, `80 05`, report 00, `80 01`, `80 02`, sub `03` (stream on), `80 04`, sub `02`, `08`, `10`, `10`, `01`, then `01` repeated (each NACKed) | H.15 `p2check` |
 | Median IN interval, `bInterval` 1 (`report_period_us`) | | H.15 |
 | Median IN interval, `bInterval` 8 | | H.17 |
 | Report period jitter | | Story 2.5 |

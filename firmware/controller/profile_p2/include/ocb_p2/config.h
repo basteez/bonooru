@@ -14,6 +14,11 @@
  *   S7  mzyy94, "Nintendo Switch Pro Controller USB gadget" (2020-03-20)
  *   S8  tmk, lsusb -v dump of a Pro Controller (GitHub gist 9725596c...)
  *   S9  joycontrol (mart1nro), values only
+ *   S12 mzyy94, bypass_procon_log.txt (gist 60ae253a..., the capture behind
+ *       S7): every output report a real Switch 1 sent to a real wired Pro
+ *       Controller during init, and the controller's real replies (data)
+ *   S13 riking's Joy-Con replies to subcommand 0x01 in dekuNukem's issue #7
+ *       (ack 81, id 01, one status byte; data)
  * Full links: docs/usb-controller-emulation.md, "P2 wire protocol".
  */
 #ifndef OCB_P2_CONFIG_H
@@ -107,6 +112,10 @@
 #define OCB_P2_ACK_DEVICE_INFO 0x82u /* S9 */
 #define OCB_P2_ACK_ELAPSED 0x83u     /* S9 */
 #define OCB_P2_ACK_SPI_READ 0x90u    /* S3 "x9010 ack" */
+#define OCB_P2_ACK_PAIRING 0x81u     /* S12: 21 .. 81 01 03 (story 2.3 D34); S13 */
+#define OCB_P2_PAIRING_STATUS 0x03u  /* S12: the real controller's status byte */
+#define OCB_P2_ACK_MCU_CONFIG 0xA0u  /* S3 "ACK xA0"; S12: A0 21 + 34 bytes */
+#define OCB_P2_MCU_STATE_LEN 34u     /* S3 "34 bytes of data" */
 #define OCB_P2_UNUSED_DATA 0x03u     /* S3: unused subcommands reply 80 <id> 03 */
 #define OCB_P2_WRITE_PROTECTED 0x01u /* S3: 0x11 and 0x12 status, write protected */
 
@@ -155,5 +164,7 @@
 #define OCB_P2_LOG_REFUSAL 0x04u
 #define OCB_P2_LOG_HANDSHAKE 0x06u
 #define OCB_P2_LOG_RESTART 0x07u
+#define OCB_P2_LOG_ARG 0x08u /* the first argument of 01, 03, 21, 22 (story 2.3 D34) */
+/* 0x09 (repeat) is added by the link's window only (ocb_link/dbglog.h). */
 
 #endif /* OCB_P2_CONFIG_H */

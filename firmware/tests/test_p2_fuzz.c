@@ -92,8 +92,13 @@ static void run(uint64_t seed, int steps)
                 OCB_CHECK(!ocb_p2_ready(&p), "80 05 left the stream on");
             }
             /* Refused requests are never reported as handled. */
-            if (len >= 11u && b[0] == 0x01 && (b[10] == 0x11 || b[10] == 0x12 || b[10] == 0x07 || b[10] == 0x01)) {
+            if (len >= 11u && b[0] == 0x01 && (b[10] == 0x11 || b[10] == 0x12 || b[10] == 0x07)) {
                 OCB_CHECK(r == OCB_P2_RX_REFUSED || r == OCB_P2_RX_QUEUE_FULL, "subcommand %02x: %d", b[10], (int)r);
+            }
+            /* D34: the pairing request and the MCU configuration are
+             * answered, never refused (a refusal stalls the console). */
+            if (len >= 11u && b[0] == 0x01 && (b[10] == 0x01 || b[10] == 0x21)) {
+                OCB_CHECK(r == OCB_P2_RX_HANDLED || r == OCB_P2_RX_QUEUE_FULL, "subcommand %02x: %d", b[10], (int)r);
             }
             free(b);
         } else if (op < 85u) {

@@ -74,6 +74,12 @@ REPORT_DESC = bytes.fromhex(
 NEUTRAL_HEADER = bytes([0x91, 0x00, 0x80, 0x00, 0x00, 0x08, 0x80, 0x00, 0x08, 0x80, 0x0A])
 NEUTRAL_RUMBLE = bytes([0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40])  # S2
 
+# S12 (mzyy94's capture of a real Switch 1 and Pro Controller): the
+# console's pairing request (type 04, its address and name) and the
+# controller's MCU state report after 21 21 00 (story 2.3 D34).
+PAIR_REQUEST = bytes.fromhex("04185395d6030400043c4e696e74656e646f2053776974636800000000006800ac90113f5900")
+MCU_STANDBY = bytes.fromhex("0100ff0003000501" + "00" * 25 + "5c")
+
 RESEND_S = 0.300
 RESENDS = 3
 OPEN_RETRY_S = 30.0
@@ -273,6 +279,7 @@ def cmd_enum(args, usb=None, out=print):
     while True:
         if time.monotonic() - t0 > args.wait_s:
             check(False, "057E:2009 seen stable for 3 s within %d s" % args.wait_s)
+            out("     check for a macOS 'Allow accessory' prompt, or replug")
             out("FAIL %s" % fails[0])
             return 1
         stable = stable + 1 if _present(usb) else 0
@@ -350,6 +357,7 @@ def open_hid(out):
                     % (e, OPEN_RETRY_S))
                 hinted = True
             if time.monotonic() - t0 > OPEN_RETRY_S:
+                out("     check for a macOS 'Allow accessory' prompt, or replug")
                 out("FAIL cannot open the HID device 057E:2009")
                 return None
             time.sleep(1.0)
@@ -456,6 +464,11 @@ def run_handshake(dev, args, out=print):
     # 8: settings.
     for sc, a in ((0x30, b"\x01"), (0x40, b"\x00"), (0x41, b"\x03\x00\x00\x01"), (0x48, b"\x01"), (0x03, b"\x30")):
         h.sub(sc, a, 0x80, b"", "%02x ack" % sc)
+    # 8b (story 2.3 D34): what a real console sends in its init (S12 capture):
+    # the pairing request gets 81 01 03, the MCU configuration A0 21 and the
+    # standby state report; both change nothing.
+    h.sub(0x01, PAIR_REQUEST, 0x81, b"\x03", "01 pairing request -> 81 01 03, nothing paired")
+    h.sub(0x21, b"\x21\x00", 0xA0, MCU_STANDBY, "21 MCU config -> A0 21 + standby state")
     # 9: refusal probe (C7): an SPI write is write-protected and changes nothing.
     h.sub(0x10, spi_args(0x8000, 1), 0x90, spi_args(0x8000, 1) + b"\xff", "10 SPI read 0x8000 before the write")
     h.sub(0x11, spi_args(0x8000, 1) + b"\xaa", 0x80, b"\x01", "11 SPI write 0x8000: write protected")

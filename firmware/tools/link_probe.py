@@ -352,7 +352,8 @@ DROP_SPLIT = ("rx_err_bytes", "rx_overflow_bytes", "overlong_bytes", "rx_fe", "r
 # v3 (story 2.3 D14): the P2 debug log window after the 21 bytes:
 # p2_log_total u16, p2_log_n u8, then p2_log_n records (kind, id), oldest first.
 P2_LOG_KINDS = {0x01: "usb", 0x02: "sub", 0x03: "report", 0x04: "REFUSED", 0x05: "overflow",
-                0x06: "HANDSHAKE", 0x07: "restart"}
+                0x06: "HANDSHAKE", 0x07: "restart", 0x08: "arg", 0x09: "repeat"}
+P2_LOG_REPEAT = 0x09
 P2_RESTART_CAUSES = {0x01: "mount", 0x02: "unmount", 0x03: "suspend", 0x04: "bus-reset"}
 
 
@@ -366,6 +367,8 @@ def p2_log_str(kind, ident):
         return "HANDSHAKE"
     if kind == 0x05:
         return "overflow (%d lost)" % ident
+    if kind == P2_LOG_REPEAT:
+        return "(repeated %d%s more)" % (ident, "+" if ident == 255 else "")
     return "%s %02x" % (P2_LOG_KINDS.get(kind, "kind%02x" % kind), ident)
 
 
@@ -1040,7 +1043,9 @@ TRACE_TAIL = 120                # breaks: trace lines printed when it fails
 class P2Log:
     """The P2 debug log seen through the debug STATUS v3 window (story 2.3
     D14): every record once, in order, with the time its STATUS arrived. A
-    jump of p2_log_total larger than the window is counted as a gap."""
+    jump of p2_log_total larger than the window is counted as a gap. A
+    repeat record is counted up in place by the firmware (total unchanged),
+    so the tracker refreshes its last record when both are repeats."""
 
     def __init__(self):
         self.total = None
@@ -1051,6 +1056,12 @@ class P2Log:
         if not d or "p2_log_total" not in d:
             return
         total, recs = d["p2_log_total"], d["p2_log"]
+        if self.total is not None and self.records:
+            k = (total - self.total) & 0xFFFF
+            i = len(recs) - k - 1
+            last = self.records[-1]
+            if 0 <= i < len(recs) and last[1] == P2_LOG_REPEAT and recs[i][0] == P2_LOG_REPEAT:
+                self.records[-1] = (last[0], P2_LOG_REPEAT, recs[i][1])
         if self.total is None:
             new = recs
         else:

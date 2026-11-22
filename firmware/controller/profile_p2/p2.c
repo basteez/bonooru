@@ -107,7 +107,7 @@ static void q_commit(ocb_p2 *p)
 
 static void log_add(ocb_p2_log *log, uint8_t kind, uint8_t id)
 {
-    if (log != NULL && log->n < 2u) {
+    if (log != NULL && log->n < OCB_P2_LOG_MAX) {
         log->kind[log->n] = kind;
         log->id[log->n] = id;
         log->n++;
@@ -308,6 +308,11 @@ static ocb_p2_rx on_subcmd(ocb_p2 *p, const uint8_t *buf, size_t len, ocb_p2_log
     /* The 8 rumble bytes [2..9] are consumed and ignored (D23). */
     const uint8_t id = buf[OCB_P2_SUBCMD_ID_OFFSET];
     log_add(log, OCB_P2_LOG_SUBCMD, id);
+    if (len > OCB_P2_SUBCMD_ARG_OFFSET &&
+        (id == OCB_P2_SC_BT_PAIRING || id == OCB_P2_SC_INPUT_MODE || id == OCB_P2_SC_MCU_CONFIG ||
+         id == OCB_P2_SC_MCU_STATE)) {
+        log_add(log, OCB_P2_LOG_ARG, buf[OCB_P2_SUBCMD_ARG_OFFSET]); /* D34: what the console asked */
+    }
     ocb_p2_rx r;
     switch (id) {
     case OCB_P2_SC_DEVICE_INFO: {
@@ -379,11 +384,32 @@ static ocb_p2_rx on_subcmd(ocb_p2 *p, const uint8_t *buf, size_t len, ocb_p2_log
             return reply_sub(p, OCB_P2_ACK, id, NULL, 0u); /* suspend / resume (S3) */
         }
         return nack_refuse(p, id, log); /* 0x02 "resume for update" (S3) */
-    case OCB_P2_SC_BT_PAIRING:    /* C7: pairing */
+    case OCB_P2_SC_BT_PAIRING: {
+        /* D34: the console sends this during its wired init (S12: 01 04 +
+         * its address and name) and repeats it until answered; a NACK
+         * stalled the Switch 2 (bench H.15 attempt 1). The real controller
+         * answers 81 01 03 (S12; S13 same shape). Nothing is paired or
+         * stored: the host address is discarded, no state changes. */
+        const uint8_t d[1] = {OCB_P2_PAIRING_STATUS};
+        return reply_sub(p, OCB_P2_ACK_PAIRING, id, d, sizeof d);
+    }
+    case OCB_P2_SC_MCU_CONFIG: {
+        /* D34: S12 shows the console sending 21 21 00 (MCU to standby)
+         * during init; the real controller answers A0 21 and the 34-byte
+         * MCU state report below (S12 bytes 15..48; S3: "ACK xA0 and 34
+         * bytes of data"). We have no MCU: the same standby report is the
+         * answer to any 0x21, nothing is configured or stored, and the
+         * firmware-update path stays refused (0x22 02, output 0x03,
+         * feature reports). */
+        static const uint8_t k_mcu_standby[OCB_P2_MCU_STATE_LEN] = {
+            0x01, 0x00, 0xFF, 0x00, 0x03, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5C}; /* S12 */
+        return reply_sub(p, OCB_P2_ACK_MCU_CONFIG, id, k_mcu_standby, sizeof k_mcu_standby);
+    }
     case OCB_P2_SC_HCI_STATE:     /* reboot / disconnect request */
     case OCB_P2_SC_RESET_PAIRING: /* C7: erases pairing */
     case OCB_P2_SC_MCU_RESET:     /* NFC/IR MCU reset */
-    case OCB_P2_SC_MCU_CONFIG:    /* S3: carries MCU firmware update data */
         return nack_refuse(p, id, log);
     default: {
         /* S3: "all subcommands that do nothing reply 80 <id> and 03". */
