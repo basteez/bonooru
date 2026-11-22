@@ -1,20 +1,32 @@
 # SPDX-License-Identifier: MIT
-"""Self-test of tools/link_probe.py (story 2.6 Task 10.2, test F.19).
+"""Self-test of tools/link_probe.py (story 2.6 Task 10.2, tests F.19, F.20).
 
-Run by ctest as `python3 -I test_link_probe.py FIRMWARE_DIR`. Checks the
-probe's codec against the shared conformance vectors (cobs, crc16, frames,
-messages; parsed exactly as common/proto/vectors/README.md says, every
-vector must pass) and its AD-6 sender against an in-process fake link
-over a lossy wire (no serial port, no pyserial).
+Run by ctest as `python3 -I test_link_probe.py FIRMWARE_DIR [LINK_SIM_LIB]`.
+F.19: the probe's codec against the shared conformance vectors (cobs,
+crc16, frames, messages; parsed exactly as common/proto/vectors/README.md
+says, every vector must pass) and its AD-6 sender against an in-process
+fake link over a lossy wire (no serial port, no pyserial).
+F.20 (story 2.6 D30, D31): the probe's real `soak` command on a fake
+clock, (a) for longer than its old 30 s budget against the fake link, and
+(b) against the real controller link (LINK_SIM_LIB, built from the
+firmware sources, loaded with ctypes) through a model of the 2wiCC_Comms
+bridge used at the H.5 bench (no flow control, 1 KB USB-to-UART ring that
+drops on overflow, UART at 460800 baud both ways).
 """
 
+import argparse
+import contextlib
+import ctypes
 import importlib.util
+import io
 import os
 import random
+import re
 import sys
 import unittest
 
 FW_DIR = None
+SIM_LIB = None
 probe = None
 
 
@@ -147,8 +159,9 @@ class FakeLink:
     cumulative ACK, transport NAKs at most once per expected, a queue with
     STATUS credits, and a consumer that frees one slot per tick."""
 
-    def __init__(self, cap, now):
+    def __init__(self, cap, now, consume=True):
         self.cap = cap
+        self.consume = consume
         self.now = now
         self.rx = probe.Splitter("CONTROLLER")
         self.expected = 0
@@ -184,6 +197,12 @@ class FakeLink:
                 "queue_cap": self.cap, "app_timeout_ms": 1000, "report_period_us": 0})
             self.out.append(probe.frame_encode(probe.INFO, 0, info))
             return
+        if ftype == probe.STOP:
+            self.expected = (seq + 1) & 0xFF
+            self.queue.clear()
+            self.nak_spent_for = None
+            self.out.append(probe.frame_encode(probe.ACK, 0, bytes([seq])))
+            return
         if not self.session:
             self.expected = (seq + 1) & 0xFF
             self.out.append(probe.frame_encode(probe.NAK, 0, bytes([0x10, self.expected, seq])))
@@ -205,7 +224,7 @@ class FakeLink:
             self._nak(0x02, seq)
 
     def tick(self):
-        if self.queue and random.random() < 0.5:
+        if self.consume and self.queue and random.random() < 0.5:
             self.queue.pop(0)
         if self.ack_pending:
             self.out.append(probe.frame_encode(probe.ACK, 0, bytes([(self.expected - 1) & 0xFF])))
@@ -279,9 +298,241 @@ class Sender(unittest.TestCase):
         self.assertEqual(len(hellos), 3)  # t = 0, 0.10, 0.20
 
 
+class FakeClock:
+    """The probe's clock in a test: `now()` / `sleep()` on the port, and the
+    same functions as the module's `time` (so any direct time call in the
+    probe also runs on fake time)."""
+
+    def __init__(self, on_sleep):
+        self.t = 1000.0
+        self.on_sleep = on_sleep
+
+    def now(self):
+        return self.t
+
+    def monotonic(self):
+        return self.t
+
+    def sleep(self, dt):
+        self.on_sleep(max(dt, 0.0))
+
+
+def soak_args(**kw):
+    a = dict(cycles=1, events=10, seed=1, corrupt=0.0, drop=0.0, garbage=False, no_pace=False,
+             baud=probe.DEFAULT_BAUD, port="sim")
+    a.update(kw)
+    return argparse.Namespace(**a)
+
+
+def run_soak(port, **kw):
+    """Runs the probe's own `soak` subcommand; returns (rc, printed text, totals)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = probe.cmd_soak(port, soak_args(**kw))
+    text = buf.getvalue()
+    m = re.search(r"totals (\{.*\})", text)
+    totals = eval(m.group(1), {}) if m else {}  # pylint: disable=eval-used
+    return rc, text, totals
+
+
+class FakePort:
+    """FakeLink behind a port on a coarse fake clock (10 ms per sleep)."""
+
+    def __init__(self, cap=512):
+        self.clock = FakeClock(self._advance)
+        self.link = FakeLink(cap, self.clock.now, consume=False)
+        self.rx = probe.Splitter("APP")
+        self.inbox = []
+
+    def now(self):
+        return self.clock.now()
+
+    def sleep(self, dt):
+        self.clock.sleep(dt)
+
+    def _advance(self, dt):
+        self.clock.t += max(dt, 0.01)
+        self.inbox.extend(self.link.tick())
+
+    def write(self, data):
+        self.link.feed(data)
+
+    def poll(self):
+        frames = []
+        for chunk in self.inbox:
+            frames.extend(self.rx.feed(chunk))
+        self.inbox = []
+        return frames
+
+
+class Bridge2wiCCPort:
+    """The H.5 bench on a fake clock: probe -> USB -> 2wiCC_Comms -> UART ->
+    the real controller link (ctypes) -> UART -> 2wiCC_Comms -> USB -> probe.
+
+    2wiCC_Comms v1.1 (read-only source inspection, story 2.6 D30): it reads
+    the CDC endpoint 64 bytes at a time in a 10 us loop whatever its ring's
+    space, into a 1024-byte ring (1023 usable) that drops bytes silently
+    when full, and drains it to UART0 at 460800 baud; no flow control, UART
+    FIFO off. Model per 100 us tick: up to 120 bytes from the host into the
+    ring (USB full speed), 4.608 bytes from the ring to the controller's RX,
+    the controller's TX (128-byte ring, as the firmware's) drained at the
+    same rate back to the host (no loss on that path)."""
+
+    TICK = 100e-6
+    USB_BYTES_PER_TICK = 120
+    RING = 1023
+    UART_BYTES_PER_TICK = 46080 * 100e-6
+    CTRL_TX_RING = 128
+
+    def __init__(self, lib):
+        self.lib = lib
+        self.clock = FakeClock(self._advance)
+        self.host_out = bytearray()  # written by the probe, not yet read by the bridge
+        self.ring = bytearray()      # the bridge's USB -> UART ring
+        self.ctrl_tx = bytearray()   # the controller's TX ring
+        self.host_in = bytearray()
+        self.credit_fwd = 0.0
+        self.credit_rev = 0.0
+        self.bridge_drops = 0
+        self.rx = probe.Splitter("APP")
+        self.buf = ctypes.create_string_buffer(512)
+        lib.sim_init(512, self._us())
+
+    def _us(self):
+        return ctypes.c_uint64(int(round(self.clock.t * 1e6)))
+
+    def now(self):
+        return self.clock.now()
+
+    def sleep(self, dt):
+        self.clock.sleep(dt)
+
+    def write(self, data):
+        self.host_out += data
+
+    def poll(self):
+        data, self.host_in = bytes(self.host_in), bytearray()
+        return self.rx.feed(data) if data else []
+
+    def read_raw(self, n):
+        return b""
+
+    def _advance(self, dt):
+        end = self.clock.t + dt
+        while True:
+            self._tick()
+            self.clock.t += self.TICK
+            if self.clock.t >= end:
+                break
+
+    def _tick(self):
+        lib = self.lib
+        now = self._us()
+        # Host -> bridge ring (drops when full).
+        take = self.host_out[:self.USB_BYTES_PER_TICK]
+        del self.host_out[:len(take)]
+        room = self.RING - len(self.ring)
+        self.ring += take[:room]
+        self.bridge_drops += max(0, len(take) - room)
+        # Bridge ring -> controller UART RX.
+        self.credit_fwd += self.UART_BYTES_PER_TICK
+        n = min(int(self.credit_fwd), len(self.ring))
+        if n > 0:
+            chunk = bytes(self.ring[:n])
+            del self.ring[:n]
+            self.credit_fwd -= n
+            lib.sim_rx(chunk, len(chunk), now)
+        if not self.ring:
+            self.credit_fwd = min(self.credit_fwd, 1.0)
+        lib.sim_poll(now)
+        # Controller TX: whole frames into its ring, drained at the UART rate.
+        while True:
+            space = self.CTRL_TX_RING - len(self.ctrl_tx)
+            k = lib.sim_tx(now, self.buf, space)
+            if k == 0:
+                break
+            self.ctrl_tx += self.buf.raw[:k]
+        self.credit_rev += self.UART_BYTES_PER_TICK
+        n = min(int(self.credit_rev), len(self.ctrl_tx))
+        if n > 0:
+            self.host_in += self.ctrl_tx[:n]
+            del self.ctrl_tx[:n]
+            self.credit_rev -= n
+        if not self.ctrl_tx:
+            self.credit_rev = min(self.credit_rev, 1.0)
+
+
+def load_sim():
+    lib = ctypes.CDLL(SIM_LIB)
+    lib.sim_init.argtypes = [ctypes.c_uint16, ctypes.c_uint64]
+    lib.sim_rx.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint64]
+    lib.sim_poll.argtypes = [ctypes.c_uint64]
+    lib.sim_tx.argtypes = [ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t]
+    lib.sim_tx.restype = ctypes.c_size_t
+    lib.sim_counter.argtypes = [ctypes.c_int]
+    lib.sim_counter.restype = ctypes.c_uint32
+    return lib
+
+
+@contextlib.contextmanager
+def fake_time(port):
+    """Any direct time call inside the probe runs on the port's fake clock."""
+    saved = probe.time
+    probe.time = port.clock
+    try:
+        yield
+    finally:
+        probe.time = saved
+
+
+class Soak(unittest.TestCase):
+    def test_long_soak_keeps_sending(self):
+        """F.20a: 150 short cycles take more than 30 s of (fake) time; every
+        cycle must still run (H.5 first run: every cycle after 30 s sent 0)."""
+        port = FakePort()
+        with fake_time(port):
+            rc, text, totals = run_soak(port, cycles=150, events=20)
+        self.assertGreater(port.now() - 1000.0, 30.0, "the soak did not outlast 30 s")
+        self.assertEqual(rc, 0, text[-600:])
+        self.assertEqual(totals.get("events"), 150 * 20)
+
+    def test_soak_through_2wicc_bridge(self):
+        """F.20b: the real link behind the 2wiCC_Comms model. Clean: PASS, no
+        NAK, no byte dropped by the bridge. Impaired (seeds 1 and 2): PASS.
+        Unpaced (positive control): the bridge drops bytes and NAKs appear,
+        which is what the first H.5 run showed."""
+        if SIM_LIB is None:
+            self.skipTest("no link simulation library")
+        lib = load_sim()
+        port = Bridge2wiCCPort(lib)
+        with fake_time(port):
+            rc, text, totals = run_soak(port, cycles=4, events=500)
+        self.assertEqual(rc, 0, text[-800:])
+        self.assertEqual(totals.get("naks"), 0, text[-800:])
+        self.assertEqual(totals.get("resends"), 0, text[-800:])
+        self.assertEqual(port.bridge_drops, 0)
+        self.assertEqual(lib.sim_counter(2), 0, "COBS/CRC drops at the controller")
+
+        for seed in (1, 2):
+            port = Bridge2wiCCPort(lib)
+            with fake_time(port):
+                rc, text, totals = run_soak(port, cycles=3, events=500, seed=seed, corrupt=0.02, drop=0.02,
+                                            garbage=True)
+            self.assertEqual(rc, 0, "seed %d: %s" % (seed, text[-800:]))
+            self.assertEqual(port.bridge_drops, 0, "seed %d" % seed)
+
+        port = Bridge2wiCCPort(lib)
+        with fake_time(port):
+            rc, text, totals = run_soak(port, cycles=2, events=500, no_pace=True)
+        self.assertGreater(port.bridge_drops, 0, "unpaced: the bridge model never overflowed")
+        self.assertGreater(totals.get("naks", 0), 0, "unpaced: no NAK")
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        sys.exit("usage: test_link_probe.py FIRMWARE_DIR")
+        sys.exit("usage: test_link_probe.py FIRMWARE_DIR [LINK_SIM_LIB]")
     FW_DIR = sys.argv.pop(1)
+    if len(sys.argv) >= 2:
+        SIM_LIB = sys.argv.pop(1)
     probe = load_probe(FW_DIR)
     unittest.main(verbosity=1)

@@ -290,7 +290,7 @@ def describe(ftype, seq, body):
         if d:
             s += " | max_app_gap_ms=%d watchdog_trips=%d dropped_bytes=%d tx_dropped=%d" % d
         return s
-    return "%s seq=%d %s" % (name, seq, " ".join("%s=%s" % kv for kv in f.items()))
+    return "%s %s (tx seq %d)" % (name, " ".join("%s=%s" % kv for kv in f.items()), seq)
 
 
 def debug_counters(extra):
@@ -313,11 +313,13 @@ class GbnSender:
     acknowledges everything before it (story 2.6 D7).
 
     `write(bytes)` sends; `now()` is the clock; `impair(bytes)` may drop,
-    corrupt or pad a frame (returns the bytes to write)."""
+    corrupt or pad a frame (returns the bytes to write); `pacer`, if given,
+    limits the bytes written to the UART's rate (see Pacer)."""
 
-    def __init__(self, write, now, t_list, hello_seq=0, impair=None):
+    def __init__(self, write, now, t_list, hello_seq=0, impair=None, pacer=None):
         self.write = write
         self.now = now
+        self.pacer = pacer
         self.t_list = list(t_list)
         self.hello_seq = hello_seq & 0xFF
         self.impair = impair or (lambda b: b)
@@ -412,17 +414,49 @@ class GbnSender:
                     break
                 if self.free <= self.high - self.accepted_by_status:
                     break
+            frame = frame_encode(QUEUE_EVENT, self.seq_of(self.next), queue_event_body(self.t_list[self.next]))
+            if self.pacer is not None and not self.pacer.take(len(frame)):
+                break
             if self.next == self.base:
                 self.base_timer = t
-            self._send(QUEUE_EVENT, self.seq_of(self.next), queue_event_body(self.t_list[self.next]))
+            self.write(self.impair(frame))
+            self.stats["sent"] += 1
             self.next += 1
             self.high = max(self.high, self.next)
             sent += 1
 
 
+class Pacer:
+    """Token bucket at the link's byte rate (story 2.6 D30).
+
+    A USB-CDC to UART bridge without flow control (2wiCC_Comms: a 1 KB ring
+    that silently drops on overflow) loses bytes when the host writes faster
+    than the UART drains (460800 baud = 46 080 bytes/s). The sender may write
+    at most `burst` bytes ahead of the line, refilled at 95 % of the line
+    rate."""
+
+    def __init__(self, now, baud=DEFAULT_BAUD, burst=256, share=0.95):
+        self.now = now
+        self.rate = baud / 10.0 * share
+        self.burst = float(burst)
+        self.tokens = float(burst)
+        self.last = now()
+
+    def take(self, n):
+        t = self.now()
+        self.tokens = min(self.burst, self.tokens + (t - self.last) * self.rate)
+        self.last = t
+        if self.tokens < n:
+            return False
+        self.tokens -= n
+        return True
+
+
 # -------------------------------------------------------------- serial I/O
 class Port:
-    """A serial port (pyserial imported only here) with a frame splitter."""
+    """A serial port (pyserial imported only here) with a frame splitter.
+    `now()` and `sleep()` are the only clock the commands use, so a test can
+    replace the port with a simulated one on a fake clock."""
 
     def __init__(self, name, baud):
         try:
@@ -432,6 +466,14 @@ class Port:
         self.ser = serial.Serial(name, baud, timeout=0)
         self.rx = Splitter("APP")
         self.ser.reset_input_buffer()
+
+    @staticmethod
+    def now():
+        return time.monotonic()
+
+    @staticmethod
+    def sleep(seconds):
+        time.sleep(seconds)
 
     def write(self, data):
         self.ser.write(data)
@@ -444,25 +486,25 @@ class Port:
         return self.ser.read(n)
 
 
-def _log(frame, t0):
+def _log(port, frame, t0):
     ftype, seq, body = frame
-    print("%9.3f  %s" % (time.monotonic() - t0, describe(ftype, seq, body)))
+    print("%9.3f  %s" % (port.now() - t0, describe(ftype, seq, body)))
 
 
 def do_hello(port, timeout=3.0, quiet=False, seq=0):
     """HELLO every 100 ms until INFO (AD-7). Returns the INFO fields or None."""
-    t0 = time.monotonic()
+    t0 = port.now()
     last = None
-    while time.monotonic() - t0 < timeout:
-        if last is None or time.monotonic() - last >= HELLO_RESEND_S:
+    while port.now() - t0 < timeout:
+        if last is None or port.now() - last >= HELLO_RESEND_S:
             port.write(frame_encode(HELLO, seq, bytes([PROTO_VERSION])))
-            last = time.monotonic()
+            last = port.now()
         for fr in port.poll():
             if fr[0] == INFO:
                 if not quiet:
-                    _log(fr, t0)
+                    _log(port, fr, t0)
                 return msg_decode(INFO, fr[2])
-        time.sleep(0.001)
+        port.sleep(0.001)
     return None
 
 
@@ -472,21 +514,21 @@ def _percentile(xs, p):
 
 
 def cmd_watch(port, args):
-    t0 = time.monotonic()
+    t0 = port.now()
     status_t = []
-    while time.monotonic() - t0 < args.seconds:
+    last = None
+    while port.now() - t0 < args.seconds:
         for fr in port.poll():
             if fr[0] == STATUS:
-                status_t.append(time.monotonic())
+                status_t.append(port.now())
+                last = fr
                 if args.verbose:
-                    _log(fr, t0)
-                else:
-                    last = fr
+                    _log(port, fr, t0)
             else:
-                _log(fr, t0)
-        time.sleep(0.0005)
-    if not args.verbose and status_t:
-        _log(last, t0)
+                _log(port, fr, t0)
+        port.sleep(0.0005)
+    if not args.verbose and last is not None:
+        _log(port, last, t0)
     gaps = [(b - a) * 1000.0 for a, b in zip(status_t, status_t[1:])]
     if gaps:
         print("STATUS: %d frames, interval median %.1f ms, p95 %.1f ms, min %.1f ms, max %.1f ms"
@@ -496,65 +538,73 @@ def cmd_watch(port, args):
     return 0
 
 
-def _run_sender(port, sender, timeout, t0, log_naks=True):
-    while not sender.done() and time.monotonic() - t0 < timeout:
+def _run_sender(port, sender, timeout, log_naks=True):
+    """Runs one sender until done or until `timeout` seconds from now (the
+    deadline is per run, never the whole command's, story 2.6 D30)."""
+    start = port.now()
+    while not sender.done() and port.now() - start < timeout:
         for fr in port.poll():
             if fr[0] in (NAK, EVENT) and log_naks:
-                _log(fr, t0)
+                _log(port, fr, start)
             sender.on_frame(*fr)
         sender.step()
-        time.sleep(0.0002)
+        port.sleep(0.0002)
     return sender.done()
 
 
-def _wait_status(port, sender, t0, seconds=0.2):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
+def _wait_status(port, sender, seconds=0.2):
+    end = port.now() + seconds
+    while port.now() < end:
         for fr in port.poll():
             sender.on_frame(*fr)
-        time.sleep(0.001)
+        port.sleep(0.001)
     return sender.last_status
 
 
-def _stop(port, seq, t0, timeout=1.0):
+def _stop(port, seq, timeout=1.0):
     port.write(frame_encode(STOP, seq))
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
+    end = port.now() + timeout
+    while port.now() < end:
         for fr in port.poll():
             if fr[0] == ACK and fr[2] and fr[2][0] == seq:
                 return True
-        time.sleep(0.001)
+        port.sleep(0.001)
     return False
 
 
+def make_pacer(port, args):
+    return None if getattr(args, "no_pace", False) else Pacer(port.now, args.baud)
+
+
 def cmd_fill(port, args):
-    t0 = time.monotonic()
+    t0 = port.now()
     if args.no_hello:
         # H.4 step 7: no HELLO after a power cycle: expect NAK VERSION.
         for i in range(args.count):
             port.write(frame_encode(QUEUE_EVENT, i, queue_event_body((i + 1) * 1000)))
-        end = time.monotonic() + 0.5
-        while time.monotonic() < end:
+        end = port.now() + 0.5
+        while port.now() < end:
             for fr in port.poll():
                 if fr[0] != STATUS:
-                    _log(fr, t0)
-            time.sleep(0.001)
+                    _log(port, fr, t0)
+            port.sleep(0.001)
         return 0
     info = do_hello(port)
     if info is None:
         print("no INFO")
         return 1
-    sender = GbnSender(port.write, time.monotonic, [(i + 1) * 1000 for i in range(args.count)])
+    sender = GbnSender(port.write, port.now, [(i + 1) * 1000 for i in range(args.count)],
+                       pacer=make_pacer(port, args))
     sender.on_frame(INFO, 0, msg_encode(INFO, info))
-    ok = _run_sender(port, sender, 10.0, t0)
-    st = _wait_status(port, sender, t0)
+    ok = _run_sender(port, sender, 10.0)
+    st = _wait_status(port, sender)
     print("fill: %s, %d events, stats %s" % ("done" if ok else "TIMEOUT", args.count, sender.stats))
     if st:
         print("STATUS after fill: free=%d last_seq=%d (expected free=%d last_seq=%d)" % (
             st["free"], st["last_seq"], info["queue_cap"] - args.count, sender.seq_of(args.count - 1)))
     if args.stop:
-        print("STOP ACKed" if _stop(port, sender.seq_of(args.count), t0) else "STOP not ACKed")
-        st = _wait_status(port, sender, t0, 0.1)
+        print("STOP ACKed" if _stop(port, sender.seq_of(args.count)) else "STOP not ACKed")
+        st = _wait_status(port, sender, 0.1)
         if st:
             print("STATUS after STOP: free=%d" % st["free"])
     return 0 if ok else 1
@@ -574,52 +624,66 @@ def make_impair(rng, corrupt, drop, garbage):
     return impair
 
 
-def cmd_soak(port, args):
-    rng = random.Random(args.seed)
-    impair = make_impair(rng, args.corrupt, args.drop, args.garbage)
-    t0 = time.monotonic()
+def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pace=True,
+         baud=DEFAULT_BAUD, cycle_timeout=30.0, out=print):
+    """H.5: `cycles` x (HELLO, `events` QUEUE_EVENTs through the AD-6 sender,
+    check STATUS free / last_seq, STOP). Returns (passed, totals)."""
+    rng = random.Random(seed)
+    impair = make_impair(rng, corrupt, drop, garbage)
+    pacer = Pacer(port.now, baud) if pace else None
+    t0 = port.now()
     totals = {"events": 0, "resends": 0, "rewinds": 0, "naks": 0, "semantic_naks": 0}
     first_dbg = last_dbg = None
     failures = 0
     hello_seq = 0
-    for cycle in range(args.cycles):
+    for cycle in range(cycles):
         info = do_hello(port, quiet=True, seq=hello_seq)
         if info is None:
-            print("cycle %d: no INFO" % cycle)
+            out("cycle %d: no INFO" % cycle)
             failures += 1
             continue
-        events = [(i + 1) * 1000 for i in range(args.events)]
-        sender = GbnSender(port.write, time.monotonic, events, hello_seq=hello_seq, impair=impair)
+        t_list = [(i + 1) * 1000 for i in range(events)]
+        sender = GbnSender(port.write, port.now, t_list, hello_seq=hello_seq, impair=impair, pacer=pacer)
         sender.on_frame(INFO, 0, msg_encode(INFO, info))
-        ok = _run_sender(port, sender, 30.0, t0, log_naks=False)
-        st = _wait_status(port, sender, t0, 0.15)
-        want_free = info["queue_cap"] - args.events
-        want_last = sender.seq_of(args.events - 1)
+        ok = _run_sender(port, sender, cycle_timeout, log_naks=False)
+        st = _wait_status(port, sender, 0.15)
+        want_free = info["queue_cap"] - events
+        want_last = sender.seq_of(events - 1)
         good = ok and st is not None and st["free"] == want_free and st["last_seq"] == want_last \
             and sender.stats["semantic_naks"] == 0
         if st is not None:
             d = debug_counters(st["extra"])
+            if d and last_dbg and d[2] != last_dbg[2]:
+                # dropped_bytes moved during this cycle: worth a line at the bench.
+                out("cycle %d: dropped_bytes %d -> %d" % (cycle, last_dbg[2], d[2]))
             first_dbg = first_dbg or d
             last_dbg = d or last_dbg
         if not good:
             failures += 1
-            print("cycle %d: FAIL done=%s status=%s want free=%d last_seq=%d stats=%s" % (
+            out("cycle %d: FAIL done=%s status=%s want free=%d last_seq=%d stats=%s" % (
                 cycle, ok, st, want_free, want_last, sender.stats))
-        totals["events"] += args.events if ok else 0
+        totals["events"] += events if good else 0
         for k in ("resends", "rewinds", "naks", "semantic_naks"):
             totals[k] += sender.stats[k]
-        stop_seq = sender.seq_of(args.events)
-        if not _stop(port, stop_seq, t0):
-            _stop(port, stop_seq, t0)
+        stop_seq = sender.seq_of(events)
+        if not _stop(port, stop_seq):
+            _stop(port, stop_seq)
         hello_seq = (stop_seq + 1) & 0xFF
-    elapsed = time.monotonic() - t0
-    print("soak: %d cycles x %d events, %.1f s, totals %s" % (args.cycles, args.events, elapsed, totals))
+    elapsed = port.now() - t0
+    out("soak: %d cycles x %d events, %.1f s, pacing %s, totals %s" % (
+        cycles, events, elapsed, "on" if pace else "off", totals))
     if first_dbg or last_dbg:
-        print("debug counters first %s last %s (max_app_gap_ms, watchdog_trips, dropped_bytes, tx_dropped)"
-              % (first_dbg, last_dbg))
-    print("%s: %d events enqueued exactly once and in order" % ("PASS" if failures == 0 else "FAIL",
-                                                                totals["events"]))
-    return 0 if failures == 0 else 1
+        out("debug counters first %s last %s (max_app_gap_ms, watchdog_trips, dropped_bytes, tx_dropped)"
+            % (first_dbg, last_dbg))
+    out("%s: %d events enqueued exactly once and in order" % ("PASS" if failures == 0 else "FAIL",
+                                                              totals["events"]))
+    return failures == 0, totals
+
+
+def cmd_soak(port, args):
+    passed, _ = soak(port, args.cycles, args.events, seed=args.seed, corrupt=args.corrupt, drop=args.drop,
+                     garbage=args.garbage, pace=not args.no_pace, baud=args.baud)
+    return 0 if passed else 1
 
 
 def cmd_noise(port, args):
@@ -631,20 +695,20 @@ def cmd_noise(port, args):
 
 
 def cmd_try(port, args):
-    t0 = time.monotonic()
+    t0 = port.now()
     if do_hello(port) is None:
         print("no INFO")
         return 1
     port.write(frame_encode(SET_STATE, 1, NEUTRAL))
     port.write(frame_encode(QUEUE_EVENT, 2, queue_event_body(1000)))
     port.write(frame_encode(START, 3, struct.pack("<I", 100000)))
-    end = time.monotonic() + 0.3
-    while time.monotonic() < end:
+    end = port.now() + 0.3
+    while port.now() < end:
         for fr in port.poll():
             if fr[0] != STATUS:
-                _log(fr, t0)
-        time.sleep(0.001)
-    _stop(port, 4, t0)
+                _log(port, fr, t0)
+        port.sleep(0.001)
+    _stop(port, 4)
     return 0
 
 
@@ -655,8 +719,8 @@ def cmd_loopback(port, args):
     for _ in range(args.repeat):
         port.write(pattern)
         got = bytearray()
-        end = time.monotonic() + 1.0
-        while len(got) < 256 and time.monotonic() < end:
+        end = port.now() + 1.0
+        while len(got) < 256 and port.now() < end:
             got += port.read_raw(256 - len(got))
         if bytes(got) != pattern:
             bad += 1
@@ -678,6 +742,8 @@ def main(argv=None):
     ap.add_argument("--port", required=True)
     ap.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--no-pace", action="store_true",
+                    help="write QUEUE_EVENTs as fast as the window allows (default: paced to the UART rate)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("hello", help="HELLO until INFO, print INFO")
     p.add_argument("--seconds", type=float, default=3.0)

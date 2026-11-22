@@ -108,6 +108,21 @@ add_test(NAME link_pure_check
 
 # F.19: tools/link_probe.py (the bench sender) against the shared vectors and
 # its AD-6 sender against an in-process fake link; stdlib only, no pyserial.
+# F.20 (story 2.6 D31): the probe's real `soak` against the real link code
+# through a model of the 2wiCC_Comms bridge, on a fake clock. The link is
+# loaded with ctypes from a shared module built from the same sources without
+# sanitizers (a sanitized library cannot be loaded into a plain python3).
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+file(GLOB OCB_LINK_SIM_SOURCES CONFIGURE_DEPENDS
+    "${OCB_FW_DIR}/controller/link/*.c" "${OCB_FW_DIR}/controller/core/*.c" "${OCB_FW_DIR}/common/proto/*.c")
+add_library(ocb_link_sim MODULE link_sim_shim.c ${OCB_LINK_SIM_SOURCES})
+target_include_directories(ocb_link_sim PRIVATE
+    "${OCB_FW_DIR}/controller/link/include" "${OCB_FW_DIR}/controller/core/include"
+    "${OCB_FW_DIR}/common/proto/include")
+target_compile_options(ocb_link_sim PRIVATE -fno-sanitize=all)
+target_link_options(ocb_link_sim PRIVATE -fno-sanitize=all)
+set_target_properties(ocb_link_sim PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+ocb_strict_warnings(link_sim_shim.c)
 add_test(NAME link_probe_selftest
-    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_link_probe.py" "${OCB_FW_DIR}")
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_link_probe.py" "${OCB_FW_DIR}"
+            "$<TARGET_FILE:ocb_link_sim>")
