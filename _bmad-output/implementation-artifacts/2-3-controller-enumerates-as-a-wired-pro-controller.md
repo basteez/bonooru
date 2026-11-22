@@ -582,7 +582,8 @@ Claude (Opus), gds-dev-story workflow, run autonomously on 2026-11-22.
 
 ### Completion Notes List
 
-- Tasks 1 to 10 done except 10.5 (risk register, after the bench by design). Task 11 (owner's bench) is pending: every hardware AC is **unverified on hardware**, every CI step **unverified until pushed**. Exact bench commands are in `docs/test-plan.md` (H.13 to H.17, changed H.11, the "Bench rig for the P2 profile (Story 2.3)" block) and summarised below.
+- Tasks 1 to 10 done except 10.5 (risk register, after the bench by design). Task 11 (owner's bench) is pending: every hardware AC is **unverified on hardware** (H.13 to H.17 pending, H.11 re-run pending).
+- **CI verified on the pushed commit `f8900f1`**: run https://github.com/basteez/bonooru/actions/runs/45039970542 = success, artifact `firmware-uf2` present. Earlier run 45039390009 on the same branch also success. Exact bench commands are in `docs/test-plan.md` (H.13 to H.17, changed H.11, the "Bench rig for the P2 profile (Story 2.3)" block) and summarised below.
 - AC1 [HOST]: `ocb_p2` implements the five AD-12 parts; the glue reads only `ocb_ctrl_published_read()` (NEUTRAL until 2.5, D12). Both UF2s build with 0 warnings; the console's acceptance is H.15.
 - AC2 [HOST + review]: clean-room from S1 to S9, every constant cited by S-number, sources table in `docs/usb-controller-emulation.md`; `grep 2wiCC` in the new code finds only the "no 2wiCC code" sentences.
 - AC3 [HOST]: F.26 proves every refusal leaves the state byte-for-byte unchanged and counts it; H.15 prints any refusal the console triggers.
@@ -590,7 +591,9 @@ Claude (Opus), gds-dev-story workflow, run autonomously on 2026-11-22.
 - AC5a [HOST + CI]: debug log through the SPSC ring into the STATUS v3 tail (F.31, F.32); absent from release builds, proven by `check-release-nolog.sh` (new CI step, both modes run locally).
 - AC5b [HOST]: the median is measured on core 0 (F.29), crosses the mailbox into INFO and the LATE threshold (F.31); the number itself comes from H.15 / H.17 and goes into "Measured on the Switch 2" (empty rows written). Issue #21 stays open.
 - D15 done: `OCB_BENCH_FAKE_READY`, the `fw-debug-bench` presets, the CI step and every doc offer removed; history kept in the test plan's 2.7 records. `firmware/build/fw-debug-bench/` (untracked build output) left untouched.
-- Optional `tests/fuzz/fuzz_p2.c` (libFuzzer, `-DOCB_FUZZ=ON`, clang only) written and syntax-checked; never built by a preset, not run (Apple clang has no libFuzzer runtime).
+- Optional `tests/fuzz/fuzz_p2.c` (libFuzzer, `-DOCB_FUZZ=ON`, clang only) written and syntax-checked; not built by a preset and not run in CI (Apple clang has no libFuzzer runtime). CI coverage is the deterministic `test_p2_fuzz` (F.28) under ASan and UBSan.
+- Local random-input fuzz of the `ocb_p2` entry point under ASan and UBSan (outside the repo, story lead's run): 6,000,000 inputs, no sanitizer report.
+- Local verification at `f8900f1`: `ctest --preset host-tests` 100% passed out of 34 (25 old + 9 new, 0 warnings); `fw-release` and `fw-debug` build with 0 warnings; `check-pins`, `check-proto-version`, `check-proto-pure` (14), `check-core-pure` (11), `check-link-pure` (18), `check-p2-pure` (9) and `check-release-nolog` ok. Each new gate was shown red once by injection (`check-p2-pure`: F.30; `check-release-nolog`: the debug push in the release glue; see Debug Log).
 - Not done on purpose: risk register (10.5), the "Measured on the Switch 2" values, the ADR-002 hypothesis status (all need Task 11).
 
 **Bench steps for the owner (Task 11).** From the repo root, bench venv with `pip install pyserial hidapi`. Build: `cd firmware && export OCB_PICOTOOL_DIR=$PWD/.tools/picotool-2.3.1 OCB_ARM_TOOLCHAIN=$PWD/.tools/arm-gnu-toolchain-15.2.Rel1 && cmake --preset fw-debug && cmake --build --preset fw-debug && cd ..`. Only the controller Zero is ever put in BOOTSEL (`firmware/build/fw-debug/controller/controller.uf2`); the bridge Zero keeps 2wiCC_Comms v1.1.
@@ -603,6 +606,10 @@ Claude (Opus), gds-dev-story workflow, run autonomously on 2026-11-22.
 
 ### Review follow-ups (code review, no IMPORTANT findings; MINOR fixes applied 2026-11-22)
 
+Review outcome: a fresh-context code review found no IMPORTANT findings. Its MINOR findings were fixed in commit `f8900f1`, except the three listed under "Review findings not fixed" below.
+
+Fixed in `f8900f1`:
+
 - `THIRD_PARTY_NOTICES.md`: the Story 2.7 "bench-ready hook" line now says it was removed by Story 2.3.
 - `docs/usb-controller-emulation.md`: S10 (espp) dropped from the sources table, because it was not read for this implementation. The S-list in `ocb_p2/config.h` and the notices already matched that.
 - `profile_p2/p2.c`: a subcommand whose reply is dropped (`QUEUE_FULL`) now has no effect. Player lights, IMU, vibration and input mode are not stored, and `03 30` does not start the stream; the host's resend applies them. New F.26 case in `test_p2_subcmd.c`. Red proof: with the guard removed for player lights the test printed `test_p2_subcmd.c:339: FAIL: a dropped request changed a setting`; reverted, green.
@@ -611,6 +618,12 @@ Claude (Opus), gds-dev-story workflow, run autonomously on 2026-11-22.
 - `firmware/README.md`: `-DOCB_FUZZ=ON` needs clang with libFuzzer (Homebrew LLVM on macOS; Apple clang has none).
 - `platform/usb_p2.c`: a comment explains how the MAC is derived. Bytes 2..7 of the unique id are XORed with bytes 0/1, then the first byte is made locally administered and unicast.
 - Re-verified (real output): host-tests 0 warnings, `100% tests passed out of 34`. fw-release and fw-debug build with 0 warnings. `check-pins`, `check-proto-version`, `check-proto-pure`, `check-core-pure`, `check-link-pure`, `check-p2-pure` all ok. `check-release-nolog: ok, no debug-log symbol` on the release ELF, `--expect-present: ok (7 symbols)` on the debug ELF.
+
+#### Review findings not fixed (MINOR, recorded for a later story)
+
+- (a) `firmware/tools/check-p2-pure.sh`: the banned list lacks `asm`, `__asm`, `volatile` and `abort`. None is used today, and `<assert.h>` is already blocked by the include allow-list.
+- (b) `tests/fuzz/fuzz_p2.c` (libFuzzer target) is not run in CI (Apple clang lacks libFuzzer). The deterministic `test_p2_fuzz` (F.28) under ASan and UBSan covers CI.
+- (c) A reply-queue overflow is counted in `cnt.queue_full` but is not surfaced in the STATUS debug log.
 
 ### File List
 
@@ -663,6 +676,7 @@ Modified:
 
 ## Change Log
 
+- 2026-11-22: CI verified on `f8900f1` (run 45039970542, success, `firmware-uf2` artifact; earlier run 45039390009 success). Completion Notes updated: "unverified until pushed" removed for CI, PR opened against `main` (Refs #21, issue stays open). Status stays `review`; hardware ACs H.11 (re-run), H.13 to H.17 pending the owner's bench.
 - 2026-11-22: Story 2.3 created (ready-for-dev) by the create-story workflow, run autonomously. Decisions D1 to D25 recorded; sources S1 to S11 cited; `fw-debug-bench` superseded (D15); issues #20 and #21 left open by design (D13, D16).
 - 2026-11-22: Implementation (dev-story): `ocb_p2` profile, TinyUSB glue, P2 debug log and STATUS v3 tail, measured report period through the mailbox, purity and release-no-log gates, `p2_probe.py`, `p2check` / `p2watch`, 9 new ctest tests (F.24 to F.32; 34 in all, green), docs; `fw-debug-bench` removed; decisions D26 to D33 added. Status review; hardware ACs pending the owner's bench (Task 11).
 - 2026-11-22: Review follow-ups: 7 MINOR fixes (no effect for dropped requests plus a test, median fed by 0x30 completions only, notices and docs consistency, fuzz note, MAC comment); 34 ctest tests green.
