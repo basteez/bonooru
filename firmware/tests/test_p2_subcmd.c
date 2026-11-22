@@ -321,5 +321,31 @@ int main(void)
         OCB_CHECK(p.cnt.refusals == 5u, "5 refusals counted");
     }
 
+    /* A request whose reply is dropped (QUEUE_FULL) has no effect: no
+     * setting is stored and the stream does not start (review fix). */
+    {
+        fx_init(&p);
+        for (int k = 0; k < 4; k++) {
+            OCB_CHECK(fx_usb(&p, 0x02, NULL) == OCB_P2_RX_HANDLED, "fill %d", k);
+        }
+        const uint8_t lights[1] = {0x0F};
+        const uint8_t on[1] = {0x01};
+        const uint8_t full[1] = {0x30};
+        OCB_CHECK(fx_sub(&p, 0x30, lights, 1, NULL) == OCB_P2_RX_QUEUE_FULL, "30 into a full queue");
+        OCB_CHECK(fx_sub(&p, 0x40, on, 1, NULL) == OCB_P2_RX_QUEUE_FULL, "40 into a full queue");
+        OCB_CHECK(fx_sub(&p, 0x48, on, 1, NULL) == OCB_P2_RX_QUEUE_FULL, "48 into a full queue");
+        OCB_CHECK(fx_sub(&p, 0x03, full, 1, NULL) == OCB_P2_RX_QUEUE_FULL, "03 30 into a full queue");
+        OCB_CHECK(p.player_lights == 0u && !p.imu_enabled && !p.vibration_enabled && p.input_mode == 0u,
+                  "a dropped request changed a setting");
+        OCB_CHECK(!ocb_p2_ready(&p) && !ocb_p2_take_handshake(&p), "a dropped 03 30 started the stream");
+        OCB_CHECK(p.cnt.queue_full == 4u, "queue_full %u", p.cnt.queue_full);
+        /* Once the queue drains, the resent requests act. */
+        uint8_t got[64];
+        while (fx_in(&p, got) > 0u) {
+        }
+        OCB_CHECK(fx_sub(&p, 0x30, lights, 1, NULL) == OCB_P2_RX_HANDLED && p.player_lights == 0x0F, "resent 30");
+        OCB_CHECK(fx_sub(&p, 0x03, full, 1, NULL) == OCB_P2_RX_HANDLED && ocb_p2_ready(&p), "resent 03 30");
+    }
+
     return ocb_test_failures() == 0 ? 0 : 1;
 }

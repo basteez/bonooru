@@ -68,8 +68,8 @@ typedef struct {
 } ocb_p2_counters;
 
 /* IN interval measurer (D13): a histogram of 50 us bins over the last 256
- * intervals between IN completions, the median published when at least 64
- * are in. */
+ * intervals between 0x30 IN completions (the glue notes only those), the
+ * median published when at least 64 are in. */
 typedef struct {
     uint16_t bins[OCB_P2_IV_BINS];
     uint16_t ring[OCB_P2_IV_WINDOW]; /* bin index of each sample in the window */

@@ -327,7 +327,7 @@ The USB profile (P2, `controller/profile_p2`) runs on core 0 and reaches the lin
 
 - **`console_ready`** is now fed by the real profile: the mailbox gets a handshake when the console first asks for the input stream after a restart (USB command `80 04` or subcommand `03 30`), and an IN report each time the console takes one. The 100 ms stall rule is unchanged.
 - **USB-down events.** Suspend, unmount and bus reset each restart the profile and post their mailbox counter, once per down episode: a bus reset before the device was configured (enumeration) posts nothing, so it is no abort.
-- **`report_period_us`.** Core 0 measures the median interval between IN completions (the last 256, published from 64 on, intervals above 20 ms ignored) and puts it in the mailbox; `ocb_link_poll` applies each new value to `INFO.report_period_us` and to the core's LATE threshold together (saturated at 65535). It is 0 (unknown, LATE falls back to 8000 µs) until 64 intervals are in and again after any USB-down event. Story 2.5 confirms or replaces the fallback.
+- **`report_period_us`.** Core 0 measures the median interval between completions of `0x30` input reports (handshake replies are not counted; the last 256, published from 64 on, intervals above 20 ms ignored) and puts it in the mailbox; `ocb_link_poll` applies each new value to `INFO.report_period_us` and to the core's LATE threshold together (saturated at 65535). It is 0 (unknown, LATE falls back to 8000 µs) until 64 intervals are in and again after any USB-down event. Story 2.5 confirms or replaces the fallback.
 
 ## Controller → app reporting (AD-19)
 

@@ -601,6 +601,17 @@ Claude (Opus), gds-dev-story workflow, run autonomously on 2026-11-22.
 5. H.16: `python3 firmware/tools/link_probe.py --port "$P" p2watch`; one action per prompt (sleep, wake, Wired Communication OFF, ON), 90 s each. Expect `PASS`. Optional `--dock`.
 6. H.17 (optional): `cmake --preset fw-debug -DOCB_P2_BINTERVAL=8 && cmake --build --preset fw-debug` in `firmware/`, flash, plug into the console, `p2check`, then rebuild with `-DOCB_P2_BINTERVAL=1` and re-flash.
 
+### Review follow-ups (code review, no IMPORTANT findings; MINOR fixes applied 2026-11-22)
+
+- `THIRD_PARTY_NOTICES.md`: the Story 2.7 "bench-ready hook" line now says it was removed by Story 2.3.
+- `docs/usb-controller-emulation.md`: S10 (espp) dropped from the sources table, because it was not read for this implementation. The S-list in `ocb_p2/config.h` and the notices already matched that.
+- `profile_p2/p2.c`: a subcommand whose reply is dropped (`QUEUE_FULL`) now has no effect. Player lights, IMU, vibration and input mode are not stored, and `03 30` does not start the stream; the host's resend applies them. New F.26 case in `test_p2_subcmd.c`. Red proof: with the guard removed for player lights the test printed `test_p2_subcmd.c:339: FAIL: a dropped request changed a setting`; reverted, green.
+- `docs/usb-controller-emulation.md`: the queue of 4 and its silent drop on overflow are documented. A dropped request is counted in `cnt.queue_full` (no new log kind) and changes nothing.
+- `platform/usb_p2.c`: only `0x30` report completions feed the interval median, so handshake replies do not skew it. Every IN completion still feeds `console_ready`. The docs (usb-controller-emulation, link-protocol, controller README) and the `p2.h` comment now say "0x30 completions".
+- `firmware/README.md`: `-DOCB_FUZZ=ON` needs clang with libFuzzer (Homebrew LLVM on macOS; Apple clang has none).
+- `platform/usb_p2.c`: a comment explains how the MAC is derived. Bytes 2..7 of the unique id are XORed with bytes 0/1, then the first byte is made locally administered and unicast.
+- Re-verified (real output): host-tests 0 warnings, `100% tests passed out of 34`. fw-release and fw-debug build with 0 warnings. `check-pins`, `check-proto-version`, `check-proto-pure`, `check-core-pure`, `check-link-pure`, `check-p2-pure` all ok. `check-release-nolog: ok, no debug-log symbol` on the release ELF, `--expect-present: ok (7 symbols)` on the debug ELF.
+
 ### File List
 
 New:
@@ -654,3 +665,4 @@ Modified:
 
 - 2026-11-22: Story 2.3 created (ready-for-dev) by the create-story workflow, run autonomously. Decisions D1 to D25 recorded; sources S1 to S11 cited; `fw-debug-bench` superseded (D15); issues #20 and #21 left open by design (D13, D16).
 - 2026-11-22: Implementation (dev-story): `ocb_p2` profile, TinyUSB glue, P2 debug log and STATUS v3 tail, measured report period through the mailbox, purity and release-no-log gates, `p2_probe.py`, `p2check` / `p2watch`, 9 new ctest tests (F.24 to F.32; 34 in all, green), docs; `fw-debug-bench` removed; decisions D26 to D33 added. Status review; hardware ACs pending the owner's bench (Task 11).
+- 2026-11-22: Review follow-ups: 7 MINOR fixes (no effect for dropped requests plus a test, median fed by 0x30 completions only, notices and docs consistency, fuzz note, MAC comment); 34 ctest tests green.

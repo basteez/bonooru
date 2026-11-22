@@ -24,7 +24,7 @@
  *    tud_mount_cb at SET_CONFIGURATION != 0.
  *  - tud_hid_report_complete_cb runs in tud_task() (task context), once
  *    per IN transfer the host took: that is where the IN interval is
- *    stamped (D13; the hook cannot tell which endpoint completed, so the
+ *    stamped, for 0x30 reports only (D13; the hook cannot tell which endpoint completed, so the
  *    stamp includes the loop's own latency, recorded in the story).
  *
  * USB-down posting (D11, D26): each of suspend, unmount and bus reset
@@ -154,8 +154,12 @@ static void bus_reset_check(void)
 
 void usb_p2_init(void)
 {
-    /* MAC (D10): 6 bytes of the board's unique id, locally administered
-     * (bit 1 of the first byte set) and unicast (bit 0 clear). */
+    /* MAC (D10): 6 bytes from the board's 8-byte unique id. Bytes 2..7 are
+     * XORed with bytes 0 and 1 (alternating), so all 64 bits of the id
+     * reach the MAC and two boards whose ids differ only in the first bytes
+     * still get different MACs. Then the first byte is made locally
+     * administered (bit 1 set) and unicast (bit 0 clear), so it never
+     * collides with a vendor-assigned MAC. */
     pico_unique_board_id_t id;
     pico_get_unique_board_id(&id);
     ocb_p2_cfg cfg;
@@ -283,9 +287,13 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, uint16_t len)
 {
     (void)instance;
-    (void)report;
-    (void)len;
+    /* Every IN the host took feeds console_ready (the stall rule). Only
+     * 0x30 completions feed the interval median (review fix): the
+     * handshake replies come at the console's request pace and would skew
+     * the period Story 2.5 needs. */
     ocb_usb_mailbox_in_report(ocb_ctrl_usb_mailbox());
-    ocb_p2_interval_note(&s_p2, time_us_64());
+    if (report != NULL && len > 0u && report[0] == OCB_P2_RID_IN_STANDARD) {
+        ocb_p2_interval_note(&s_p2, time_us_64());
+    }
     pump();
 }

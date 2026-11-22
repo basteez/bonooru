@@ -89,7 +89,7 @@ interface, 64-byte reports). It returns `ocb_p2`'s descriptors, passes every OUT
 `ocb_p2_on_output()`, sends `ocb_p2_next_in()` whenever the IN endpoint is free, restarts the
 profile and posts to the USB mailbox on mount, unmount, suspend and bus reset (the bus reset is
 seen only through `tud_event_hook_cb`, in the interrupt; it is handled in the task), stamps
-each IN completion for the median and puts it in the mailbox, and in debug builds pushes the
+each 0x30 report completion for the median and puts it in the mailbox, and in debug builds pushes the
 profile's log records into the SPSC ring. `usb_p2_task()` runs once per pass of core 0's plain
 loop, next to the LED blink; it never blocks. The MAC is derived from the board's unique id
 (locally administered). Build options: `OCB_PROFILE` (`P2` only), `OCB_P2_BINTERVAL` (1..16,

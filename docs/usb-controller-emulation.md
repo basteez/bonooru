@@ -47,7 +47,7 @@ Choice: **P2** (ADR-002 (author's notes), accepted 2026-11-18). Every input the 
 - `ready()` returns to false on USB suspend, unmount or bus reset, and when no IN report has been taken for more than 100 ms (covers "Wired Communication" switched off without a bus event; flag only, not an abort cause).
 - A profile reads only the published state; it never reaches into the scheduler.
 - P2 refuses firmware-update subcommands (C7) and restarts its handshake after a bus reset. Debug builds only: subcommands are logged through the SPSC ring (they reach the app in the debug `STATUS` v3 tail, [link protocol](link-protocol.md)).
-- `INFO.report_period_us` is the median IN interval measured on the device (0 if unknown, AD-7). It answers the polling-rate hypothesis below without a sniffer.
+- `INFO.report_period_us` is the median IN interval measured on the device (P2: the interval between `0x30` report completions; handshake replies are not counted) (0 if unknown, AD-7). It answers the polling-rate hypothesis below without a sniffer.
 
 ## Enumeration
 
@@ -82,7 +82,6 @@ Clean-room (NFR-07, ADR-004): written from the public documents below, used for 
 | S7 | mzyy94, [Pro Controller USB gadget](https://mzyy94.com/blog/2020/03/20/nintendo-switch-pro-controller-usb-gadget/) | the 203-byte report descriptor (hex), strings (hex), a real `0x30` capture, a Switch 1 init sequence seen between a real console and a real controller |
 | S8 | tmk, [lsusb -v of a Pro Controller](https://gist.github.com/tmk/9725596c6726b561ad2bf1f1e07e1523) | device and configuration descriptors (hex and decoded) |
 | S9 | [joycontrol](https://github.com/mart1nro/joycontrol) (values only) | stick calibration values, acks `82` / `83` / `90`, device-info firmware `04 00` |
-| S10 | espp [switch_pro](https://components.espressif.com/components/espp/switch_pro) | confirms the shape of a software emulation |
 | S11 | TinyUSB 0.18.0 (pinned submodule) | `hid_device.c`, `usbd.c`: which callback sees what |
 
 ### Descriptors (D3, D4)
@@ -129,6 +128,8 @@ Every report is 64 bytes on the wire, the id included; TinyUSB sends our 64 byte
 | `01` pairing, `06` HCI, `07` reset pairing, `20` MCU reset, `21` MCU config, `22 02` resume for update | `00` (NACK) | | **refused** (C7) | S2, S3 |
 | `22 00`, `22 01` | `80` | | none | S3 |
 | any other | `80` | `03` | none | S3 |
+
+Reply queue: 4 replies of 64 bytes, sent before any `0x30` report. A request that arrives while the queue is full gets no reply and has no effect (no setting is stored, the stream is not started); it is only counted (`cnt.queue_full`, no log kind of its own), and the host's resend recovers it. A refusal in that case is still counted as a refusal.
 
 Also refused, with no reply: output report `0x03` (MCU firmware update packet, S2) and every feature report (S2: `0x70` to `0x74` unlock and write the controller's memory). Output `0x10` (rumble only) is consumed silently. A refusal changes nothing and is counted and logged.
 

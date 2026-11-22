@@ -326,7 +326,9 @@ static ocb_p2_rx on_subcmd(ocb_p2 *p, const uint8_t *buf, size_t len, ocb_p2_log
         /* S3: one argument; 0x30 = standard full mode starts the stream (D5). */
         const uint8_t mode = arg(buf, len, 0u);
         r = reply_sub(p, OCB_P2_ACK, id, NULL, 0u);
-        if (len > OCB_P2_SUBCMD_ARG_OFFSET) {
+        /* A request whose reply was dropped (QUEUE_FULL) did not happen:
+         * the host will resend it, so no setting changes (review fix). */
+        if (r == OCB_P2_RX_HANDLED && len > OCB_P2_SUBCMD_ARG_OFFSET) {
             p->input_mode = mode;
             if (mode == OCB_P2_INPUT_MODE_FULL) {
                 stream_on(p, log);
@@ -345,15 +347,21 @@ static ocb_p2_rx on_subcmd(ocb_p2 *p, const uint8_t *buf, size_t len, ocb_p2_log
         return reply_sub(p, OCB_P2_ACK, id, NULL, 0u);
     case OCB_P2_SC_PLAYER_LIGHTS:
         r = reply_sub(p, OCB_P2_ACK, id, NULL, 0u);
-        p->player_lights = arg(buf, len, 0u);
+        if (r == OCB_P2_RX_HANDLED) {
+            p->player_lights = arg(buf, len, 0u);
+        }
         return r;
     case OCB_P2_SC_IMU_ENABLE:
         r = reply_sub(p, OCB_P2_ACK, id, NULL, 0u);
-        p->imu_enabled = arg(buf, len, 0u) != 0u;
+        if (r == OCB_P2_RX_HANDLED) {
+            p->imu_enabled = arg(buf, len, 0u) != 0u;
+        }
         return r;
     case OCB_P2_SC_VIBRATION:
         r = reply_sub(p, OCB_P2_ACK, id, NULL, 0u);
-        p->vibration_enabled = arg(buf, len, 0u) != 0u;
+        if (r == OCB_P2_RX_HANDLED) {
+            p->vibration_enabled = arg(buf, len, 0u) != 0u;
+        }
         return r;
     case OCB_P2_SC_SPI_READ:
         return spi_read(p, buf, len);

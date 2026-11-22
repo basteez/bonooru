@@ -104,6 +104,10 @@ pin number anywhere else in the firmware sources; use the `OCB_PIN_*` names.
 
 ## Host test names
 
+Optional fuzz target (Story 2.3): `-DOCB_FUZZ=ON` on the host preset builds `fuzz_p2` with
+libFuzzer; it needs clang with the libFuzzer runtime (on macOS Homebrew LLVM, e.g.
+`CC=$(brew --prefix llvm)/bin/clang`; Apple clang has no libFuzzer). Not in CI.
+
 ctest (`host-tests` preset): `test_pins`, `test_pins_debug`, `test_version`, `pin_grep_selftest`,
 `test_vectors`, `test_proto_api`, `test_core_modes`, `test_core_end_late`, `test_core_sync`,
 `test_core_mask`, `test_core_edge`, `proto_version_check`, `proto_pure_check`, `core_pure_check`,
