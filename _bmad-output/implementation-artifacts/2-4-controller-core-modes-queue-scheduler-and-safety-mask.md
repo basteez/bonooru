@@ -4,7 +4,7 @@ baseline_commit: fb27406bb3ca80ce5b169ab739182affcc7d63c4
 
 # Story 2.4: Controller core: modes, queue, scheduler and safety mask
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -340,7 +340,7 @@ No `project-context.md` exists in the repo. Project rules that apply, from the o
 
 ## Review Findings
 
-Code review of commit `3664f57`: APPROVE, no important findings; CI green on `3664f57`. Minor findings:
+Code review of commit `3664f57` (fresh context): APPROVE, no important findings. Randomized fuzz harness (ASan+UBSan, about 7.2M iterations plus 1.2M with implicit-conversion and local-bounds checks): no crashes, no sanitizer reports, no invariant failures. Minor findings M1 to M4 fixed in `7b9f060`; M5 to M7 deferred:
 
 - [x] **M1 (fixed)** `check-core-pure.sh` scanned only `*.c`/`*.h` and missed some I/O and clock names. Now it also scans `*.cpp *.cc *.S *.inc`, bans `clock_gettime`, `gettimeofday`, `stdio_`, `puts`, `putchar` (word-bounded), and fails when a `CMakeLists.txt` in the tree names `pico_*`, `hardware_*` or `ocb_hw` on a non-comment line. 11 new bad fixtures (18 in all) and a good `CMakeLists.txt` fixture (the comment may name them, the link line may not); red proven on the real tree, real tree green.
 - [x] **M2 (fixed)** The static hot-path helpers of `modes.c` (`out_reset`, `cause_event`, `reply_ack`, `reply_nak`, `hat_ok`, `sync_point`, `handle_set_state`, `handle_start`, `handle_queue_event`) are now `static OCB_CORE_RAMFUNC`; `queue.c`, `mask.c`, `sched.c` have no static helpers. `ramfunc.h` and `firmware/controller/README.md` state that Story 2.5 must review the RAM placement of the `ocb_proto` functions the core calls, of `OCB_NEUTRAL` and of compiler-generated read-only tables.
@@ -390,9 +390,9 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow, 2026-11-22.
 - Commands run from `firmware/` (with `OCB_ARM_TOOLCHAIN=$PWD/.tools/arm-gnu-toolchain-15.2.Rel1`, `OCB_PICOTOOL_DIR=$PWD/.tools/picotool-2.3.1`): `cmake --preset fw-release && cmake --build --preset fw-release --clean-first`, same for `fw-debug` and `host-tests`: all rc 0, **0 warnings** in each build log; `bridge.uf2` and `controller.uf2` produced; the ARM compile of `ocb_core` uses `-std=c99 -Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion`. `ctest --preset host-tests`: **`100% tests passed out of 14`** (8 existing + 6 new). `tools/check-pins.sh`, `check-proto-version.sh`, `check-proto-pure.sh`, `check-core-pure.sh`: all ok. `shellcheck` clean on the two new scripts, `actionlint` clean on `firmware.yml`.
 - ASan/UBSan: active locally with Apple clang (macOS arm64; LeakSanitizer is Linux-only, set through `OCB_TEST_ENV` for the new tests too). Second compiler: Homebrew `gcc-16` host build in the scratchpad (ASan/UBSan on), 14/14 passed, no warnings.
 - `arm-none-eabi-size` of the `ocb_core` objects (fw-release, informational for Story 2.5): `queue.c.o` 204, `mask.c.o` 28, `modes.c.o` 913, `sched.c.o` 188 bytes text; total 1333 text, 0 data, 0 bss. The queue storage (512 × 12 = 6 KB) is not allocated by this story.
-- CI: **unverified until pushed** (new step "Controller core is pico-sdk free (AD-2)" and the six new ctest entries run in "Host tests").
+- CI: green on `3664f57` (run 45005942303, artifact `firmware-uf2`) and on `7b9f060` (run 45006755419, artifact `firmware-uf2`). The step "Controller core is pico-sdk free (AD-2)" and the six new ctest entries run in "Host tests".
 - Suggestions for the owner (not done here, per Task 8.4): the risk-register row C6 (`_bmad-output/specs/`) can move to "mitigated in code, hardware proof pending"; the open points of the story (D4 extra refusals, D7 hat not narrowed, D5 END counted in `abort_count`, D6 8000 µs fallback) stand as written.
-- After the review fixes (M1 to M4), re-run from `firmware/`: `fw-release`, `fw-debug`, `host-tests` with `--clean-first`: rc 0, 0 warnings each; `ctest --preset host-tests`: `100% tests passed out of 14`; `check-pins`, `check-proto-version`, `check-proto-pure`, `check-core-pure`: ok; `shellcheck` and `actionlint` clean; UF2s produced; `ocb_core` text unchanged at 1333 bytes (default empty `OCB_CORE_RAMFUNC`). CI for these fixes: unverified until pushed.
+- After the review fixes (M1 to M4), re-run from `firmware/`: `fw-release`, `fw-debug`, `host-tests` with `--clean-first`: rc 0, 0 warnings each; `ctest --preset host-tests`: `100% tests passed out of 14`; `check-pins`, `check-proto-version`, `check-proto-pure`, `check-core-pure`: ok; `shellcheck` and `actionlint` clean; UF2s produced; `ocb_core` text unchanged at 1333 bytes (default empty `OCB_CORE_RAMFUNC`). CI for these fixes: green on `7b9f060` (run 45006755419).
 - Not touched: `common/proto/**` (vectors and `consts.h` unchanged, no wire change), `common/hw/**`, `bridge/**`, `docs/ocarina-input-mechanics.md`, `_bmad/**`, `_bmad-output/specs/**`. No 2wiCC or third-party code.
 
 ### File List
@@ -455,4 +455,5 @@ Modified:
 ### Change Log
 
 - 2026-11-22: Story 2.4 implemented: `ocb_core` library (modes, queue, scheduler, abort latch, safety mask), host tests F.3 to F.6, F.12, F.13, purity gate `check-core-pure.sh` with CI step, docs (test plan, link protocol rules, READMEs, notices). Decisions D16 to D21 recorded. Status: review.
+- 2026-11-22: Story 2.4 done: code review APPROVE, review follow-ups M1 to M4 fixed in `7b9f060`, CI green on `7b9f060`, PR opened against `main` (not merged).
 - 2026-11-22: Addressed code review findings - 4 items resolved (M1 to M4: gate extended to more file types, names and CMake links; static hot-path helpers carry `OCB_CORE_RAMFUNC`; link-protocol text on the two extra refusals and the HELLO version order). M5 to M7 deferred with reasons. Decision D22 added. Status stays review.
