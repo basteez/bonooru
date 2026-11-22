@@ -9,6 +9,7 @@ cmake_minimum_required(VERSION 3.25)
 option(OCB_HOST_TESTS "Build host-side tests only (native compiler, no pico-sdk)" OFF)
 option(OCB_DEBUG_BUILD "Define OCB_DEBUG_BUILD=1 for our targets (debug-only pins and aids)" OFF)
 option(OCB_ALLOW_OTHER_TOOLCHAIN "Accept a compiler other than the pinned one (local experiments only)" OFF)
+option(OCB_SANITIZE "host-tests only: build with AddressSanitizer and UBSan" OFF)
 
 set(OCB_FW_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${OCB_FW_DIR}/cmake")
@@ -31,6 +32,13 @@ else()
     project(bonooru_fw C)
     set(CMAKE_C_STANDARD 11)
     set(CMAKE_C_STANDARD_REQUIRED ON)
+    # ASan + UBSan for every host-test target (story 2.2 D8); never in the
+    # firmware presets. -DOCB_SANITIZE=OFF if a sanitizer runtime is missing.
+    if(OCB_SANITIZE)
+        set(_ocb_san "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer")
+        string(APPEND CMAKE_C_FLAGS " ${_ocb_san}")
+        string(APPEND CMAKE_EXE_LINKER_FLAGS " ${_ocb_san}")
+    endif()
 endif()
 
 include(ocb_warnings)

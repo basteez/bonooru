@@ -48,7 +48,8 @@ Presets (`CMakePresets.json`):
   `build/fw-release/controller/controller.uf2`.
 - `fw-debug`: debug build, defines `OCB_DEBUG_BUILD=1` (debug-only pins and aids).
 - `host-tests`: native compiler, ctest, no pico-sdk (`ctest --preset host-tests` fails
-  if no test is found).
+  if no test is found). Built with AddressSanitizer and UBSan (`OCB_SANITIZE=ON`); if a
+  sanitizer runtime is missing on a machine, configure with `-DOCB_SANITIZE=OFF`.
 
 Homebrew's `picotool` 2.3.1 is an acceptable local alternative to the downloaded one
 (`export OCB_PICOTOOL_DIR="$(brew --prefix picotool)/lib/cmake"`: its `picotool/`
@@ -70,6 +71,14 @@ drive that appears. The board reboots into the new firmware.
 `common/hw/include/ocb_hw/pins.h` is the only file where a GPIO number may appear.
 `tools/check-pins.sh` (also run by CI and by ctest as `pin_grep_selftest`) fails on a
 pin number anywhere else in the firmware sources; use the `OCB_PIN_*` names.
+
+## Protocol checks (AD-2, AD-14)
+
+- `tools/check-proto-version.sh`: every `common/proto/vectors/*.txt` header equals
+  `OCB_PROTO_VERSION` in `consts.h` (CI step; ctest `proto_version_check` with a self-test).
+- `tools/check-proto-pure.sh`: `common/proto/` includes only `<stdint.h> <stddef.h>
+  <stdbool.h> <string.h> <limits.h>` and `ocb_proto/*` headers (CI step; ctest
+  `proto_pure_check` with a self-test).
 
 ## CI
 
