@@ -10,7 +10,7 @@ check.data: 31 32 33 34 35 36 37 38 39
 check.crc: b1 29
 
 # empty input: the init value (crc ffff)
-empty.data: 
+empty.data:
 empty.crc: ff ff
 
 # one 00 byte (crc e1f0)

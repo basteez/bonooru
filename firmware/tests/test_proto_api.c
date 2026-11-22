@@ -61,6 +61,23 @@ static void test_cobs_buffer_limits(void)
             OCB_CHECK(raw[k] == GUARD, "decode cap %zu wrote byte %zu", cap, k);
         }
     }
+    /* A malformed input is reported as malformed even when the output also
+     * overflows (COBS before length, AD-3). */
+    {
+        uint8_t bad[12];
+        memset(bad, 0x01, sizeof bad);
+        bad[11] = 0x05; /* code past the end */
+        OCB_CHECK(ocb_cobs_decode(bad, sizeof bad, raw, 4, &n) == OCB_COBS_ERR_TRUNCATED,
+                  "truncated input with a full output");
+        bad[11] = 0x00; /* zero inside */
+        OCB_CHECK(ocb_cobs_decode(bad, sizeof bad, raw, 4, &n) == OCB_COBS_ERR_ZERO,
+                  "zero inside with a full output");
+        bad[11] = 0x01;
+        memset(raw, GUARD, sizeof raw);
+        OCB_CHECK(ocb_cobs_decode(bad, sizeof bad, raw, 4, &n) == OCB_COBS_ERR_SPACE && n == 0 &&
+                      raw[4] == GUARD,
+                  "well-formed input, full output: SPACE, no write past out_cap");
+    }
     OCB_CHECK(ocb_cobs_decode(out, full, raw, sizeof raw, &n) == OCB_COBS_OK && n == sizeof in &&
                   memcmp(raw, in, n) == 0,
               "decode round trip");
@@ -365,6 +382,9 @@ static void test_msgs_limits(void)
                          OCB_STATUS_LINK_OK, extra, sizeof extra};
     OCB_CHECK(ocb_msg_status_encode(&st, buf, 13) == OCB_ERR_BUF, "STATUS + extra into 13 bytes");
     OCB_CHECK(ocb_msg_status_encode(&st, buf, 14) == 14, "STATUS + 3 extra");
+    st.extra = NULL; /* extra_len > 0 without bytes: refused, not silently dropped */
+    OCB_CHECK(ocb_msg_status_encode(&st, buf, sizeof buf) == OCB_ERR_BUF, "STATUS extra NULL");
+    st.extra = extra;
     st.extra_len = OCB_MAX_BODY; /* would exceed the frame body */
     OCB_CHECK(ocb_msg_status_encode(&st, buf, sizeof buf) == OCB_ERR_BUF, "STATUS extra too big");
     ocb_msg_status d;

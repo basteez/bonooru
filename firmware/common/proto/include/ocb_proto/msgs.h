@@ -63,8 +63,10 @@ typedef struct {
     uint8_t abort_count;
     uint8_t last_event; /* OCB_EVT_* */
     uint8_t flags;      /* OCB_STATUS_* */
-    /* Trailing debug counters: on decode, a pointer into the caller's body;
-     * on encode, appended after the 11 base bytes (may be NULL if 0). */
+    /* Trailing debug counters: on decode, a pointer into the caller's body
+     * (NULL when extra_len is 0); on encode, appended after the 11 base
+     * bytes. Encode returns OCB_ERR_BUF if extra is NULL while extra_len > 0,
+     * or if 11 + extra_len exceeds OCB_MAX_BODY or cap. */
     const uint8_t *extra;
     size_t extra_len;
 } ocb_msg_status;

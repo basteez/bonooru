@@ -10,7 +10,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Largest encoding of n input bytes: n + ceil(n / 254), at least 1. */
+/* Largest encoding of n input bytes: n + ceil(n / 254), at least 1.
+ * Evaluates n three times: pass a constant or a side-effect-free expression. */
 #define OCB_COBS_MAX_ENCODED(n) ((n) + ((n) + 253) / 254 + ((n) == 0 ? 1 : 0))
 
 typedef enum {
@@ -28,8 +29,11 @@ size_t ocb_cobs_encode(const uint8_t *in, size_t in_len, uint8_t *out, size_t ou
 
 /* Decodes `in_len` bytes (no delimiter) into `out`. On OCB_COBS_OK,
  * *out_len is the decoded length; on an error it is 0 and the contents of
- * `out` are unspecified. Never reads past in[in_len], never writes at or past
- * out[out_cap]. */
+ * `out` are unspecified. The whole input is always validated: a malformed
+ * input returns ZERO or TRUNCATED even if the output would also overflow;
+ * SPACE means the input is well formed but decodes to more than out_cap
+ * bytes. Never reads past in[in_len], never writes at or past out[out_cap].
+ * `out_len` must not be NULL. */
 ocb_cobs_result ocb_cobs_decode(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap,
                                 size_t *out_len);
 

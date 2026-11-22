@@ -40,7 +40,8 @@ of `.txt` files here differs from that list).
    last `.`). Case names are `[a-z0-9_]+` and unique per file. Parsers reject unknown
    fields, duplicate fields and missing required fields; F.9 also enforces a minimum
    number of cases per file.
-5. `err` is one of `COBS`, `CRC`, `RANGE`, `BODY_LEN` (the C names without `OCB_ERR_`).
+5. `err` is one of `COBS`, `CRC`, `RANGE`, `BODY_LEN`, and in `frames.txt` also `EMPTY`
+   (an empty `wire`) and `OVERLONG` (more than 262 bytes): the C names without `OCB_ERR_`.
    `rx` is `CONTROLLER` (accepts types `01..7f`, the default) or `APP` (accepts `80..ff`).
 6. `fields` is a space-separated list of `name=value`: numbers are **big-endian hex of
    their full width** (u8 = 2 digits, u16 = 4, u32 = 8), byte arrays and the nested
@@ -62,7 +63,9 @@ of `.txt` files here differs from that list).
 
 - Check order (AD-3): COBS, then length consistency (`decoded >= 5` and
   `decoded == 3 + len + 2`, a failure is a **CRC** error), then CRC, then type range. Seq
-  and semantic checks belong to the consumers.
+  and semantic checks belong to the consumers. The whole encoded input is validated as
+  COBS first: a malformed input is a COBS error even if it would also decode to more than
+  260 bytes; a well-formed input that decodes to more than 260 bytes is a CRC error.
 - An **empty frame** is a zero-length run between two delimiters (or a leading `00`): it
   is counted in `empty` and dropped, never an error. An encoded `01` decodes to zero bytes:
   that is a too-short frame, a CRC error.

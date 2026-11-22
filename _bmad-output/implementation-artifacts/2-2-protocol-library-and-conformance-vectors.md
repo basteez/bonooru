@@ -115,6 +115,14 @@ All tasks are for the dev agent and need no hardware. There is no owner-at-the-b
   - [x] 10.2 Red checks, each reverted afterwards: change `OCB_PROTO_VERSION` to 2 → `proto_version_check` and `test_vectors` fail; flip one hex digit in `frames.txt` → `test_vectors` fails naming file, line and case; add `#include "pico/stdlib.h"` to a proto source → `check-proto-pure.sh` fails (and the host build fails too); change one NAK value in `consts.h` → `test_vectors` fails on the constants file.
   - [x] 10.3 Record in the Completion Notes: the exact commands, the ctest summary line, the `ocb_proto` code size in the release ELF (`arm-none-eabi-size` of the archive objects, informational), whether ASan/UBSan ran on macOS clang, and that CI (ubuntu gcc with sanitizers) is unverified until pushed.
 
+### Review Follow-ups (AI)
+
+- [x] [AI-Review][High] AD-3 order: `ocb_cobs_decode` stopped at the first output overflow (`SPACE`, mapped to `OCB_ERR_CRC`) before validating the rest of the input, so `01`x261 + `05` and `01`x261 + `00` gave CRC instead of COBS. Fixed: the decoder validates the whole input and returns `SPACE` only for a well-formed input; vectors `cobs_overflow_truncated`, `cobs_overflow_zero` (COBS) and `decoded_too_long` (CRC) added; `frame.c` comment updated (`common/proto/cobs.c`, `frame.c`, `frames.txt`)
+- [x] [AI-Review][Low] `OCB_COBS_MAX_ENCODED(n)` evaluates `n` more than once: documented in `cobs.h`
+- [x] [AI-Review][Low] `ocb_msg_status_encode` silently dropped `extra_len` when `extra == NULL`: now returns `OCB_ERR_BUF`, documented in `msgs.h`, tested in F.11
+- [x] [AI-Review][Low] `frame.h`: documented that `ocb_frame_decode` leaves `*out` untouched on error and that `out` must be non-NULL (and `out_len` in `cobs.h`); F.9 now checks `*out` is untouched on every error case
+- [x] [AI-Review][Low] Direct `frames.txt` vectors for `EMPTY` (`empty_wire`) and `OVERLONG` (`overlong_wire`); the two error names added to the format (`vectors/README.md`)
+
 ## Dev Notes
 
 ### What this story is
@@ -441,7 +449,9 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow, non-interactive.
 
 - **D11. Separate `ocb_proto/err.h`** for `ocb_err` (negative codes `OCB_ERR_EMPTY, COBS, CRC, RANGE, BODY_LEN, OVERLONG, BUF`), included by `frame.h` and `msgs.h`. The story's file list had no home for error codes shared by the frame and message layers; putting them in `consts.h` would mix non-wire values into the wire-constant header.
 - **D12. Overlong counting in `ocb_rx`**: counted once when the first excess byte (the 263rd) arrives; the run is discarded and the delimiter that closes it returns `OCB_RX_DROPPED` without counting again. Same final counters as counting at the delimiter for any delimiter-terminated stream (the vectors), and the counter is visible before the line resyncs. `ocb_rx` also keeps `last_err` (reason of the last dropped run) so Story 2.6 can choose `NAK CRC` vs nothing without diffing counters. The optional `ocb_rx_push_bytes` was not added (nothing needs it yet).
-- **D13. Direct `ocb_frame_decode` edge cases**: `enc_len > OCB_MAX_ENCODED_FRAME` returns `OCB_ERR_OVERLONG` (the AD-4 rule, consistent with the splitter); a COBS result longer than `OCB_MAX_RAW_FRAME` cannot satisfy the length rule and is reported as `OCB_ERR_CRC` (length inconsistency, AD-3). `ocb_cobs_decode` reports an empty input as its own `OCB_COBS_ERR_EMPTY`.
+- **D13. Direct `ocb_frame_decode` edge cases**: `enc_len > OCB_MAX_ENCODED_FRAME` returns `OCB_ERR_OVERLONG` (the AD-4 rule, consistent with the splitter); a **well-formed** COBS input that decodes to more than `OCB_MAX_RAW_FRAME` bytes cannot satisfy the length rule and is reported as `OCB_ERR_CRC` (length inconsistency, AD-3), while a malformed one is always `OCB_ERR_COBS` because `ocb_cobs_decode` validates the whole input before reporting `SPACE` (review fix). `ocb_cobs_decode` reports an empty input as its own `OCB_COBS_ERR_EMPTY`.
+- **D18 (review). `EMPTY` and `OVERLONG` are vector error names** in `frames.txt` (direct `ocb_frame_decode` cases), so the Rust codec pins the same classification; streams keep counting them as before.
+- **D19 (review). `ocb_msg_status_encode` refuses `extra == NULL` with `extra_len > 0`** (`OCB_ERR_BUF`) instead of silently encoding the base body: a caller bug should not produce a valid-looking frame.
 - **D14. Two optional vector fields** (documented in `vectors/README.md`): `messages.txt` `trailing` (hex bytes after the v1 body that the decoder ignores; the check is `encode(fields) + trailing == body`), used by `hello_trailing`, `info_trailing`, `heartbeat_trailing`, so the encode direction is still checked; STATUS exposes its trailing bytes as `extra=` in `fields` instead. `frames.txt` error cases may carry `payload` to also check the encoder (`all_zero_type_seq`, `type_00`).
 - **D15. Extra constants beyond the D1/D6 lists**, all wire facts the Rust codec needs, in `consts.h` and `constants.txt`: `TYPE_{APP,BRIDGE,CTRL}_{MIN,MAX}`, `NAK_{TRANSPORT,SEMANTIC}_{MIN,MAX}` (plus the `OCB_NAK_IS_TRANSPORT/SEMANTIC` macros), `STICK_CENTER`, `STATE_SIZE`, `FRAME_DELIMITER`, `FRAME_HEADER_SIZE`, `FRAME_CRC_SIZE`, `BODY_LEN_*` (one per message), `CRC16_POLY/INIT/CHECK`.
 - **D16. Unregistered area files are caught**: `tests/CMakeLists.txt` globs `vectors/*.txt` (`CONFIGURE_DEPENDS`) and passes the count as `OCB_VECTORS_TXT_COUNT`; `test_vectors` fails if it differs from `kFiles[]`. Also `constants.txt` has a minimum of 100 lines and every message type needs at least one ok case.
@@ -449,6 +459,8 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story workflow, non-interactive.
 - Vector failures are reported as `file:line: case: message` with the case's first line (not always the exact field line).
 
 ### Completion Notes List
+
+- Review follow-up (2026-11-22): 5 findings resolved (1 High, 4 Low), see "Review Follow-ups (AI)". Red first: the new `frames.txt` cases failed against the old decoder (`frames.txt:117: cobs_overflow_truncated: frame_decode returned -3, expected COBS (-2)`, same for `cobs_overflow_zero`, and `EMPTY`/`OVERLONG` unknown names), then green after the fix. Vectors regenerated with the scratch generator (also stripped two trailing spaces on empty values in `cobs.txt` and `crc16.txt`). Re-verified: host-tests from a clean build dir `100% tests passed out of 8`, `test_vectors: 239 cases in 7 files ok (proto_version 01)`, no warnings, ASan/UBSan on; `fw-release` and `fw-debug` rebuilt the changed `ocb_proto` objects, rc 0, 0 warnings (`ocb_proto` text now 2008 bytes); `check-pins.sh`, `check-proto-version.sh`, `check-proto-pure.sh` ok; `shellcheck` clean.
 
 - `ocb_proto` is a pure C99 `STATIC` library (`C_STANDARD 99`, `C_EXTENSIONS OFF`, `-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion`), no heap, no I/O, no global mutable state, byte-wise LE access only. COBS and CRC written from the published descriptions (references in the source headers; `THIRD_PARTY_NOTICES.md` line added).
 - Vectors: 7 files, 234 cases/lines checked (constants 117 entries, cobs 17, crc16 6, frames 25, messages 35, streams 14, state 20); every AC3 case is named (max-length frames 261/262, empty frame, back-to-back, leading delimiter, bad CRC, overlong 263 and 1000, `NEUTRAL`).
@@ -517,7 +529,10 @@ Modified:
 Deleted:
 - `firmware/common/proto/include/.gitkeep`
 
+Changed by the review follow-up: `firmware/common/proto/cobs.c`, `firmware/common/proto/frame.c`, `firmware/common/proto/msgs.c`, `firmware/common/proto/include/ocb_proto/{cobs,frame,msgs}.h`, `firmware/common/proto/vectors/{README.md,cobs.txt,crc16.txt,frames.txt}`, `firmware/tests/test_vectors.c`, `firmware/tests/test_proto_api.c`, this story file.
+
 ## Change Log
 
 - 2026-11-22: story created (ready-for-dev). Decisions D1 to D10 recorded; CRC-16/IBM-3740 parameters and COBS facts confirmed upstream; vector format and numeric values assigned.
 - 2026-11-22: implemented (review). `ocb_proto` (COBS, CRC-16, frames, splitter and counters, 12 message codecs, canonical state, constants), 7 vector files generated independently, F.9 and F.11 in ctest with ASan/UBSan, `check-proto-version.sh` and `check-proto-pure.sh` with self-tests and CI steps, docs updated. Decisions D11 to D17 added. CI unverified until pushed.
+- 2026-11-22: Addressed code review findings - 5 items resolved (AD-3 COBS-before-length fix in `ocb_cobs_decode`, new frame vectors incl. EMPTY/OVERLONG, header docs, STATUS extra NULL refused). Decisions D18, D19 added, D13 refined.

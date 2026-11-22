@@ -200,9 +200,10 @@ int ocb_msg_heartbeat_decode(const uint8_t *body, size_t len, ocb_msg_heartbeat 
 
 int ocb_msg_status_encode(const ocb_msg_status *m, uint8_t *body, size_t cap)
 {
-    const size_t extra_len = m->extra != NULL ? m->extra_len : 0u;
+    const size_t extra_len = m->extra_len;
 
-    if (extra_len > (size_t)OCB_MAX_BODY - (size_t)OCB_BODY_LEN_STATUS ||
+    if ((extra_len > 0u && m->extra == NULL) ||
+        extra_len > (size_t)OCB_MAX_BODY - (size_t)OCB_BODY_LEN_STATUS ||
         cap < (size_t)OCB_BODY_LEN_STATUS + extra_len) {
         return OCB_ERR_BUF;
     }

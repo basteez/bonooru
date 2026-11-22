@@ -6,7 +6,7 @@
 proto_version: 01
 
 # empty input encodes to the single code byte 01
-empty.raw: 
+empty.raw:
 empty.enc: 01
 
 # a single zero

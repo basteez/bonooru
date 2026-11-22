@@ -243,7 +243,7 @@ static int parse_err_name(const char *s, ocb_err *e)
         ocb_err err;
     } names[] = {
         {"COBS", OCB_ERR_COBS}, {"CRC", OCB_ERR_CRC}, {"RANGE", OCB_ERR_RANGE},
-        {"BODY_LEN", OCB_ERR_BODY_LEN}};
+        {"BODY_LEN", OCB_ERR_BODY_LEN}, {"EMPTY", OCB_ERR_EMPTY}, {"OVERLONG", OCB_ERR_OVERLONG}};
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
         if (strcmp(s, names[i].name) == 0) {
             *e = names[i].err;
@@ -391,6 +391,8 @@ static void area_frames(const vcase *c)
         return;
     }
     if (errf != NULL) {
+        /* An error case must leave *out untouched. */
+        memset(&fr, 0x5A, sizeof fr);
         ocb_err want;
         if (parse_err_name(errf->value, &want) != 0 || want == OCB_ERR_BODY_LEN) {
             vfail(errf->line, c->name, "bad frame error name '%s'", errf->value);
@@ -400,6 +402,13 @@ static void area_frames(const vcase *c)
         if (e != want) {
             vfail(c->line, c->name, "frame_decode returned %d, expected %s (%d)", (int)e,
                   errf->value, (int)want);
+        }
+        const uint8_t *fb = (const uint8_t *)&fr;
+        for (size_t k = 0; k < sizeof fr; k++) {
+            if (fb[k] != 0x5A) {
+                vfail(c->line, c->name, "frame_decode wrote *out on an error");
+                break;
+            }
         }
         if (has_payload) {
             check_frame_encode(c, payload, payload_n, wire, wire_n);

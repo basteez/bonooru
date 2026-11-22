@@ -76,8 +76,10 @@ ocb_err ocb_frame_decode(ocb_rx_side side, const uint8_t *enc, size_t enc_len, o
     if (enc_len > (size_t)OCB_MAX_ENCODED_FRAME) {
         return OCB_ERR_OVERLONG;
     }
-    /* 1. COBS. A result longer than the largest raw frame cannot satisfy the
-     * length rule below, so it is a length inconsistency (a CRC error). */
+    /* 1. COBS: any malformed input is OCB_ERR_COBS (ocb_cobs_decode validates
+     * the whole input before reporting SPACE). A well-formed input that
+     * decodes to more than the largest raw frame cannot satisfy the length
+     * rule below, so SPACE is a length inconsistency: a CRC error (AD-3). */
     const ocb_cobs_result cr = ocb_cobs_decode(enc, enc_len, raw, sizeof raw, &n);
     if (cr == OCB_COBS_ERR_SPACE) {
         return OCB_ERR_CRC;

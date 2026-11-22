@@ -59,6 +59,7 @@ ocb_cobs_result ocb_cobs_decode(const uint8_t *in, size_t in_len, uint8_t *out, 
 {
     size_t i = 0;
     size_t o = 0;
+    int overflow = 0; /* output full: keep validating the input, write nothing */
 
     *out_len = 0;
     if (in_len == 0u) {
@@ -79,16 +80,23 @@ ocb_cobs_result ocb_cobs_decode(const uint8_t *in, size_t in_len, uint8_t *out, 
                 return OCB_COBS_ERR_ZERO;
             }
             if (o >= out_cap) {
-                return OCB_COBS_ERR_SPACE;
+                overflow = 1;
+            } else {
+                out[o++] = b;
             }
-            out[o++] = b;
         }
         if (code != 0xFFu && i < in_len) {
             if (o >= out_cap) {
-                return OCB_COBS_ERR_SPACE;
+                overflow = 1;
+            } else {
+                out[o++] = 0;
             }
-            out[o++] = 0;
         }
+    }
+    /* A malformed input is reported as such even when the output also
+     * overflowed: the COBS check comes first (AD-3). */
+    if (overflow) {
+        return OCB_COBS_ERR_SPACE;
     }
     *out_len = o;
     return OCB_COBS_OK;

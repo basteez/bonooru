@@ -40,8 +40,11 @@ size_t ocb_frame_encode(uint8_t type, uint8_t seq, const uint8_t *body, size_t b
 
 /* Decodes one frame, `enc` without its delimiter. Returns OCB_OK (and fills
  * *out, a copy) or the first failing check: OCB_ERR_EMPTY (enc_len 0),
- * OCB_ERR_OVERLONG (enc_len > OCB_MAX_ENCODED_FRAME), OCB_ERR_COBS,
- * OCB_ERR_CRC, OCB_ERR_RANGE. Never reads past enc[enc_len]. */
+ * OCB_ERR_OVERLONG (enc_len > OCB_MAX_ENCODED_FRAME), OCB_ERR_COBS (any
+ * malformed COBS), OCB_ERR_CRC (decoded length inconsistent, including more
+ * than OCB_MAX_RAW_FRAME bytes, or CRC mismatch), OCB_ERR_RANGE. On an error
+ * *out is left untouched. `out` must not be NULL; `enc` may be NULL only
+ * when enc_len is 0. Never reads past enc[enc_len]. */
 ocb_err ocb_frame_decode(ocb_rx_side side, const uint8_t *enc, size_t enc_len, ocb_frame *out);
 
 /* True if `type` is in the receive range of `side`. */
