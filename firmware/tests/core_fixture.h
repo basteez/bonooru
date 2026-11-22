@@ -25,6 +25,7 @@ typedef struct {
     ocb_core_event storage[H_CAP_MAX];
     uint64_t now;
     bool ready;
+    bool link_ok; /* env.link_ok (story 2.7 D11); true by default */
     uint8_t seq; /* seq of the next frame; incremented by every frame helper */
 } harness;
 
@@ -32,6 +33,7 @@ static inline void h_init(harness *h, uint16_t cap, uint16_t report_period_us)
 {
     memset(h, 0, sizeof *h);
     h->ready = true;
+    h->link_ok = true;
     h->now = 1000000u; /* start away from 0 so a lead and t0 are visible */
     const int rc = ocb_core_init(&h->core, h->storage, cap, report_period_us);
     OCB_CHECK(rc == 0, "ocb_core_init(cap %u) returned %d", (unsigned)cap, rc);
@@ -42,6 +44,7 @@ static inline ocb_core_env h_env(const harness *h)
     ocb_core_env e;
     e.now_us = h->now;
     e.ready = h->ready;
+    e.link_ok = h->link_ok;
     return e;
 }
 
@@ -187,7 +190,9 @@ static inline bool h_invariants_ok(const harness *h)
 static inline void h_enter_mode(harness *h, uint8_t mode)
 {
     const bool ready = h->ready;
+    const bool link_ok = h->link_ok;
     h->ready = true;
+    h->link_ok = true;
     ocb_core_out o = h_queue_event(h, 1000000u, st_buttons(OCB_BTN_A));
     OCB_CHECK(o.kind == OCB_CORE_REPLY_ACK, "setup: queue event 1");
     o = h_queue_event(h, 2000000u, st_buttons(OCB_BTN_X));
@@ -201,6 +206,7 @@ static inline void h_enter_mode(harness *h, uint8_t mode)
     }
     OCB_CHECK(h->core.mode == mode, "setup: mode %u, wanted %u", (unsigned)h->core.mode, (unsigned)mode);
     h->ready = ready;
+    h->link_ok = link_ok;
 }
 
 static inline const char *mode_name(uint8_t mode)

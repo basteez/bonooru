@@ -40,10 +40,14 @@
 #define OCB_CORE_LATE_FALLBACK_US 8000u
 
 /* Inputs of every call (D1). now_us is a monotonic 1 MHz count (the RP2040
- * 64-bit timer); ready is the HID profile's ready() at the time of the call. */
+ * 64-bit timer); ready is the HID profile's ready() at the time of the call;
+ * link_ok is the bridge link state decided by the link watchdog (story 2.7
+ * D11): false makes START and SET_STATE get NAK NO_LINK. Positive polarity
+ * on purpose: a zero-initialised env means "no link", the safe default. */
 typedef struct {
     uint64_t now_us;
     bool ready;
+    bool link_ok;
 } ocb_core_env;
 
 typedef enum {

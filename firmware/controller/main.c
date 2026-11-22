@@ -10,12 +10,21 @@
  * from it; Story 2.3 adds the USB stack on core 0 and posts to the USB
  * mailbox. Until then console_ready is always 0, so START and SET_STATE
  * get NAK NOT_READY.
+ *
+ * Bench-only build (story 2.7 D17, preset fw-debug-bench, CMake option
+ * OCB_BENCH_FAKE_READY, debug builds only): core 0 posts a console
+ * handshake once and an IN report about every 1 ms to the USB mailbox,
+ * exactly as Story 2.3's profile will, so console_ready reads 1 and DIRECT
+ * and PLAYING can be exercised on the bench without a console. It touches no
+ * pin and no protocol rule. Story 2.3 (real USB) removes this option or
+ * keeps it for the same bench purpose.
  */
 #include <stdbool.h>
 #include <stdint.h>
 
 #include "link_runner.h"
 #include "ocb_hw/led.h"
+#include "ocb_link/ready.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
 
@@ -25,6 +34,14 @@
 #define BLINK_G 6u
 #define BLINK_B 0u
 #define BLINK_HALF_PERIOD_US 250000u
+
+#if defined(OCB_BENCH_FAKE_READY) && !defined(OCB_DEBUG_BUILD)
+#error "bench build is debug only"
+#endif
+
+#ifdef OCB_BENCH_FAKE_READY
+#define BENCH_IN_REPORT_US 1000u
+#endif
 
 /* Core 1: init, the RX interrupt enabled from this core (the NVIC enable
  * is per core), then the link loop. Core 1 is the only UART TX writer. */
@@ -45,9 +62,20 @@ int main(void)
 
     bool on = false;
     uint32_t next_edge = time_us_32();
+#ifdef OCB_BENCH_FAKE_READY
+    ocb_usb_mailbox *mb = ocb_ctrl_usb_mailbox();
+    ocb_usb_mailbox_handshake_done(mb);
+    uint32_t next_report = time_us_32();
+#endif
 
     for (;;) {
         const uint32_t now = time_us_32();
+#ifdef OCB_BENCH_FAKE_READY
+        if ((int32_t)(now - next_report) >= 0) {
+            ocb_usb_mailbox_in_report(mb);
+            next_report = now + BENCH_IN_REPORT_US;
+        }
+#endif
         /* Signed difference: wrap-safe across the 32-bit microsecond counter. */
         if ((int32_t)(now - next_edge) >= 0) {
             const bool want_on = !on;

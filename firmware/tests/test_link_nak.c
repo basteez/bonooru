@@ -8,8 +8,9 @@
  * re-arm it; every semantic reason the controller produces advances
  * `expected` to seq + 1 and has no effect; NAK fields are `expected` after
  * handling and `got` = the frame's seq (0 for CRC); the core's precedence
- * still holds through the link. NO_LINK is not produced yet: the link
- * watchdog is Story 2.7.
+ * still holds through the link. Story 2.7: NO_LINK (link down: no
+ * heartbeat yet, or lost) is semantic for SET_STATE and START, with the same
+ * fields and the cached response on a duplicate.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -148,7 +149,7 @@ static void test_full_retry(void)
      * event applied, then the retry of t=30 is accepted. */
     lh_send_seq(&h, OCB_MSG_START, E, (const uint8_t[]){0u, 0u, 0u, 0u}, 4u);
     lh_expect_ack(&h, E, "START");
-    h.now += 10u;
+    lh_advance(&h, 10u);
     ocb_link_poll(&h.link, h.now); /* t=10 applied: one slot free */
     lh_discard_tx(&h);
     OCB_CHECK(ocb_queue_free(&h.core.queue) == 1u, "free %u", ocb_queue_free(&h.core.queue));
@@ -227,7 +228,44 @@ static void test_semantic(void)
     s = h.core.expected;
     lh_send_seq(&h, OCB_MSG_SET_STATE, s, ss, sizeof ss);
     expect_semantic(&h, OCB_NAK_NOT_READY, s, OCB_MODE_IDLE, 0u, "NOT_READY");
-    /* NO_LINK (0x15) is produced by the link watchdog, Story 2.7. */
+}
+
+/* NO_LINK (story 2.7 D11): semantic, fields expected (after) and got = seq,
+ * the cached response on a duplicate, no effect; after the first heartbeat
+ * the same frames are NOT_READY (console not ready) or accepted (ready). */
+static void test_no_link(void)
+{
+    static lh h;
+    uint8_t ss[OCB_STATE_SIZE];
+    ocb_state_encode(&OCB_NEUTRAL, ss);
+    for (int ready = 0; ready <= 1; ready++) {
+        lh_init(&h, 8u);
+        lh_open_gate(&h);
+        if (ready) {
+            lh_make_ready(&h);
+        }
+        lh_hello(&h);
+        qe_seq(&h, h.seq, 100u, lst_buttons(OCB_BTN_A));
+        h.seq++;
+        lh_discard_tx(&h);
+        uint8_t s = h.core.expected;
+        lh_send_seq(&h, OCB_MSG_SET_STATE, s, ss, sizeof ss);
+        expect_semantic(&h, OCB_NAK_NO_LINK, s, OCB_MODE_IDLE, 1u, "NO_LINK SET_STATE");
+        /* A duplicate of that seq gets the cached NAK, nothing else changes. */
+        lh_send_seq(&h, OCB_MSG_SET_STATE, s, ss, sizeof ss);
+        expect_semantic(&h, OCB_NAK_NO_LINK, s, OCB_MODE_IDLE, 1u, "NO_LINK SET_STATE duplicate");
+        s = h.core.expected;
+        lh_send_seq(&h, OCB_MSG_START, s, (const uint8_t[]){0u, 0u, 0u, 0u}, 4u);
+        expect_semantic(&h, OCB_NAK_NO_LINK, s, OCB_MODE_IDLE, 1u, "NO_LINK START");
+        lh_link_up(&h);
+        s = h.core.expected;
+        lh_send_seq(&h, OCB_MSG_SET_STATE, s, ss, sizeof ss);
+        if (ready) {
+            lh_expect_ack(&h, s, "SET_STATE after the first heartbeat, ready");
+        } else {
+            expect_semantic(&h, OCB_NAK_NOT_READY, s, OCB_MODE_IDLE, 1u, "SET_STATE after the first heartbeat");
+        }
+    }
 }
 
 int main(void)
@@ -237,6 +275,7 @@ int main(void)
     test_full();
     test_full_retry();
     test_semantic();
+    test_no_link();
     const int f = ocb_test_failures();
     if (f != 0) {
         fprintf(stderr, "test_link_nak (F.2): %d failure(s)\n", f);

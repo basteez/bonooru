@@ -328,14 +328,14 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
   - **Controller TX.** Priority is EVENT > NAK > ACK > STATUS. On overflow the lowest priority is dropped; TX never blocks.
   - **Unknown values.** Unknown EVENT codes and NAK reasons are logged and are never fatal.
 
-### AD-20 — Pins and back-powering (rule zero, C5)
+### AD-20 — Pins and back-powering (rule zero, C5) [AMENDED 2026-11-22: story 2.6 D25, applied by story 2.7]
 
 - **Binds:** firmware/common/hw, bridge, controller
 - **Prevents:** firmware driving anything but the UART link, and either board back-powering an unpowered peer (including the controller, powered by the Switch, feeding an unplugged bridge).
 - **Rule:**
   - **Pins.** Firmware configures only GP0 (TX), GP1 (RX) and the onboard LED (GP16). These are defined in `ocb_hw/pins.h`, and a CI grep forbids other pin numbers. A debug toggle pin exists only in debug builds and is defined in the same file.
-  - **TX release.** Both boards enable an internal pull-down on RX. Each keeps TX high-Z until RX sees idle-high, and releases TX again on a break or on link loss.
-  - **Verification.** Measure on hardware in M3/M4.
+  - **TX release.** Both boards enable an internal pull-down on RX. The controller keeps TX high-Z until its RX has been idle-high for 1 ms (`OCB_LINK_TX_IDLE_HIGH_US`), and releases TX again on a break or on link loss, after the `EVENT LINK_LOST` has left. The bridge leads: while its RX does not show a live controller it drives TX idle-high in short probe pulses (about 5 ms every 500 ms, at most 1 % duty) and returns to high-Z in between; once its RX shows the controller (idle-high, or a valid frame) it keeps TX enabled, and after a break or link loss it returns to probing. A rule that made both boards wait for idle-high would deadlock with both powered.
+  - **Verification.** Measure on hardware in M3/M4: H.1 (both boards, both power orders, and the unpowered cases), H.7 and H.12 (controller side, stories 2.6 and 2.7), A.3.
 
 ### AD-21 — Offline and licence gate [ADOPTED: NFR-06, NFR-07]
 

@@ -56,4 +56,10 @@ bool ocb_uart_link_tx_write(const uint8_t *data, size_t n);
  * room. Never waits. Call once per loop pass. */
 void ocb_uart_link_tx_pump(void);
 
+/* true when everything written has left the pin: the software ring is
+ * empty, the TX FIFO is empty (UARTFR.TXFE) and the shift register has sent
+ * the last stop bit (UARTFR.BUSY clear). Story 2.7: the link watchdog
+ * releases TX only then (or after its 5 ms bound). Never waits. */
+bool ocb_uart_link_tx_idle(void);
+
 #endif /* OCB_HW_UART_LINK_H */

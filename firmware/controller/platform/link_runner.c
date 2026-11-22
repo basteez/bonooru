@@ -1,7 +1,8 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * Controller link runner on core 1 (story 2.6 D3, D14, D15). Glue only:
+ * Controller link runner on core 1 (story 2.6 D3, D14, D15; story 2.7: the
+ * link watchdog's timeout and TX release). Glue only:
  * every protocol rule lives in ocb_link / ocb_core, every register access
  * in ocb_hw/uart_link. Hot functions are placed in RAM with the SDK macro
  * (the pure libraries use OCB_CORE_RAMFUNC, empty for now: Story 2.5).
@@ -47,6 +48,7 @@ void ocb_ctrl_link_init(void)
     cfg.fw_ver[2] = (uint8_t)OCB_VERSION_PATCH;
     cfg.hid_profile = (uint8_t)OCB_HID_PROFILE_P2;
     cfg.app_timeout_ms = (uint16_t)OCB_APP_TIMEOUT_MS_DEFAULT;
+    cfg.link_timeout_ms = (uint16_t)OCB_LINK_TIMEOUT_MS; /* story 2.7: AD-5 default, clamped to 100 */
     cfg.debug_counters = OCB_LINK_DEBUG_COUNTERS;
     const uint64_t t = time_us_64();
     ocb_link_init(&s_link, &s_core, &s_mailbox, &cfg, t);
@@ -108,6 +110,10 @@ void __not_in_flash_func(ocb_ctrl_link_step)(void)
     if (open) {
         ocb_uart_link_tx_pump();
     }
+    /* Story 2.7 D6, D23: a TX release after a link loss or a break completes
+     * once the EVENT has left and the UART is idle (or after 5 ms); the next
+     * pass then sees the closed gate and returns the pad to high-Z above. */
+    ocb_link_tx_settled(&s_link, now, ocb_uart_link_tx_idle());
 }
 
 const ocb_core *ocb_ctrl_core(void)

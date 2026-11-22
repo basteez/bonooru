@@ -33,6 +33,19 @@
  * enqueued exactly once and in order, the queue never exceeds its
  * capacity, and the run ends within a bounded fake time. Queue 512 and 5.
  *
+ * Story 2.7 (F.17 update): part 1 also sends valid heartbeats (random DTR
+ * and random flags bits 1 to 7), BE breaks, clock jumps across the 80 ms
+ * link timeout and the 1000 ms app timeout, and the glue's
+ * ocb_link_tx_settled() with a random hardware-idle flag. Extra invariants
+ * after every step: a link loss (link_ok 1 -> 0) leaves the core NEUTRAL,
+ * IDLE and empty; link_ok 0 is never PLAYING; a watchdog trip that is not a
+ * loss (app timeout, DTR edge) happens only in DIRECT; at most one
+ * LINK_LOST EVENT per loss (plus the fuzz's own LINK_LOST aborts);
+ * watchdog_trips never decreases except by u8 wrap; the TX gate never
+ * closes without a release (the fuzz's own, or a pending watchdog release
+ * completed by ocb_link_tx_settled). Part 2 sends a heartbeat every 20 ms,
+ * unimpaired (D13), and requires zero watchdog trips and zero aborts.
+ *
  * Seeds can be overridden with OCB_FUZZ_SEED (decimal or 0x hex); a failure
  * prints the seed and the step.
  */
@@ -97,6 +110,7 @@ typedef struct {
     uint8_t last_nak_e; /* `expected` field of the last transport NAK */
     uint32_t delivered_checks;
     uint32_t tx_seen;
+    uint32_t link_lost_events; /* EVENT LINK_LOST frames seen on TX */
 } fuzz_ctx;
 
 static void fail(fuzz_ctx *z, const char *what)
@@ -159,6 +173,9 @@ static void drain_and_check(lh *h, fuzz_ctx *z)
             continue;
         }
         z->tx_seen++;
+        if (o.type == OCB_MSG_EVENT && o.body[0] == OCB_EVT_LINK_LOST) {
+            z->link_lost_events++;
+        }
         if (o.type == OCB_MSG_NAK && OCB_NAK_IS_TRANSPORT(o.body[0])) {
             if (z->have_nak_e && z->last_nak_e == o.body[1] && !z->rearmed) {
                 fail(z, "two transport NAKs for one value of expected");
@@ -190,6 +207,22 @@ static void check_core(const lh *h, fuzz_ctx *z)
          c->published.ry != OCB_STICK_CENTER || c->published.flags != 0u)) {
         fail(z, "PLAYING published a state outside the allow-list");
     }
+}
+
+/* An error entry (FE, PE, BE, OE in any mix, at least one). BE is a link
+ * loss once the watchdog is armed (story 2.7), so it is kept in 1 of 10
+ * error entries only: otherwise the link would almost never stay up long
+ * enough to reach DIRECT. The explicit break operation adds more. */
+static uint16_t rnd_err_entry(void)
+{
+    uint32_t bits = rnd_n(15u) + 1u;
+    if ((bits & 0x4u) != 0u && chance(9000u)) {
+        bits &= ~0x4u;
+        if (bits == 0u) {
+            bits = 0x1u;
+        }
+    }
+    return (uint16_t)(bits << 8 | (rnd() & 0xFFu));
 }
 
 static size_t random_body(uint8_t type, uint8_t *body)
@@ -224,7 +257,7 @@ static size_t random_body(uint8_t type, uint8_t *body)
         return (size_t)ocb_msg_start_encode(&m, body, OCB_MAX_BODY);
     }
     case OCB_MSG_HEARTBEAT: {
-        ocb_msg_heartbeat m = {{(uint8_t)rnd(), (uint8_t)rnd(), (uint8_t)rnd()}, (uint8_t)rnd_n(2u)};
+        ocb_msg_heartbeat m = {{(uint8_t)rnd(), (uint8_t)rnd(), (uint8_t)rnd()}, (uint8_t)rnd()};
         return (size_t)ocb_msg_heartbeat_encode(&m, body, OCB_MAX_BODY);
     }
     default:
@@ -277,8 +310,18 @@ static void fuzz_run(uint32_t seed)
     cnt_snap prev;
     snap_counters(&h, &prev);
     uint32_t frames_delivered_checks = 0;
+    uint32_t losses = 0;          /* link_ok 1 -> 0 transitions */
+    uint32_t own_link_lost = 0;   /* the fuzz's own ocb_core_abort(LINK_LOST) calls */
+    uint32_t wd_trips = 0;        /* watchdog trips (unwrapped) */
+    uint32_t app_trips = 0;       /* trips that were not a loss */
 
     for (z.step = 0; z.step < FUZZ_STEPS && !z.failed; z.step++) {
+        const uint8_t mode0 = h.core.mode;
+        const bool link0 = ocb_link_link_ok(&h.link);
+        const bool gate0 = ocb_txgate_is_open(ocb_link_gate(&h.link));
+        const bool pending0 = ocb_link_release_pending(&h.link);
+        const uint8_t trips0 = ocb_link_watchdog_trips(&h.link);
+        bool own_release = false;
         const uint8_t exp0 = h.core.expected;
         const uint32_t ok0 = h.link.rx.stats.frames_ok;
         uint8_t w[OCB_MAX_WIRE_FRAME];
@@ -297,7 +340,7 @@ static void fuzz_run(uint32_t seed)
                 const uint8_t z0 = 0u;
                 feed_wire(&h, &z0, 1u, chance(3000u));
             } else {
-                ocb_link_rx_entry(&h.link, (uint16_t)((rnd_n(15u) + 1u) << 8 | (rnd() & 0xFFu)), h.now);
+                ocb_link_rx_entry(&h.link, rnd_err_entry(), h.now);
             }
             /* A NAK CRC for the run the prefix closed leaves before the
              * frame is handled (it may be a sync point that re-arms). */
@@ -350,7 +393,7 @@ static void fuzz_run(uint32_t seed)
                 ocb_link_rx_entry(&h.link, (uint16_t)(1u + rnd_n(255u)), h.now);
             }
         } else if (a < 63u) {
-            ocb_link_rx_entry(&h.link, (uint16_t)((rnd_n(15u) + 1u) << 8 | (rnd() & 0xFFu)), h.now);
+            ocb_link_rx_entry(&h.link, rnd_err_entry(), h.now);
         } else if (a < 64u) {
             /* Ring overflow: push past capacity, then drain. */
             for (uint32_t i = 0; i < OCB_LINK_RX_RING_CAP + 20u; i++) {
@@ -358,10 +401,21 @@ static void fuzz_run(uint32_t seed)
             }
             (void)ocb_link_rx_drain(&h.link, h.now, 100000u);
         } else if (a < 72u) {
-            h.now += chance(1000u) ? rnd_n(300000u) : rnd_n(3000u);
+            const uint32_t j = rnd_n(100u);
+            if (j < 5u) {
+                h.now += 70000u + rnd_n(20000u); /* across the 80 ms link timeout */
+            } else if (j < 8u) {
+                h.now += 950000u + rnd_n(100000u); /* across the 1000 ms app timeout */
+            } else {
+                h.now += chance(1000u) ? rnd_n(300000u) : rnd_n(3000u);
+            }
         } else if (a < 74u) {
             ocb_core_out out;
-            ocb_core_abort(&h.core, (ocb_core_abort_cause)rnd_n(OCB_ABORT_CAUSE_COUNT), &out);
+            const ocb_core_abort_cause cause = (ocb_core_abort_cause)rnd_n(OCB_ABORT_CAUSE_COUNT);
+            ocb_core_abort(&h.core, cause, &out);
+            if (out.event == OCB_EVT_LINK_LOST) {
+                own_link_lost++;
+            }
             ocb_link_queue_event(&h.link, out.event);
         } else if (a < 80u) {
             switch (rnd_n(6u)) {
@@ -384,9 +438,25 @@ static void fuzz_run(uint32_t seed)
             }
         } else if (a < 81u) {
             ocb_txgate_release(ocb_link_gate(&h.link));
+            own_release = true;
         } else if (a < 84u) {
             (void)ocb_txgate_sample(ocb_link_gate(&h.link), chance(7000u), h.now);
+        } else if (a < 85u) {
+            /* A valid heartbeat (random DTR, random flags bits 1 to 7). */
+            uint8_t body[OCB_MAX_BODY];
+            ocb_msg_heartbeat m = {{0u, 0u, 1u}, (uint8_t)rnd()};
+            const size_t bl = (size_t)ocb_msg_heartbeat_encode(&m, body, sizeof body);
+            const uint8_t z0 = 0u;
+            feed_wire(&h, &z0, 1u, false);
+            n = lh_wire(OCB_MSG_HEARTBEAT, (uint8_t)rnd(), body, bl, w);
+            feed_wire(&h, w, n, chance(3000u));
         } else if (a < 86u) {
+            if (chance(5000u)) {
+                ocb_link_rx_entry(&h.link, (uint16_t)OCB_LINK_RX_BE, h.now); /* a break */
+            } else {
+                ocb_link_tx_settled(&h.link, h.now, chance(5000u));
+            }
+        } else if (a < 88u) {
             /* Recovery: delimiter, valid HELLO, then a PING in order. */
             const uint8_t z0 = 0u;
             feed_wire(&h, &z0, 1u, false);
@@ -426,6 +496,43 @@ static void fuzz_run(uint32_t seed)
             }
         }
         check_core(&h, &z);
+
+        /* Story 2.7 invariants. */
+        const bool link1 = ocb_link_link_ok(&h.link);
+        const uint8_t trips1 = ocb_link_watchdog_trips(&h.link);
+        const uint8_t dtrips = (uint8_t)(trips1 - trips0);
+        if (dtrips > 1u) {
+            fail(&z, "watchdog_trips moved by more than one in a step (decrease or double trip)");
+        }
+        wd_trips += dtrips;
+        const bool lost = link0 && !link1;
+        if (lost) {
+            losses++;
+            if (dtrips != 1u) {
+                fail(&z, "a link loss without exactly one watchdog trip");
+            }
+            if (h.core.mode != OCB_MODE_IDLE || !ocb_state_is_neutral(&h.core.published) ||
+                ocb_queue_count(&h.core.queue) != 0u || !h.core.aborted) {
+                fail(&z, "a link loss did not leave the core latched, IDLE, NEUTRAL and empty");
+            }
+        } else if (dtrips != 0u) {
+            app_trips++;
+            if (mode0 != OCB_MODE_DIRECT) {
+                fail(&z, "an app-timeout or DTR trip outside DIRECT");
+            }
+            if (h.core.mode != OCB_MODE_IDLE || !h.core.aborted) {
+                fail(&z, "an app-timeout trip did not abort the core");
+            }
+        }
+        if (!link1 && h.core.mode == OCB_MODE_PLAYING) {
+            fail(&z, "PLAYING with link_ok 0");
+        }
+        if (z.link_lost_events > losses + own_link_lost) {
+            fail(&z, "more LINK_LOST EVENTs than losses");
+        }
+        if (gate0 && !ocb_txgate_is_open(ocb_link_gate(&h.link)) && !own_release && !pending0) {
+            fail(&z, "the TX gate closed without a release");
+        }
         cnt_snap now;
         snap_counters(&h, &now);
         for (int i = 0; i < 13; i++) {
@@ -435,9 +542,12 @@ static void fuzz_run(uint32_t seed)
         }
         prev = now;
     }
-    printf("fuzz seed 0x%08x: %u steps, %u resync checks, %u TX frames, %u frames ok, %u dropped runs\n", seed,
-           z.step, frames_delivered_checks, z.tx_seen, h.link.rx.stats.frames_ok,
-           h.link.rx.stats.cobs_errors + h.link.rx.stats.crc_errors + h.link.rx.stats.range_errors);
+    printf("fuzz seed 0x%08x: %u steps, %u resync checks, %u TX frames, %u frames ok, %u dropped runs, "
+           "%u losses, %u app/DTR trips, %u trips, %u LINK_LOST events\n",
+           seed, z.step, frames_delivered_checks, z.tx_seen, h.link.rx.stats.frames_ok,
+           h.link.rx.stats.cobs_errors + h.link.rx.stats.crc_errors + h.link.rx.stats.range_errors, losses, app_trips,
+           wd_trips, z.link_lost_events);
+    OCB_CHECK(losses > 0u && app_trips > 0u, "fuzz seed 0x%08x: the watchdog rules were never exercised", seed);
 }
 
 /* ---------------------------------------------------------------- part 2 */
@@ -682,6 +792,7 @@ static bool lossy_run(uint32_t seed, uint16_t cap, uint32_t total, uint32_t loss
     const uint64_t t_end = h.now + 600000000u; /* 600 s of fake time */
     uint16_t prev_count = 0;
     uint64_t next_pop = h.now;
+    uint64_t next_hb = h.now;
     uint32_t ticks = 0;
 
     while (ok && !(s.session && s.base >= total && ngot >= total)) {
@@ -696,6 +807,21 @@ static bool lossy_run(uint32_t seed, uint16_t cap, uint32_t total, uint32_t loss
         h.now += TICK_US;
         (void)ocb_txgate_sample(ocb_link_gate(&h.link), true, h.now);
         sender_tick(&s, &fwd, h.now, &im, &fwd_last, BYTES_PER_TICK);
+        if (h.now >= next_hb) {
+            /* The bridge's heartbeat, unimpaired (D13), queued behind whole
+             * frames so it starts after a delimiter. */
+            const ocb_msg_heartbeat hbm = {{0u, 0u, 1u}, OCB_HB_FLAG_DTR};
+            uint8_t hbb[OCB_MAX_BODY];
+            uint8_t hw[OCB_MAX_WIRE_FRAME];
+            const size_t hbl = (size_t)ocb_msg_heartbeat_encode(&hbm, hbb, sizeof hbb);
+            const size_t hn = lh_wire(OCB_MSG_HEARTBEAT, 0x33u, hbb, hbl, hw);
+            const uint64_t at = h.now + 50u > fwd_last ? h.now + 50u : fwd_last;
+            fwd_last = at;
+            for (size_t i = 0; i < hn; i++) {
+                wq_push(&fwd, hw[i], at);
+            }
+            next_hb += (uint64_t)OCB_HEARTBEAT_PERIOD_MS * 1000u;
+        }
 
         /* Forward wire: at most one tick's worth of bytes that are due. */
         for (uint32_t k = 0; k < BYTES_PER_TICK && fwd.count > 0u && fwd.at[fwd.head] <= h.now; k++) {
@@ -755,6 +881,9 @@ static bool lossy_run(uint32_t seed, uint16_t cap, uint32_t total, uint32_t loss
         }
     }
     if (ok) {
+        OCB_CHECK(ocb_link_watchdog_trips(&h.link) == 0u && h.core.abort_count == 0u && ocb_link_link_ok(&h.link),
+                  "lossy seed 0x%08x cap %u loss %u: watchdog trips %u, aborts %u, link_ok %d with unimpaired heartbeats",
+                  seed, cap, loss, ocb_link_watchdog_trips(&h.link), h.core.abort_count, (int)ocb_link_link_ok(&h.link));
         OCB_CHECK(ngot == total, "lossy seed 0x%08x cap %u loss %u: %u enqueued, wanted %u", seed, cap, loss, ngot, total);
         for (uint32_t i = 0; i < ngot && i < 4096u && i < total; i++) {
             if (got[i] != ev_t(i)) {

@@ -92,6 +92,7 @@ static void setup(lh *h, fake_profile *p)
     lh_open_gate(h);
     lh_hello(h);
     lh_discard_tx(h);
+    lh_link_up(h); /* story 2.7: SET_STATE / START need the link */
     p->mb = &h->mb;
 }
 
@@ -140,7 +141,7 @@ static void test_handshake_and_down(void)
             lh_stop(&h); /* clears the latch; readiness stays 0 */
             lh_discard_tx(&h);
             expect_ready(&h, false, "after a down event");
-            h.now += 10000u;
+            lh_advance(&h, 10000u);
             fp_in_report(&p);
             poll(&h);
             expect_ready(&h, false, "IN report after a down event (no handshake)");
@@ -172,7 +173,7 @@ static void test_stall(void)
     poll(&h);
     /* IN reports every 1 ms keep it 1 (500 ms). */
     for (int i = 0; i < 500; i++) {
-        h.now += 1000u;
+        lh_advance(&h, 1000u);
         fp_in_report(&p);
         poll(&h);
         if (!ocb_link_console_ready(&h.link, h.now)) {
@@ -185,10 +186,10 @@ static void test_stall(void)
     fp_in_report(&p);
     poll(&h);
     const uint64_t last = h.now;
-    h.now = last + 100000u;
+    lh_advance(&h, last + 100000u - h.now); /* heartbeats continue (story 2.7) */
     poll(&h);
     expect_ready(&h, true, "100 ms without an IN report");
-    h.now = last + 100001u;
+    lh_advance(&h, last + 100001u - h.now);
     poll(&h);
     expect_ready(&h, false, "100 ms + 1 us without an IN report");
     fp_in_report(&p);
@@ -205,7 +206,7 @@ static void test_stall(void)
     OCB_CHECK(h.core.mode == OCB_MODE_PLAYING, "PLAYING");
     const uint8_t aborts = h.core.abort_count;
     for (int i = 0; i < 300; i++) {
-        h.now += 1000u; /* no IN reports */
+        lh_advance(&h, 1000u); /* no IN reports */
         poll(&h);
     }
     OCB_CHECK(!ocb_link_console_ready(&h.link, h.now), "not stalled");
@@ -256,9 +257,10 @@ static void test_flags_and_wrap(void)
     lh_open_gate(&h);
     lh_hello(&h);
     lh_discard_tx(&h);
+    lh_link_up(&h);
     p.mb = &h.mb;
     for (int i = 0; i < 5; i++) {
-        h.now += 1000u;
+        lh_advance(&h, 1000u);
         poll(&h);
     }
     lh_expect_none(&h, "no false event at 2^32 - 1");

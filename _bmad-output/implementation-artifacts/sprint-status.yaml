@@ -51,7 +51,7 @@ development_status:
   2-4-controller-core-modes-queue-scheduler-and-safety-mask: done
   2-5-hard-coded-timeline-plays-on-the-switch-with-measured-jitter: backlog
   2-6-controller-link-uart-reliability-session-and-status: done
-  2-7-controller-link-watchdog: backlog
+  2-7-controller-link-watchdog: review
   epic-2-retrospective: optional
 
   epic-3: backlog

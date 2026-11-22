@@ -126,6 +126,21 @@ bool __not_in_flash_func(ocb_uart_link_tx_write)(const uint8_t *data, size_t n)
     return true;
 }
 
+/* TXFE alone is not enough: it "does not indicate if there is data in the
+ * transmit shift register"; BUSY "remains set until the complete byte,
+ * including all the stop bits, has been sent from the shift register"
+ * (pinned SDK hardware/regs/uart.h). No hardware FIFO flush is needed when
+ * TX is released by ocb_uart_link_tx_enable(false): the PL011 keeps
+ * shifting its FIFO out whatever the pad function, so the at most 32
+ * residual bytes (0.7 ms at 460800 baud) are gone before the gate can open
+ * again, which needs 1 ms of idle-high RX (story 2.7 D6). */
+bool __not_in_flash_func(ocb_uart_link_tx_idle)(void)
+{
+    const uart_hw_t *hw = uart_get_hw(LINK_UART);
+    const uint32_t fr = hw->fr;
+    return s_tx_tail == s_tx_head && (fr & UART_UARTFR_TXFE_BITS) != 0u && (fr & UART_UARTFR_BUSY_BITS) == 0u;
+}
+
 void __not_in_flash_func(ocb_uart_link_tx_pump)(void)
 {
     uart_hw_t *hw = uart_get_hw(LINK_UART);

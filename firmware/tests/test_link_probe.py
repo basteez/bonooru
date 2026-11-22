@@ -12,6 +12,14 @@ clock, (a) for longer than its old 30 s budget against the fake link, and
 firmware sources, loaded with ctypes) through a model of the 2wiCC_Comms
 bridge used at the H.5 bench (no flow control, 1 KB USB-to-UART ring that
 drops on overflow, UART at 460800 baud both ways).
+F.23 (story 2.7 D16): the one-command bench steps (linkup, silence, direct,
+playing, breaks, soak --heartbeat) run unmodified against the real link
+through the same bridge model, extended with the probe's heartbeat path,
+the TX gate (the controller's bytes stop while it is released; the RX level
+follows the model's "wire plugged" flag), a ready console when the bench
+build is modelled, and a scripted user who unplugs and replugs the wire
+when the probe prints its prompt. Negative controls prove each command can
+fail. The probe's watchdog constants are compared with constants.txt.
 """
 
 import argparse
@@ -400,8 +408,13 @@ class Bridge2wiCCPort:
     UART_BYTES_PER_TICK = 46080 * 100e-6
     CTRL_TX_RING = 128
 
-    def __init__(self, lib, drain_share=1.0):
+    def __init__(self, lib, drain_share=1.0, usb_ready=False, boot_break=False):
         self.lib = lib
+        self.usb_ready = usb_ready  # the bench build of story 2.7 D17
+        self.plugged = True         # the bridge-TX -> controller-GP1 wire
+        self.actions = []           # [(time, fn)]: the scripted user
+        self.gate_closed_ticks = 0
+        probe.HeartbeatService._hb_init(self)
         # The bridge's UART TX can be slower than the line rate (2wiCC_Comms
         # polls uart_putc_raw with the FIFO off between tud_task calls).
         self.fwd_bytes_per_tick = self.UART_BYTES_PER_TICK * drain_share
@@ -416,6 +429,47 @@ class Bridge2wiCCPort:
         self.rx = probe.Splitter("APP")
         self.buf = ctypes.create_string_buffer(512)
         lib.sim_init(512, self._us())
+        if boot_break:
+            lib.sim_break(self._us())  # H.4: one BE entry when the UART takes the pin
+
+    # The probe's heartbeat service (story 2.7), as on the real Port.
+    def hb_start(self, period_ms=20, dtr=None):
+        probe.HeartbeatService.hb_start(self, period_ms, dtr)
+
+    def hb_stop(self):
+        return probe.HeartbeatService.hb_stop(self)
+
+    def hb_set_dtr(self, on):
+        probe.HeartbeatService.hb_set_dtr(self, on)
+
+    def hb_running(self):
+        return probe.HeartbeatService.hb_running(self)
+
+    def hb_stats(self):
+        return probe.HeartbeatService.hb_stats(self)
+
+    def hb_frame(self):
+        return probe.HeartbeatService.hb_frame(self)
+
+    def hb_emit(self, frame):
+        self.write(frame)
+
+    def service(self):
+        probe.HeartbeatService.service(self)
+
+    def at(self, t, fn):
+        self.actions.append((t, fn))
+
+    def unplug(self):
+        """The wire is pulled: the RX pull-down turns the line into a break."""
+        self.plugged = False
+        self.lib.sim_break(self._us())
+
+    def replug(self):
+        self.plugged = True
+
+    def gate_open(self):
+        return self.lib.sim_counter(9) != 0
 
     def _us(self):
         return ctypes.c_uint64(int(round(self.clock.t * 1e6)))
@@ -430,6 +484,7 @@ class Bridge2wiCCPort:
         self.host_out += data
 
     def poll(self):
+        self.service()
         data, self.host_in = bytes(self.host_in), bytearray()
         return self.rx.feed(data) if data else []
 
@@ -447,6 +502,14 @@ class Bridge2wiCCPort:
     def _tick(self):
         lib = self.lib
         now = self._us()
+        self.service()
+        if self.actions:
+            due = [a for a in self.actions if a[0] <= self.clock.t]
+            self.actions = [a for a in self.actions if a[0] > self.clock.t]
+            for _, fn in due:
+                fn()
+        if self.usb_ready:
+            lib.sim_usb_ready(now)
         # Host -> bridge ring (drops when full).
         take = self.host_out[:self.USB_BYTES_PER_TICK]
         del self.host_out[:len(take)]
@@ -460,10 +523,16 @@ class Bridge2wiCCPort:
             chunk = bytes(self.ring[:n])
             del self.ring[:n]
             self.credit_fwd -= n
-            lib.sim_rx(chunk, len(chunk), now)
+            if self.plugged:
+                lib.sim_rx(chunk, len(chunk), now)
         if not self.ring:
             self.credit_fwd = min(self.credit_fwd, 1.0)
+        lib.sim_rx_level(1 if self.plugged else 0, now)
         lib.sim_poll(now)
+        if not self.gate_open():
+            # Released: the pad is high-Z, the driver ring is emptied.
+            self.ctrl_tx.clear()
+            self.gate_closed_ticks += 1
         # Controller TX: whole frames into its ring, drained at the UART rate.
         while True:
             space = self.CTRL_TX_RING - len(self.ctrl_tx)
@@ -479,6 +548,7 @@ class Bridge2wiCCPort:
             self.credit_rev -= n
         if not self.ctrl_tx:
             self.credit_rev = min(self.credit_rev, 1.0)
+        lib.sim_tx_settled(now, 0 if self.ctrl_tx else 1)
 
 
 def load_sim():
@@ -490,6 +560,10 @@ def load_sim():
     lib.sim_tx.restype = ctypes.c_size_t
     lib.sim_counter.argtypes = [ctypes.c_int]
     lib.sim_counter.restype = ctypes.c_uint32
+    lib.sim_break.argtypes = [ctypes.c_uint64]
+    lib.sim_rx_level.argtypes = [ctypes.c_int, ctypes.c_uint64]
+    lib.sim_tx_settled.argtypes = [ctypes.c_uint64, ctypes.c_int]
+    lib.sim_usb_ready.argtypes = [ctypes.c_uint64]
     return lib
 
 
@@ -521,6 +595,17 @@ class CliGuard(unittest.TestCase):
         low = probe.min_inflight() - 1
         for v in ("-1", "1", str(low), "x"):
             self.assertIn("--max-inflight", self.bad("--max-inflight", v))
+
+    def test_hb_period_refused(self):
+        """--hb-period-ms outside 5..40 is refused before a port opens (story 2.7)."""
+        for v in ("4", "41", "100", "x"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                probe.main(["--port", "none", "--hb-period-ms", v, "linkup"])
+            self.assertEqual(cm.exception.code, 2, err.getvalue())
+            self.assertIn("--hb-period-ms", err.getvalue())
+        self.assertEqual(probe.hb_period_arg("5"), 5)
+        self.assertEqual(probe.hb_period_arg("40"), 40)
 
     def test_accepted(self):
         self.assertEqual(probe.pace_share_arg("1"), 1.0)
@@ -599,6 +684,236 @@ class Soak(unittest.TestCase):
         with fake_time(port):
             run_soak(port, cycles=3, events=500, max_inflight=0)
         self.assertGreater(port.bridge_drops, 0, "85 %% drain without the cap: the bridge never overflowed")
+
+
+# ------------------------------------------------------------ F.23 (2.7)
+
+def cmd_args(**kw):
+    """The defaults main() would give the story 2.7 subcommands."""
+    a = dict(port="sim", baud=probe.DEFAULT_BAUD, seed=1, no_pace=False, pace_share=probe.PACE_SHARE,
+             max_inflight=probe.MAX_INFLIGHT, hb_enabled=True, hb_period_ms=probe.HEARTBEAT_PERIOD_MS,
+             seconds=2.0, expect_fresh=False, expect_ready="auto", keepalive_seconds=2.0, rounds=3, mode="idle",
+             no_heartbeat=False, meter_seconds=1.0, count=5)
+    a.update(kw)
+    return argparse.Namespace(**a)
+
+
+class ScriptedUser(io.StringIO):
+    """Reads the probe's output as it is printed and acts like the owner:
+    unplugs or replugs the wire 200 ms after the prompt and, at the
+    multimeter prompt, records whether the controller still drives GP0
+    (the TX gate open would read 3.3 V)."""
+
+    def __init__(self, port, replug=True, delay=0.2):
+        super().__init__()
+        self.port = port
+        self.replug = replug
+        self.delay = delay
+        self.meter_gate_open = []
+
+    def write(self, text):
+        if "UNPLUG the bridge-TX wire" in text:
+            self.port.at(self.port.now() + self.delay, self.port.unplug)
+        elif "REPLUG the wire" in text and self.replug:
+            self.port.at(self.port.now() + self.delay, self.port.replug)
+        elif "READ the multimeter" in text:
+            self.meter_gate_open.append(self.port.gate_open())
+        return super().write(text)
+
+
+def run_cmd(port, fn, user=None, **kw):
+    """Runs one probe subcommand unmodified on the fake clock; (rc, text)."""
+    buf = user if user is not None else io.StringIO()
+    with fake_time(port), contextlib.redirect_stdout(buf):
+        rc = fn(port, cmd_args(**kw))
+    return rc, buf.getvalue()
+
+
+def last_line(text):
+    lines = [x for x in text.splitlines() if x.strip()]
+    return lines[-1] if lines else ""
+
+
+class DropHeartbeatsPort(Bridge2wiCCPort):
+    """Negative control: drops 4 heartbeats in a row once the hold has begun."""
+
+    def __init__(self, lib, start_after):
+        super().__init__(lib)
+        self.start_after = start_after
+        self.dropped = 0
+
+    def hb_emit(self, frame):
+        if self.hb_sent >= self.start_after and self.dropped < 4:
+            self.dropped += 1
+            return
+        self.write(frame)
+
+
+def parse_constants():
+    path = os.path.join(FW_DIR, "common", "proto", "vectors", "constants.txt")
+    out = {}
+    with open(path, "r", encoding="ascii") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            k, _, v = line.partition(":")
+            out[k.strip()] = int(v.strip(), 16)
+    return out
+
+
+class WatchdogConstants(unittest.TestCase):
+    def test_probe_constants_match_vectors(self):
+        """Story 2.7 D18: one value, one place."""
+        c = parse_constants()
+        for name in ("HEARTBEAT_PERIOD_MS", "HEARTBEAT_MAX_GAP_MS", "LINK_TIMEOUT_MS", "APP_TIMEOUT_MS_DEFAULT",
+                     "APP_PING_DIVISOR"):
+            self.assertIn(name, c, name)
+            self.assertEqual(getattr(probe, name), c[name], "probe %s differs from constants.txt" % name)
+        self.assertEqual(probe.HB_FLAG_DTR, c["HB_FLAG_DTR"])
+        self.assertEqual(probe.STATUS_LINK_OK, c["STATUS_LINK_OK"])
+        self.assertEqual(probe.STATUS_CONSOLE_READY, c["STATUS_CONSOLE_READY"])
+        self.assertEqual(probe.EVT_LINK_LOST, c["EVT_LINK_LOST"])
+
+    def test_heartbeat_schedule(self):
+        """Absolute schedule; a late tick sends one heartbeat and re-bases."""
+        class P(probe.HeartbeatService):
+            def __init__(self):
+                self.t = 0.0
+                self.out = []
+
+            def now(self):
+                return self.t
+
+            def write(self, data):
+                self.out.append((self.t, data))
+
+        p = P()
+        p.hb_start(20)
+        for _ in range(100):
+            p.t += 0.001
+            p.service()
+        self.assertEqual([round(t, 3) for t, _ in p.out[:6]], [0.0, 0.02, 0.04, 0.06, 0.08, 0.1])
+        n = len(p.out)
+        p.t += 0.095  # a host stall of 95 ms: one heartbeat, no burst
+        p.service()
+        self.assertEqual(len(p.out), n + 1)
+        self.assertGreater(p.hb_max_gap_ms, 90.0)
+        self.assertEqual(p.hb_late, 1)
+        t_last = p.out[-1][0]
+        p.t += 0.019
+        p.service()
+        self.assertEqual(len(p.out), n + 1, "re-based on now")
+        p.t += 0.001
+        p.service()
+        self.assertEqual(round(p.out[-1][0] - t_last, 3), 0.02)
+        ftype, _, body = probe.frame_decode(p.out[-1][1][:-1], "CONTROLLER")
+        self.assertEqual(ftype, probe.HEARTBEAT)
+        f = probe.msg_decode(probe.HEARTBEAT, body)
+        self.assertEqual((f["bridge_fw_ver"], f["flags"]), (bytes([0, 0, 1]), 1))
+        p.hb_set_dtr(False)
+        self.assertEqual(probe.msg_decode(probe.HEARTBEAT, probe.frame_decode(p.hb_frame()[:-1], "CONTROLLER")[2])
+                         ["flags"], 0)
+        self.assertEqual(p.hb_stop(), p.out[-1][0])
+
+
+class BenchSteps(unittest.TestCase):
+    """F.23: every story 2.7 bench command against the real link."""
+
+    def setUp(self):
+        if SIM_LIB is None:
+            self.skipTest("no link simulation library")
+        self.lib = load_sim()
+
+    def test_linkup(self):
+        port = Bridge2wiCCPort(self.lib, boot_break=True)
+        rc, text = run_cmd(port, probe.cmd_linkup, expect_fresh=True, expect_ready="no", seconds=3.0)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("NO_LINK twice", text)
+        self.assertEqual(self.lib.sim_counter(6), 0, "watchdog trips during linkup")
+        port = Bridge2wiCCPort(self.lib, usb_ready=True)
+        rc, text = run_cmd(port, probe.cmd_linkup, expect_ready="yes", seconds=1.0)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+
+    def test_linkup_negative_controls(self):
+        # A 100 ms heartbeat period through the same path: the controller trips.
+        port = Bridge2wiCCPort(self.lib)
+        rc, text = run_cmd(port, probe.cmd_linkup, hb_period_ms=100, seconds=2.0)
+        self.assertEqual(rc, 1, text)
+        self.assertTrue(last_line(text).startswith("FAIL"), text)
+        # 4 heartbeats dropped in a row during the hold (a 100 ms gap).
+        port = DropHeartbeatsPort(self.lib, start_after=40)
+        rc, text = run_cmd(port, probe.cmd_linkup, seconds=2.0)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("FAIL hold", last_line(text), text)
+        # A fresh-boot check against a latched controller fails.
+        port = Bridge2wiCCPort(self.lib)
+        rc, _ = run_cmd(port, probe.cmd_linkup, seconds=0.5)
+        rc, text = run_cmd(port, probe.cmd_linkup, expect_fresh=True, seconds=0.5)
+        self.assertEqual(rc, 1, text)
+
+    def test_silence(self):
+        port = Bridge2wiCCPort(self.lib)
+        rc, text = run_cmd(port, probe.cmd_silence)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        m = re.search(r"EVENT LINK_LOST ([0-9.]+) ms after the last heartbeat", text)
+        self.assertIsNotNone(m, text)
+        self.assertTrue(80.0 <= float(m.group(1)) <= 100.0, m.group(0))
+        self.assertGreater(port.gate_closed_ticks, 0, "the TX gate was never released")
+
+    def test_silence_negative_control(self):
+        """The loss window is checked: a link timeout the probe does not
+        expect (as if the firmware tripped at 40 ms) fails the command."""
+        saved = probe.LOSS_WINDOW_MS
+        probe.LOSS_WINDOW_MS = (100.0, 120.0)
+        try:
+            port = Bridge2wiCCPort(self.lib)
+            rc, text = run_cmd(port, probe.cmd_silence)
+        finally:
+            probe.LOSS_WINDOW_MS = saved
+        self.assertEqual(rc, 1, text)
+
+    def test_direct_and_playing(self):
+        for fn in (probe.cmd_direct, probe.cmd_playing):
+            port = Bridge2wiCCPort(self.lib, usb_ready=True)
+            rc, text = run_cmd(port, fn, seconds=3.0, keepalive_seconds=2.0)
+            self.assertEqual((rc, last_line(text)), (0, "PASS"), "%s: %s" % (fn.__name__, text))
+            port = Bridge2wiCCPort(self.lib)
+            rc, text = run_cmd(port, fn)
+            self.assertEqual(rc, 2, text)
+            self.assertIn("SKIP: console_ready is 0", text)
+
+    def test_breaks(self):
+        for kw in (dict(), dict(no_heartbeat=True), dict(mode="playing")):
+            port = Bridge2wiCCPort(self.lib, usb_ready=kw.get("mode") == "playing")
+            user = ScriptedUser(port)
+            rc, text = run_cmd(port, probe.cmd_breaks, user=user, rounds=3, **kw)
+            self.assertEqual((rc, last_line(text)), (0, "PASS"), "%s: %s" % (kw, text))
+            self.assertEqual(len(re.findall(r"^round \d: PASS$", text, re.M)), 3, text)
+            self.assertEqual(user.meter_gate_open, [False], "%s: GP0 still driven at the meter prompt" % kw)
+            if kw.get("no_heartbeat"):
+                self.assertEqual(self.lib.sim_counter(7), 0, "unarmed: the core was aborted")
+
+    def test_breaks_never_replugged(self):
+        saved = probe.BREAKS_REPLUG_TIMEOUT_S
+        probe.BREAKS_REPLUG_TIMEOUT_S = 2.0
+        try:
+            port = Bridge2wiCCPort(self.lib)
+            user = ScriptedUser(port, replug=False)
+            rc, text = run_cmd(port, probe.cmd_breaks, user=user, rounds=2)
+        finally:
+            probe.BREAKS_REPLUG_TIMEOUT_S = saved
+        self.assertEqual(rc, 1, text)
+        self.assertIn("STATUS did not resume with link_ok 1 within 2 s of the REPLUG prompt", text)
+
+    def test_soak_with_heartbeat(self):
+        port = Bridge2wiCCPort(self.lib)
+        with fake_time(port):
+            rc, text, totals = run_soak(port, cycles=5, events=100, hb_enabled=True)
+        self.assertEqual(rc, 0, text[-800:])
+        self.assertIn("watchdog_trips 0 -> 0", text)
+        self.assertEqual(self.lib.sim_counter(6), 0)
+        self.assertEqual(port.bridge_drops, 0)
 
 
 if __name__ == "__main__":

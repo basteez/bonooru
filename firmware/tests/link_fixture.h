@@ -7,6 +7,13 @@
  * a time as RX entries; every output frame is checked as a whole
  * controller frame and decoded with ocb_frame_decode(OCB_RX_APP, ...).
  * Plain C, no framework.
+ *
+ * Story 2.7 (D13): the link starts down (no heartbeat, the boot state).
+ * lh_link_up() sends a first HEARTBEAT; from then on lh_advance() moves the
+ * clock in slices of at most hb_period_us and injects one HEARTBEAT (DTR
+ * per h->dtr) per period while auto_hb is set, like the bridge would, so a
+ * test that moves the clock by hundreds of milliseconds does not see a
+ * link loss it is not about. lh_session() brings the link up.
  */
 #ifndef OCB_LINK_FIXTURE_H
 #define OCB_LINK_FIXTURE_H
@@ -34,6 +41,12 @@ typedef struct {
     ocb_link link;
     uint64_t now;
     uint8_t seq; /* seq of the next app frame sent with an lh_* helper */
+    /* Heartbeat emulation (story 2.7 D13). */
+    bool auto_hb;          /* lh_advance injects heartbeats (default true) */
+    bool hb_up;            /* lh_link_up was called */
+    bool dtr;              /* DTR bit of the injected heartbeats (default true) */
+    uint64_t hb_period_us; /* default OCB_HEARTBEAT_PERIOD_MS */
+    uint64_t last_hb_sent;
 } lh;
 
 typedef struct {
@@ -47,6 +60,9 @@ static inline void lh_init_cfg(lh *h, uint16_t cap, bool debug_counters)
 {
     memset(h, 0, sizeof *h);
     h->now = 1000000u;
+    h->auto_hb = true;
+    h->dtr = true;
+    h->hb_period_us = (uint64_t)OCB_HEARTBEAT_PERIOD_MS * 1000u;
     const int rc = ocb_core_init(&h->core, h->storage, cap, 0u);
     OCB_CHECK(rc == 0, "ocb_core_init(cap %u) returned %d", (unsigned)cap, rc);
     ocb_usb_mailbox_init(&h->mb);
@@ -56,6 +72,7 @@ static inline void lh_init_cfg(lh *h, uint16_t cap, bool debug_counters)
     cfg.fw_ver[2] = LH_FW_PATCH;
     cfg.hid_profile = OCB_HID_PROFILE_P2;
     cfg.app_timeout_ms = LH_APP_TIMEOUT;
+    cfg.link_timeout_ms = (uint16_t)OCB_LINK_TIMEOUT_MS;
     cfg.debug_counters = debug_counters;
     ocb_link_init(&h->link, &h->core, &h->mb, &cfg, h->now);
 }
@@ -168,6 +185,42 @@ static inline void lh_heartbeat(lh *h, uint8_t a, uint8_t b, uint8_t c, uint8_t 
     uint8_t body[OCB_MAX_BODY];
     const int n = ocb_msg_heartbeat_encode(&m, body, sizeof body);
     lh_send_seq(h, OCB_MSG_HEARTBEAT, 0x33u, body, (size_t)n);
+}
+
+/* One emulated bridge heartbeat now (bridge_fw_ver 0.0.0, so INFO expectations
+ * of the 2.6 tests hold; DTR per h->dtr). */
+static inline void lh_hb_now(lh *h)
+{
+    lh_heartbeat(h, 0u, 0u, 0u, h->dtr ? (uint8_t)OCB_HB_FLAG_DTR : 0u);
+    h->last_hb_sent = h->now;
+}
+
+/* First heartbeat: link_ok 1, the watchdog armed; lh_advance keeps it up. */
+static inline void lh_link_up(lh *h)
+{
+    lh_hb_now(h);
+    h->hb_up = true;
+}
+
+/* Moves the clock by us, in slices of at most hb_period_us, injecting one
+ * heartbeat per period while the link is up and auto_hb is set. */
+static inline void lh_advance(lh *h, uint64_t us)
+{
+    while (us > 0u) {
+        uint64_t step = us;
+        if (h->hb_up && h->auto_hb) {
+            const uint64_t due = h->last_hb_sent + h->hb_period_us;
+            const uint64_t to_due = due > h->now ? due - h->now : 0u;
+            if (step > to_due) {
+                step = to_due;
+            }
+        }
+        h->now += step;
+        us -= step;
+        if (h->hb_up && h->auto_hb && h->now >= h->last_hb_sent + h->hb_period_us) {
+            lh_hb_now(h);
+        }
+    }
 }
 
 /* Checks one TX output as a whole, valid controller frame and decodes it. */
@@ -285,7 +338,7 @@ static inline ocb_state lst_end(void)
     return s;
 }
 
-/* Gate open, console ready, session open; replies drained. */
+/* Gate open, console ready, session open, replies drained, link up. */
 static inline void lh_session(lh *h, uint16_t cap)
 {
     lh_init(h, cap);
@@ -293,6 +346,7 @@ static inline void lh_session(lh *h, uint16_t cap)
     lh_make_ready(h);
     lh_hello(h);
     lh_discard_tx(h);
+    lh_link_up(h);
 }
 
 static inline bool lh_status_decode(const lh_out *o, ocb_msg_status *m)
