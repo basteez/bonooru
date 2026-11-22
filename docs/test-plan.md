@@ -774,8 +774,9 @@ Goal: prove the **whole** chain (host → bridge → controller → Switch 2 →
 | F.6 | Queue-mode allow-list: every non-allowed button cleared, right stick centred in PLAYING; DIRECT unmasked | matches AD-9                                   | AD-9    |
 | F.7 | Heartbeat gap during a 512-frame burst (bridge, fake clock)                                       | every gap ≤ 27 ms                                      | AD-4    |
 | F.8 | Bridge framer: whole frames only, one in flight + one queued, overlong run dropped, partial frame discarded on DTR fall | matches AD-4                    | AD-4    |
-| F.9 | Shared vectors (`firmware/common/proto/vectors/`)                                                 | all pass; `PROTO_VERSION` = vector header              | AD-14   |
+| F.9 | Shared vectors (`firmware/common/proto/vectors/`, Story 2.2): COBS, CRC, frames (min/max length, CRC, length and range errors per receiver), every message (fields, body, frame; body-length errors), streams (back-to-back, leading delimiter, empty frames, resync, overlong runs, counters), canonical state and `NEUTRAL`, constants (both directions); the seven files are all present and every `proto_version` header equals `OCB_PROTO_VERSION` (also checked by `check-proto-version.sh` as its own CI step) | all pass; `PROTO_VERSION` = vector header | AD-14 |
 | F.10 | `console_ready` with a fake profile: STATUS `flags` bit1 follows `ready()`; 0 before handshake, 1 after, 0 on suspend / unmount / bus reset and after > 100 ms without an IN report; reserved bits 2–7 always 0; NOT_READY gating uses the same predicate | matches AD-19, AD-8 | AD-19, AD-12 |
+| F.11 | `ocb_proto` API (Story 2.2): buffer limits (COBS and frame encoders never write past `out_cap`, body length 256 refused), every prefix of a frame decodes without reading past its end, counters add up to the delimiters seen, 10 000-frame randomised round trip and byte-at-a-time splitter equal to one-shot decoding, state predicates, unaligned message bodies; under ASan and UBSan | all pass, sanitizer-clean | AD-2, AD-3 |
 
 ## Hardware-in-the-loop checks (M3/M4)
 

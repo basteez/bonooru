@@ -36,6 +36,7 @@
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "OCB_HOST_TESTS": "ON",
+        "OCB_SANITIZE": "ON",
         "CMAKE_BUILD_TYPE": "Debug"
       }
     }

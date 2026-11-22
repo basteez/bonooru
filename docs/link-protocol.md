@@ -34,6 +34,8 @@ So **one** protocol, end to end, between host app and controller board (plus the
 - COBS-encoded frames, delimiter `0x00` → resync after any garbage byte
 - Frame payload: `type:u8 | seq:u8 | len:u8 | body[len] | crc16:u16le` (CRC-16/CCITT-FALSE)
 - Little-endian everywhere
+- Sizes: `len` is a u8, so `OCB_MAX_BODY = 255`; a raw frame is 3 + body + 2 bytes, from `OCB_MIN_RAW_FRAME = 5` to `OCB_MAX_RAW_FRAME = 260`. COBS adds at most `ceil(n / 254)` bytes, so the largest frame is `OCB_MAX_ENCODED_FRAME = 262` non-delimiter bytes (`OCB_MAX_WIRE_FRAME = 263` with its `0x00`). This value is derived, not chosen: a run of more than 262 bytes without a delimiter can never be a legal frame, which is the AD-4 drop rule. At 460800 baud a 263-byte frame takes 5.7 ms, so a heartbeat due behind it still meets the 27 ms gap (20 + 6 ≤ 27, checked at compile time).
+- **Empty frame** = a zero-length run between two delimiters (`00 00`, or a leading `00`). It is counted and dropped, never an error: the `0x00` that opens a session (AD-7) and idle `0x00` bytes are empty frames. An encoded `01` (decodes to zero bytes) is not empty: it is a too-short frame, a CRC error.
 - Trade-off vs an ASCII line protocol (2wiCC style): ASCII is easier to type in a terminal; binary is smaller and has a CRC. Plan: binary on the wire + a hidden "advanced" panel in the GUI that shows and sends frames for debugging.
 
 ## Controller state (8 bytes, mirrors the HID report)
@@ -41,7 +43,7 @@ So **one** protocol, end to end, between host app and controller board (plus the
 | Field   | Type | Notes                        |
 |---------|------|------------------------------|
 | buttons | u16  | canonical P1 bit order, for every profile (AD-10): bit 0 Y, 1 B, 2 A, 3 X, 4 L, 5 R, 6 ZL, 7 ZR, 8 −, 9 +, 10 L3, 11 R3, 12 Home, 13 Capture |
-| hat     | u8   | 0–7 directions, 8 = neutral  |
+| hat     | u8   | 0–7 directions clockwise (0 up, 1 up-right, 2 right, 3 down-right, 4 down, 5 down-left, 6 left, 7 up-left), 8 = neutral |
 | lx, ly  | u8   | left stick, 0x80 = centre    |
 | rx, ry  | u8   | right stick                  |
 | flags   | u8   | bit 0 = END (only on the last `QUEUE_EVENT`, state = `NEUTRAL`); bits 1–7 reserved, must be 0 (AD-8) |
@@ -76,7 +78,54 @@ A receiver counts and drops empty frames and types outside its range. Receive-ch
 | 0x85 | NAK         | C→H | reason, expected, got                     | see "Reliability"                           |
 | 0x86 | EVENT       | C→H | code                                      | `PLAYBACK_DONE`, `LINK_LOST`, `LATE`, `UNDERRUN`, `USB_SUSPENDED`, … |
 
-NAK reasons (AD-6): transport `CRC`, `SEQ`, `FULL`; semantic `VERSION`, `BUSY`, `ORDER`, `BAD_STATE`, `UNKNOWN_TYPE`, `NO_LINK`, `NOT_READY`, `ABORTED`. EVENT codes (AD-5, AD-8): `PLAYBACK_DONE`, `LINK_LOST`, `LATE`, `UNDERRUN`, `USB_SUSPENDED`. Numeric values are set in `ocb_proto` and the vectors. Unknown EVENT codes and NAK reasons are logged, never fatal (AD-19).
+Numeric values: `firmware/common/proto/include/ocb_proto/consts.h`, mirrored in `vectors/constants.txt`; those two win on a disagreement. Unknown EVENT codes and NAK reasons are logged, never fatal (AD-19). `0x82` is unassigned (reserved).
+
+**Body sizes and length rules.** All fields little-endian. A body shorter than its v1 size, or of the wrong length for a fixed-size message, is a semantic error (`BODY_LEN` in the codec; the consumer chooses the reply), not a frame error.
+
+| Message     | Body (v1)                                                                 | Bytes    | Length rule |
+|-------------|---------------------------------------------------------------------------|----------|-------------|
+| HELLO       | `proto_ver u8`                                                            | 1        | `≥ 1`, trailing bytes ignored |
+| INFO        | `proto_ver u8, fw_ver[3], bridge_ver[3], hid_profile u8, queue_cap u16, app_timeout_ms u16, report_period_us u16` | 14 | `≥ 14`, trailing bytes ignored |
+| SET_STATE   | `state[8]`                                                                | 8        | exact |
+| QUEUE_EVENT | `t_us u32, state[8]`                                                      | 12       | exact |
+| START       | `lead_us u32`                                                             | 4        | exact |
+| STOP, PING  | none                                                                      | 0        | exact |
+| HEARTBEAT   | `bridge_fw_ver[3], flags u8`                                              | 4        | `≥ 4`, trailing bytes ignored |
+| STATUS      | `free u16, now_us u32, last_seq u8, mode u8, abort_count u8, last_event u8, flags u8` (+ debug counters) | 11 (+ n) | `≥ 11`, trailing bytes are debug counters |
+| ACK         | `seq u8`                                                                  | 1        | exact |
+| NAK         | `reason u8, expected u8, got u8`                                          | 3        | exact |
+| EVENT       | `code u8`                                                                 | 1        | exact |
+
+`abort_count` is a u8 that wraps.
+
+NAK reasons (AD-6): transport reasons are `0x01–0x0F`, semantic reasons `0x10–0x7F`.
+
+| Reason         | Value  | Class     |
+|----------------|--------|-----------|
+| `CRC`          | `0x01` | transport |
+| `SEQ`          | `0x02` | transport |
+| `FULL`         | `0x03` | transport |
+| `VERSION`      | `0x10` | semantic  |
+| `BUSY`         | `0x11` | semantic  |
+| `ORDER`        | `0x12` | semantic  |
+| `BAD_STATE`    | `0x13` | semantic  |
+| `UNKNOWN_TYPE` | `0x14` | semantic  |
+| `NO_LINK`      | `0x15` | semantic  |
+| `NOT_READY`    | `0x16` | semantic  |
+| `ABORTED`      | `0x17` | semantic  |
+
+EVENT codes (AD-5, AD-8); the same values are used in `STATUS.last_event`:
+
+| Code            | Value  |
+|-----------------|--------|
+| `NONE`          | `0x00` (only in `STATUS.last_event`: no event yet) |
+| `PLAYBACK_DONE` | `0x01` |
+| `LINK_LOST`     | `0x02` |
+| `LATE`          | `0x03` |
+| `UNDERRUN`      | `0x04` |
+| `USB_SUSPENDED` | `0x05` |
+
+`STATUS.mode`: `IDLE 0x00`, `DIRECT 0x01`, `PLAYING 0x02`. `INFO.hid_profile`: `UNKNOWN 0x00`, `P1 0x01`, `P2 0x02`, `P3 0x03` (see [USB controller emulation](usb-controller-emulation.md)). `PROTO_VERSION` is `1`.
 
 ## Flow control and timing
 
@@ -86,6 +135,29 @@ NAK reasons (AD-6): transport `CRC`, `SEQ`, `FULL`; semantic `VERSION`, `BUSY`, 
 - Underrun (queue empty before the piece ends, judged when an event is applied) → go neutral and send `EVENT UNDERRUN` (a stuck note is worse than a gap); see "Controller modes"
 - `PING`: DIRECT mode only, whenever the app has been idle for `app_timeout_ms/4` (AD-7)
 - Watchdog: two levels, see below
+
+### Timing constants
+
+Named in `consts.h` (units in the name) and mirrored in `vectors/constants.txt`.
+
+| Constant                     | Value     | Source |
+|------------------------------|-----------|--------|
+| `OCB_LINK_BAUD`              | 460800    | AD-4 (a build constant) |
+| `OCB_HEARTBEAT_PERIOD_MS`    | 20        | AD-4 |
+| `OCB_HEARTBEAT_MAX_GAP_MS`   | 27        | AD-4, F.7 |
+| `OCB_LINK_TIMEOUT_MS`        | 80        | AD-5 default |
+| `OCB_LINK_TIMEOUT_MAX_MS`    | 100       | AD-5, NFR-05 |
+| `OCB_ACK_TIMEOUT_MS`         | 50        | AD-6 |
+| `OCB_ACK_WINDOW`             | 64        | AD-6 (max unACKed frames, stale window) |
+| `OCB_HELLO_RESEND_MS`        | 100       | AD-7 |
+| `OCB_APP_TIMEOUT_MS_DEFAULT` | 1000      | AD-5, until W.1 |
+| `OCB_APP_PING_DIVISOR`       | 4         | AD-7 (`PING` after `app_timeout_ms / 4` idle) |
+| `OCB_STATUS_PERIOD_MS`       | 50        | AD-19 |
+| `OCB_STATUS_MIN_GAP_MS`      | 10        | AD-19 |
+| `OCB_CONSOLE_POLL_STALL_MS`  | 100       | AD-19 |
+| `OCB_QUEUE_CAP_DEFAULT`      | 512       | AD-6, AD-7 |
+| `OCB_T_US_LIMIT`             | 2^31      | AD-8 |
+| `OCB_STOP_NEUTRAL_MS`        | 100       | NFR-05 |
 
 ## Watchdog (decided 2026-11-19)
 

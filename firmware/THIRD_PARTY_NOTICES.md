@@ -19,6 +19,7 @@ Third-party material in `firmware/` and in the firmware binaries
   - Copyright (c) 2018, hathach (tinyusb.org)
   - Source: https://github.com/hathach/tinyusb (tag `0.18.0`), the pico-sdk's pinned `lib/tinyusb` submodule, not modified.
   - Used: initialised and pinned, not linked until Stories 2.3 / 3.1. Licence text: MIT, below.
+- ocb_proto: COBS and CRC-16 implemented from the published descriptions, no third-party code (references in the source headers).
 - No 2wiCC code in this tree (NFR-07, ADR-004).
 
 ## BSD-3-Clause licence text (pico-sdk and pico-examples)

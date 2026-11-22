@@ -108,6 +108,12 @@ jobs:
       - name: Pin grep (AD-20)
         run: firmware/tools/check-pins.sh
 
+      - name: Proto version vs vectors (AD-14)
+        run: firmware/tools/check-proto-version.sh
+
+      - name: Proto library is pico-sdk free (AD-2)
+        run: firmware/tools/check-proto-pure.sh
+
       - name: Job summary
         run: |
           version="$(sed -n 's/^#define OCB_VERSION_STRING "\(.*\)"$/\1/p' firmware/build/fw-release/generated/ocb_version/ocb_version.h)"

@@ -41,7 +41,7 @@ Choice: **P2** (ADR-002 (author's notes), accepted 2026-11-18). Every input the 
 
 ## Profile interface (AD-12)
 
-- Exactly one profile is linked per build (`OCB_PROFILE`, default `P2`); `INFO.hid_profile` carries its id (one id per profile: P1, P2, P3; numeric values set in `ocb_proto`).
+- Exactly one profile is linked per build (`OCB_PROFILE`, default `P2`); `INFO.hid_profile` carries its id (one id per profile: P1, P2, P3; numeric values set in `ocb_proto`: P1 = 1, P2 = 2, P3 = 3).
 - Interface: descriptors, a control/OUT-report handler (the handshake), `build_report(const ocb_state*)`, `tick()` and `ready()`.
 - `ready()` is true once the console handshake is complete (P1: `SET_CONFIGURATION` and the first IN poll); until then `START` and `SET_STATE` get `NAK NOT_READY` (AD-8). It is also reported passively as `STATUS.flags.console_ready` (AD-19).
 - `ready()` returns to false on USB suspend, unmount or bus reset, and when no IN report has been taken for more than 100 ms (covers "Wired Communication" switched off without a bus event; flag only, not an abort cause).
