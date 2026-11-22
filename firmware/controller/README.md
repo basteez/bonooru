@@ -50,7 +50,8 @@ that only calls `ocb_ctrl_link_step()`; Story 2.5 replaces that loop with the re
 and keeps the call. Core 1 is the only UART TX writer (a debug-build assertion). Since Story 2.3
 the P2 glue on core 0 posts to the USB mailbox (handshake, IN reports, suspend / unmount / bus
 reset, the measured report period); `ocb_ctrl_published_read()` is the state the profile reports
-(NEUTRAL until Story 2.5's seqlock), and in debug builds `ocb_ctrl_link_step()` drains the P2
+(in debug builds core 1's published state through the sequence lock of `link/pubstate.c`, D35;
+NEUTRAL in release builds until Story 2.5), and in debug builds `ocb_ctrl_link_step()` drains the P2
 debug log into the debug STATUS. Bench sender: `tools/link_probe.py`.
 
 ## The link watchdog (Story 2.7)

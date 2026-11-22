@@ -17,6 +17,7 @@
 
 #include "ocb_hw/uart_link.h"
 #include "ocb_link/ocb_link.h"
+#include "ocb_link/pubstate.h"
 #include "ocb_proto/consts.h"
 #include "ocb_proto/state.h"
 #include "ocb_version.h"
@@ -45,6 +46,10 @@ static bool s_tx_enabled;
 /* Story 2.3 D14: the P2 debug log, core 0 pushes, core 1 drains. Debug
  * builds only (AC5a: a release ELF has none of it). */
 static ocb_dbglog_ring s_dbglog;
+/* Story 2.3 D35: the published state, core 1 writes, core 0 reads (debug
+ * builds only, so the bench can prove a state reaches the console before
+ * Story 2.5 owns the real seqlock). */
+static ocb_pubstate s_pub;
 #endif
 
 typedef char ocb_queue_cap_fits_u16[(OCB_QUEUE_CAP_DEFAULT <= 0xFFFF) ? 1 : -1];
@@ -54,6 +59,7 @@ void ocb_ctrl_usb_mailbox_init(void)
     ocb_usb_mailbox_init(&s_mailbox);
 #ifdef OCB_DEBUG_BUILD
     ocb_dbglog_ring_init(&s_dbglog);
+    ocb_pubstate_init(&s_pub);
 #endif
 }
 
@@ -136,6 +142,11 @@ void __not_in_flash_func(ocb_ctrl_link_step)(void)
      * once the EVENT has left and the UART is idle (or after 5 ms); the next
      * pass then sees the closed gate and returns the pad to high-Z above. */
     ocb_link_tx_settled(&s_link, now, ocb_uart_link_tx_idle());
+#ifdef OCB_DEBUG_BUILD
+    /* Story 2.3 D35: the state the core published in this pass (SET_STATE
+     * in DIRECT, the scheduler in PLAYING), for the USB report on core 0. */
+    ocb_pubstate_write(&s_pub, &s_core.published);
+#endif
 }
 
 const ocb_core *ocb_ctrl_core(void)
@@ -155,9 +166,14 @@ ocb_dbglog_ring *ocb_ctrl_dbglog(void)
 }
 #endif
 
-/* Story 2.3 D12: NEUTRAL until Story 2.5 replaces this body with the
- * seqlock reader of core->published (retries 3, then NEUTRAL). */
+/* Story 2.3 D12, D35: debug builds read core 1's published state through
+ * the sequence lock (3 tries, then NEUTRAL); release builds report NEUTRAL
+ * until Story 2.5 makes the seqlock the real path for every build. */
 void ocb_ctrl_published_read(ocb_state *out)
 {
+#ifdef OCB_DEBUG_BUILD
+    (void)ocb_pubstate_read(&s_pub, out);
+#else
     *out = OCB_NEUTRAL;
+#endif
 }

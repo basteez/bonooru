@@ -200,6 +200,7 @@ def load_sim():
     lib.p2sim_refusals.restype = ctypes.c_uint32
     lib.p2sim_report_desc.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
     lib.p2sim_report_desc.restype = ctypes.c_size_t
+    lib.p2sim_set_state.argtypes = [ctypes.c_char_p]
     return lib
 
 
@@ -282,6 +283,33 @@ class Handshake(unittest.TestCase):
             mutate=lambda r: r[:15] + b"\x00" + r[16:] if r[0] == 0x21 and r[14] == 0x11 else None)
         self.assertEqual(rc, 1, text)
         self.assertIn("write protected", last_line(text))
+
+    def test_watch(self):
+        """Story 2.3 D35: a D-pad press published 0.5 s into the watch is
+        printed and passes --expect Down; with nothing pressed it fails."""
+        neutral = bytes([0x00, 0x00, 0x08, 0x80, 0x80, 0x80, 0x80, 0x00])
+        down = bytes([0x00, 0x00, 0x04, 0x80, 0x80, 0x80, 0x80, 0x00])  # AD-10: hat 4 = down
+        for press, want in ((True, 0), (False, 1)):
+            clock = FakeClock()
+            dev = FakeHid(self.lib, clock)
+            t_press = clock.t + 0.5
+            orig = dev.read
+
+            def read(timeout_ms, _orig=orig, _press=press, _t=t_press, _clock=clock):
+                if _press and _t <= _clock.t < _t + 0.15:
+                    self.lib.p2sim_set_state(down)
+                else:
+                    self.lib.p2sim_set_state(neutral)
+                return _orig(timeout_ms)
+
+            dev.read = read
+            with fake_time(clock):
+                rc, text = run(p2.run_watch, dev, argparse.Namespace(seconds=2.0, expect="Down"))
+            self.assertEqual(rc, want, text)
+            if press:
+                self.assertIn("Down", text)
+                self.assertEqual(last_line(text), "PASS")
+        self.assertEqual(p2.pressed(bytes([0x30, 0, 0x91, 0x08, 0x80, 0x01]) + bytes(58)), ["A", "Down"])
 
     def test_cli_guards(self):
         for argv in (["enum", "--wait-s", "0"], ["handshake", "--seconds", "-1"], ["nope"]):

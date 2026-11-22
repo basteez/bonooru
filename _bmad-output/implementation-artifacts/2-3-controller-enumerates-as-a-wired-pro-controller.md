@@ -688,6 +688,77 @@ The P2 log held 77 records: restart bus-reset, restart mount, report 00, report 
 
 **Next bench step.** H.15 attempt 2 with this build, the same command. The owner's glance at the controller icon stays part of the pass criterion, because `p2check` alone printed PASS in attempt 1.
 
+### Bench H.15 attempt 2 (no icon) and D35, 2026-11-22
+
+**What happened** (story lead, `c020514`, fw-debug, Switch 2 top USB-C port, Wired Communication ON).
+- `p2check` printed PASS: `console_ready` 1 after 8.3 s, `report_period_us` 8000.
+- The P2 log held 26 records: restart bus-reset, restart mount, report 00 ×2, usb 80 05, report 00, usb 80 01, usb 80 02, sub 03, arg 30, HANDSHAKE, usb 80 04, sub 02, sub 08, sub 10 ×2, sub 01, arg 01, sub 03, arg 30, sub 04, sub 10 ×5, sub 40, sub 30. After that the console sent nothing more.
+- No controller icon appeared. Five D-pad-down presses in DIRECT were all ACKed, but nothing moved on the HOME screen.
+
+**Analysis.**
+1. **Inputs could not work in that build: confirmed.** `ocb_ctrl_published_read()` returned NEUTRAL in every build (D12), so no SET_STATE reached the `0x30` report. The mapping from canonical state to report is right and host-tested in F.27: hat 4 (down) sets byte 5 bit `0x01`, each of the 14 buttons sets exactly its S2 bit, all 65 536 button values and all 256 hat values are covered. The new `p2_probe.py watch` test (F.32) also shows a published D-pad down arriving as `Down` in the real `ocb_p2` report.
+2. **Hypothesis B (we answer something wrong): weak.** The Switch 2 sent S12's Switch 1 init almost request for request:
+   - the same order, including the second `03 30` right after `01`, which S12 also shows;
+   - the same five SPI reads after `04`;
+   - then `40` and `30`, after which it fell silent. S12's console also sends only rumble after `30 01`.
+   - The Switch 2 skipped `48` and `21`.
+   - Sending `30` (player lights) means the console assigned the controller a player slot. A host that rejected the controller would not do that.
+   - Our replies match S12's ack and id for every request. The data differences are listed below. None is known to block registration; they are the fallback if attempt 3 still shows nothing.
+3. **Hypothesis A (no visible controller until the first input): plausible, not proven by a public source.** No public document I found states whether the HOME screen shows a newly attached wired controller before any input.
+   - joycontrol's code comment (read earlier, value-level) says it fakes the trigger elapsed-time reply (`04`) "so the Switch assigns a player number". That is over Bluetooth. S12's real wired controller answers `04` with zeros and still got `30 01`.
+   - Attempt 2 shows the console did assign a slot (`30`). So the missing icon is more likely a display or input matter than a rejection.
+   - Cheapest separation: make a press reach the report, and check the console's Controllers menu.
+
+**Reply bytes compared with S12** (real Switch 1 and real Pro Controller). ✓ = matches; ✗ = data differs (listed as a hypothesis B fallback, not changed).
+
+| Request | Real reply (S12) | Ours | |
+|---|---|---|---|
+| `80 01` | `81 01 00 03` + MAC reversed | same shape (MAC from the board) | ✓ |
+| `80 02` | `81 02` | `81 02` | ✓ |
+| `03 30` (both times) | `80 03` | `80 03` | ✓ |
+| `02` | `82 02 03 48 03 02 <MAC> 03 01` | `82 02 04 00 03 02 <MAC> 01 00` | ✗ firmware `04 00` vs `03 48` (D10/D26 choice); byte 10 `01` (S3 "always 01") vs real `03`; colour flag `00` vs real `01` |
+| `08` | `80 08` | `80 08` | ✓ |
+| `10 6000` (16) | 16 × `FF` (no serial) | `"000000000001"` + `FF` ×4 | ✗ |
+| `10 6050` (13) | `32 32 32 FF FF FF` + `FF` ×7 (colours) | `FF` ×13 | ✗ (follows our colour flag `00`) |
+| `01` | `81 01 03` | `81 01 03` | ✓ (D34). Switch 2 sent arg `01`, S12 sent `04`; one public reply shape for all |
+| `04` | `83 04` + zeros | same | ✓ |
+| `10 6080` (24) | `50 FD 00 00 C6 0F` + real stick params `0F 30 61 96 30 F3 D4 14 54 41 15 54 C7 79 9C 33 36 63` | offsets ✓; params from S4's sample `19 D0 4C AE 40 E1 …` | ✗ params |
+| `10 6098` (18) | the same real params | S4 sample | ✗ |
+| `10 8010` (24) | `FF` ×22, then `B2 A1` (the user-IMU-calibration magic at `0x8026`) | `FF` ×24 | ✗ (benign: no user calibration) |
+| `10 603D` (25) | real factory stick calibration + `FF` + colours `32 32 32 FF FF FF` | S9 default calibration + `FF` ×7 | ✗ values (ours pass S4's sanity limits) |
+| `10 8028` (24) | real user IMU calibration (magic was set) | `FF` ×24 | ✗ (benign) |
+| `40 01` | `80 40` | `80 40` | ✓. The IMU block stays zero; S12's real report carries real motion data, which a host can live without (S7's notes) |
+| `30 01` | `80 30` | `80 30` | ✓ |
+| report byte 2 | `91` in every S12 reply | `91` | ✓ (`8E` is the Joy-Con value seen in issue #7) |
+| byte 12 (vibrator) | varies `00` / `09`..`0C` | `0A` fixed | ~ |
+| timer | +1 per report on our side; real counts time | | ~ (hosts read it only for latency) |
+| vendor `80 xx` | only 05, 01, 02, 04 | answered as S1 | ✓ |
+
+**D35 (new): debug builds report the published state.** This is the cheapest test of hypothesis A, and an end-to-end check of the input path.
+- `ocb_ctrl_published_read()` now reads core 1's published state through a sequence lock, in debug builds only (`controller/link/pubstate.c`, pure C99, inside `ocb_link`).
+- Core 1 writes it once per link pass. Core 0 reads it with 3 tries, then NEUTRAL, so a torn state is never reported (AD-11).
+- Release builds stay NEUTRAL until Story 2.5, which may keep or replace this as its seqlock. The scope is debug-only on purpose: the AC set of 2.5 owns the real path, and the hot-path timing is unmeasured.
+- No race is accepted: it is not a plain cross-core copy.
+- Host test F.33 (`test_link_pubstate`). Red proof: with the "odd counter" check removed, `test_link_pubstate.c:53: FAIL: read during a write: NEUTRAL, false`.
+
+**New bench aids.**
+- `link_probe.py press --hat {up,down,left,right} | --button {A,B,X,Y,L,R,ZL,ZR,PLUS,MINUS,HOME} [--count 5 --hold-ms 150 --gap-ms 500]`: SET_STATE in DIRECT with PINGs during the hold, then NEUTRAL; PASS when every SET_STATE is ACKed.
+- `p2_probe.py watch [--seconds 30] [--expect Down]`: holds the stream from the Mac and prints the pressed buttons as they change.
+- F.32 covers both, with negative controls: nothing pressed fails `--expect`; no `console_ready` fails `press`.
+
+**Proposed attempt 3** (fw-debug of this change, flash the controller Zero only):
+1. Mac, no console. Controller Zero on the Mac, bridge wired, `export P=/dev/cu.usbmodemXXXX`. One line: `python3 firmware/tools/p2_probe.py watch --seconds 30 --expect Down & sleep 3; python3 firmware/tools/link_probe.py --port "$P" press --hat down --count 5; wait` → `Down` printed five times, `PASS`. This proves the press reaches the USB report, independent of the console.
+2. Console. `python3 firmware/tools/link_probe.py --port "$P" p2check`, plug into the top USB-C port. Then, on the HOME screen, `python3 firmware/tools/link_probe.py --port "$P" press --button A --count 3` and `... press --hat right --count 5`. Look: does an icon or "controller connected" banner appear after the first press, and does the HOME cursor move? Also open System Settings > Controllers and Accessories: is a Pro Controller listed?
+3. If presses move the cursor: hypothesis A is confirmed and Story 2.3 passes H.15 with that note.
+   If step 1 passes but the console still shows nothing and does not react: hypothesis B. Next build aligns the ✗ rows with S12: device info `03 48 … 03 01`, serial `FF`, colours, real stick parameters.
+
+**Verification** (real output, fresh build directories):
+- host-tests: 0 warnings; ctest `100% tests passed out of 35` (new: `test_link_pubstate`).
+- fw-release: build=0, warnings=0. fw-debug: build=0, warnings=0.
+- `check-pins: ok`; `check-proto-version: ok (proto_version 01, 7 files)`; `check-proto-pure: ok (14 files)`; `check-core-pure: ok (11 files)`; `check-link-pure: ok (20 files)`; `check-p2-pure: ok (9 files)`.
+- `check-release-nolog: ok, no debug-log symbol in build/fw-release/controller/controller.elf`; `--expect-present: ok (7 symbols)`.
+- `nm` shows no `ocb_pubstate_*` symbol in the release ELF; the debug ELF has `ocb_pubstate_init`, `_read`, `_write`, `_write_begin`, `_write_end`.
+
 ### File List
 
 New:
@@ -744,3 +815,4 @@ Modified:
 - 2026-11-22: Implementation (dev-story): `ocb_p2` profile, TinyUSB glue, P2 debug log and STATUS v3 tail, measured report period through the mailbox, purity and release-no-log gates, `p2_probe.py`, `p2check` / `p2watch`, 9 new ctest tests (F.24 to F.32; 34 in all, green), docs; `fw-debug-bench` removed; decisions D26 to D33 added. Status review; hardware ACs pending the owner's bench (Task 11).
 - 2026-11-22: Review follow-ups: 7 MINOR fixes (no effect for dropped requests plus a test, median fed by 0x30 completions only, notices and docs consistency, fuzz note, MAC comment); 34 ctest tests green.
 - 2026-11-22: Bench H.15 attempt 1 FAILED (the console repeated the refused pairing request 01 forever). D34: `01` and `21` get the real controller's replies from the S12 capture and change nothing; the log records arguments and counts repeats; `p2_probe.py` checks the new replies and hints at the macOS accessory prompt. 34 ctest tests green. H.15 attempt 2 pending.
+- 2026-11-22: Bench H.15 attempt 2: handshake as S12, player slot assigned (`30`), but no icon; inputs could not reach the report (D12). D35: debug builds report the published state through a sequence lock (F.33); `link_probe.py press` and `p2_probe.py watch` added; S12 reply comparison recorded. 35 ctest tests green. Attempt 3 pending.

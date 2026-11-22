@@ -42,6 +42,7 @@ void sim_report_period(uint32_t us);
 int sim_dbglog(uint8_t kind, uint8_t id);
 
 static int s_handshake_posted;
+static uint32_t s_hat_seen; /* story 2.3 D35: bit per published hat value seen at a poll */
 
 void sim_init(uint16_t cap, uint64_t now_us)
 {
@@ -57,6 +58,7 @@ void sim_init(uint16_t cap, uint64_t now_us)
     cfg.link_timeout_ms = OCB_LINK_TIMEOUT_MS;
     cfg.debug_counters = true;
     s_handshake_posted = 0;
+    s_hat_seen = 0u;
     ocb_dbglog_ring_init(&s_dbglog);
     ocb_link_init(&s_link, &s_core, &s_mailbox, &cfg, now_us);
     (void)ocb_txgate_sample(ocb_link_gate(&s_link), true, now_us);
@@ -74,6 +76,9 @@ void sim_poll(uint64_t now_us)
 {
     ocb_link_poll(&s_link, now_us);
     (void)ocb_dbglog_drain(ocb_link_dbglog_window(&s_link), &s_dbglog);
+    if (s_core.published.hat < 32u) {
+        s_hat_seen |= 1u << s_core.published.hat;
+    }
 }
 
 size_t sim_tx(uint64_t now_us, uint8_t *out, size_t cap)
@@ -150,7 +155,8 @@ int sim_dbglog(uint8_t kind, uint8_t id)
 
 /* 0 queue count, 1 dropped_bytes, 2 COBS+CRC drops, 3 overlong runs,
  * 4 NAKs suppressed, 5 tx_dropped; story 2.7: 6 watchdog_trips,
- * 7 abort_count, 8 link_ok, 9 TX gate open, 10 mode, 11 release pending. */
+ * 7 abort_count, 8 link_ok, 9 TX gate open, 10 mode, 11 release pending;
+ * story 2.3: 12 the published hat values seen (a bit each). */
 uint32_t sim_counter(int which)
 {
     const ocb_rx_stats *s = &s_link.rx.stats;
@@ -167,6 +173,8 @@ uint32_t sim_counter(int which)
         return s_core.mode;
     case 11:
         return ocb_link_release_pending(&s_link) ? 1u : 0u;
+    case 12:
+        return s_hat_seen;
     case 0:
         return ocb_queue_count(&s_core.queue);
     case 1:

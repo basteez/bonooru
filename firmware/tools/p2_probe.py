@@ -31,6 +31,11 @@ exit 0 or 1, 2 for a usage error):
                           prints the host-side median interval. --hold N
                           keeps reading N more seconds, so the controller's
                           console_ready stays 1 for another tool (H.11).
+  watch [--seconds 30] [--expect Down]
+                          story 2.3 D35: holds the stream (80 02, 80 04) and
+                          prints the pressed buttons of the 0x30 reports as
+                          they change, so a press sent with link_probe.py
+                          press is seen end to end without a console.
 
 No serial port and no device path is ever hard-coded: the HID device is
 found by VID:PID.
@@ -509,6 +514,59 @@ def cmd_handshake(args, out=print):
     return run_handshake(dev, args, out)
 
 
+# Report 0x30 decode (S2 button table), for `watch`.
+BTN_BITS = ((3, 0x01, "Y"), (3, 0x02, "X"), (3, 0x04, "B"), (3, 0x08, "A"), (3, 0x40, "R"), (3, 0x80, "ZR"),
+            (4, 0x01, "Minus"), (4, 0x02, "Plus"), (4, 0x04, "RStick"), (4, 0x08, "LStick"), (4, 0x10, "Home"),
+            (4, 0x20, "Capture"), (5, 0x01, "Down"), (5, 0x02, "Up"), (5, 0x04, "Right"), (5, 0x08, "Left"),
+            (5, 0x40, "L"), (5, 0x80, "ZL"))
+
+
+def pressed(r):
+    """The names of the buttons pressed in a 0x30 report (S2), sorted."""
+    return sorted(name for i, mask, name in BTN_BITS if r[i] & mask)
+
+
+def run_watch(dev, args, out=print):
+    """Story 2.3 D35: the host holds the stream and prints every change of
+    the pressed buttons, so a press sent over the link (`link_probe.py
+    press`) can be seen arriving in the USB report, with no console."""
+    h = Host(dev, out)
+    h.usb(0x02, [0x81, 0x02])
+    dev.write(usb_cmd(0x04))
+    out(">>> STREAM ON. Watching the 0x30 buttons for %.0f s: send the press now (link_probe.py press)."
+        % args.seconds)
+    seen = set()
+    last = None
+    n = 0
+    end = time.monotonic() + args.seconds
+    while time.monotonic() < end:
+        r = dev.read(100)
+        if not r or r[0] != 0x30:
+            continue
+        n += 1
+        now = pressed(r)
+        if now != last:
+            out("     %8.3f s  %s" % (args.seconds - (end - time.monotonic()), " ".join(now) or "(nothing)"))
+            last = now
+        seen.update(now)
+    h.check(n > 0, "%d 0x30 reports read" % n)
+    if args.expect:
+        h.check(args.expect in seen, "%s seen in the 0x30 stream (seen: %s)" % (args.expect,
+                                                                               " ".join(sorted(seen)) or "nothing"))
+    if h.fails:
+        out("FAIL %s" % h.fails[0])
+        return 1
+    out("PASS")
+    return 0
+
+
+def cmd_watch(args, out=print):
+    dev = open_hid(out)
+    if dev is None:
+        return 1
+    return run_watch(dev, args, out)
+
+
 # -------------------------------------------------------------------- cli
 def wait_arg(text):
     try:
@@ -539,9 +597,15 @@ def main(argv=None):
     p.add_argument("--seconds", type=seconds_arg, default=10.0, help="0x30 stream to read (default %(default)s)")
     p.add_argument("--hold", type=seconds_arg, default=0.0,
                    help="keep reading N more seconds so console_ready stays 1 (H.11)")
+    p = sub.add_parser("watch", help="story 2.3 D35: hold the stream and print the pressed buttons as they change")
+    p.add_argument("--seconds", type=seconds_arg, default=30.0, help="time to watch (default %(default)s)")
+    p.add_argument("--expect", choices=sorted(name for _, _, name in BTN_BITS),
+                   help="FAIL unless this button is seen pressed at least once")
     args = ap.parse_args(argv)
     if args.cmd == "enum":
         return cmd_enum(args)
+    if args.cmd == "watch":
+        return cmd_watch(args)
     return cmd_handshake(args)
 
 

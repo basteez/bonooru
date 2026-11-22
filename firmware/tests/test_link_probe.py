@@ -1015,6 +1015,22 @@ class BenchSteps(unittest.TestCase):
             self.assertIn("console_ready is 0", text)
             self.assertIn("p2_probe.py handshake --hold", text)
 
+    def test_press(self):
+        """Story 2.3 D35: `press --hat down` with a host holding the
+        handshake: every SET_STATE ACKed and the core published hat 4 (the
+        state the debug build's report pump now reads); without a host it
+        fails with the hint."""
+        port = Bridge2wiCCPort(self.lib, usb_ready=True)
+        rc, text = run_cmd(port, probe.cmd_press, hat="down", button=None, hold_ms=150, gap_ms=200, count=3)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertTrue(self.lib.sim_counter(12) & (1 << 4), "hat 4 never published")
+        self.assertEqual(probe.press_state("down", None), bytes([0, 0, 4, 0x80, 0x80, 0x80, 0x80, 0]))
+        self.assertEqual(probe.press_state(None, "A"), bytes([4, 0, 8, 0x80, 0x80, 0x80, 0x80, 0]))
+        port = Bridge2wiCCPort(self.lib)
+        rc, text = run_cmd(port, probe.cmd_press, hat="down", button=None, hold_ms=150, gap_ms=200, count=1)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("console_ready is 0", text)
+
     def test_breaks(self):
         for kw in (dict(), dict(no_heartbeat=True), dict(mode="playing")):
             port = Bridge2wiCCPort(self.lib, usb_ready=kw.get("mode") == "playing")

@@ -89,7 +89,7 @@ add_test(NAME core_pure_check
 # F.21 link watchdog; story 2.3: F.31 the P2 debug log ring, the STATUS v3
 # tail and the measured report period.
 set(OCB_LINK_TESTS test_link_rx test_link_session test_link_gbn test_link_nak test_link_tx test_link_ready
-    test_link_fuzz test_link_watchdog test_link_dbglog)
+    test_link_fuzz test_link_watchdog test_link_dbglog test_link_pubstate)
 foreach(_t IN LISTS OCB_LINK_TESTS)
     add_executable(${_t} ${_t}.c)
     target_link_libraries(${_t} PRIVATE ocb_link)

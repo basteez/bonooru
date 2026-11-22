@@ -17,8 +17,8 @@ except what a subcommand says it sends (`noise`, `fill --no-hello`,
 
 Subcommands: hello, watch, fill, soak, noise, try, loopback (story 2.6), the
 one-command bench steps of story 2.7: linkup (H.8), silence (H.9), direct
-and playing (H.11), breaks (H.12), and of story 2.3: p2check (H.15) and
-p2watch (H.16). Run with -h.
+and playing (H.11), breaks (H.12), and of story 2.3: p2check (H.15),
+p2watch (H.16) and press (D35: a D-pad direction or a button in DIRECT). Run with -h.
 
 console_ready (story 2.3 D15): it now comes only from a real USB host that
 completed the P2 handshake, the Switch 2 or, on the bench Mac,
@@ -1933,6 +1933,56 @@ def cmd_p2watch(port, args):
 
 
 
+# Canonical inputs for `press` (AD-10: hat clockwise from up, 8 neutral).
+PRESS_HATS = {"up": 0, "right": 2, "down": 4, "left": 6}
+PRESS_BUTTONS = {"Y": 0x0001, "B": 0x0002, "A": 0x0004, "X": 0x0008, "L": 0x0010, "R": 0x0020, "ZL": 0x0040,
+                 "ZR": 0x0080, "MINUS": 0x0100, "PLUS": 0x0200, "HOME": 0x1000}
+
+
+def press_state(hat=None, button=None):
+    """The 8-byte canonical state of one D-pad direction or one button."""
+    b = PRESS_BUTTONS[button] if button else 0
+    h = PRESS_HATS[hat] if hat else 8
+    return struct.pack("<HBBBBBB", b, h, 0x80, 0x80, 0x80, 0x80, 0)
+
+
+def cmd_press(port, args):
+    """Story 2.3 D35 bench aid: presses one D-pad direction or button in
+    DIRECT (SET_STATE, held --hold-ms with PINGs, then NEUTRAL), --count
+    times, --gap-ms apart; needs console_ready 1 (a host holding the P2
+    handshake) and a debug controller build (D35). PASS when every
+    SET_STATE was ACKed."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    if getattr(args, "hb_enabled", True):
+        port.hb_start(_hb_period(args))
+    if not c.check(link.hello() is not None, "INFO received"):
+        return c.finish()
+    _link_up(link, c)
+    if not _need_ready(link, c):
+        return c.finish()
+    state = press_state(args.hat, args.button)
+    what = ("D-pad %s" % args.hat) if args.hat else ("button %s" % args.button)
+    acks = 0
+    for i in range(args.count):
+        r = link.request_reliable(SET_STATE, state)
+        acks += r == "ACK"
+        end = port.now() + args.hold_ms / 1000.0
+        while port.now() < end:
+            link.wait(min(0.05, max(0.0, end - port.now())))
+            link.send(PING)
+        r2 = link.request_reliable(SET_STATE, NEUTRAL)
+        acks += r2 == "ACK"
+        link.log("press %d/%d: %s held %d ms (%s, release %s)" % (i + 1, args.count, what, args.hold_ms, r, r2))
+        end = port.now() + args.gap_ms / 1000.0
+        while port.now() < end:
+            link.wait(min(0.2, max(0.0, end - port.now())))
+            link.send(PING)
+    c.check(acks == 2 * args.count, "%d of %d SET_STATE ACKed" % (acks, 2 * args.count))
+    c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed")
+    return c.finish()
+
+
 def cmd_hello(port, args):
     info = do_hello(port, timeout=args.seconds)
     if info is None:
@@ -2000,7 +2050,7 @@ def positive_int_arg(text):
 
 
 # Story 2.7 subcommands: the heartbeat is on by default.
-HEARTBEAT_COMMANDS = ("linkup", "silence", "direct", "playing", "breaks", "p2check", "p2watch")
+HEARTBEAT_COMMANDS = ("linkup", "silence", "direct", "playing", "breaks", "p2check", "p2watch", "press")
 
 
 def main(argv=None):
@@ -2075,6 +2125,13 @@ def main(argv=None):
     p = sub.add_parser("p2watch", help="H.16: sleep, wake, Wired Communication off and on, re-enumeration")
     p.add_argument("--step-s", type=seconds_arg, default=P2_STEP_S, help="time per action (default %(default)s)")
     p.add_argument("--dock", action="store_true", help="also undock and dock")
+    p = sub.add_parser("press", help="story 2.3 D35: press a D-pad direction or a button in DIRECT, N times")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--hat", choices=sorted(PRESS_HATS))
+    g.add_argument("--button", choices=sorted(PRESS_BUTTONS))
+    p.add_argument("--hold-ms", type=positive_int_arg, default=150, help="1..1000 ms (default %(default)s)")
+    p.add_argument("--gap-ms", type=positive_int_arg, default=500, help="1..1000 ms (default %(default)s)")
+    p.add_argument("--count", type=positive_int_arg, default=5)
     args = ap.parse_args(argv)
     if args.cmd in HEARTBEAT_COMMANDS:
         args.hb_enabled = not args.no_heartbeat_global
@@ -2088,7 +2145,7 @@ def main(argv=None):
     handler = {"hello": cmd_hello, "watch": cmd_watch, "fill": cmd_fill, "soak": cmd_soak,
                "noise": cmd_noise, "try": cmd_try, "loopback": cmd_loopback, "linkup": cmd_linkup,
                "silence": cmd_silence, "direct": cmd_direct, "playing": cmd_playing,
-               "breaks": cmd_breaks, "p2check": cmd_p2check, "p2watch": cmd_p2watch}[args.cmd]
+               "breaks": cmd_breaks, "p2check": cmd_p2check, "p2watch": cmd_p2watch, "press": cmd_press}[args.cmd]
     rc = handler(port, args)
     if port.hb_running() and args.cmd not in HEARTBEAT_COMMANDS:
         print(port.hb_stats())
