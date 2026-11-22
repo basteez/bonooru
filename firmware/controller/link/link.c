@@ -154,7 +154,7 @@ static OCB_CORE_RAMFUNC void handle_bridge(ocb_link *link, const ocb_frame *f, u
      * the watchdog (D3, D7). Only bit 0 of flags (DTR) is read (D10). */
     link->link_ok = true;
     const bool dtr = (hb.flags & (uint8_t)OCB_HB_FLAG_DTR) != 0u;
-    if (ocb_wd_on_heartbeat(&link->wd, now_us, dtr, link->core->mode)) {
+    if (ocb_wd_on_heartbeat(&link->wd, now_us, dtr, link->core->mode, link->cnt.breaks)) {
         /* DTR falling edge in DIRECT: an app timeout, no EVENT (AD-5, AD-8). */
         ocb_core_out out;
         ocb_core_abort(link->core, OCB_ABORT_APP_TIMEOUT, &out);

@@ -325,7 +325,7 @@ Arrows mean "may depend on". Nothing depends on `ui`, `core` depends on nothing 
     - Unplugging the controller ends STATUS altogether. With the bridge alone the app receives no STATUS, so it treats both the bridge↔controller and the controller↔Switch states as down.
   - **Timing.** STATUS goes out every 50 ms, plus after ACKs, coalesced to at most one per 10 ms.
   - **Mode in the app.** The app derives the mode from STATUS. EVENT is only a fast path.
-  - **Controller TX.** Priority is EVENT > NAK > ACK > STATUS. On overflow the lowest priority is dropped; TX never blocks.
+  - **Controller TX.** Priority is EVENT > NAK > INFO > ACK > STATUS (INFO, the answer to HELLO, ranks with the replies). On overflow the lowest priority is dropped; TX never blocks.
   - **Unknown values.** Unknown EVENT codes and NAK reasons are logged and are never fatal.
 
 ### AD-20 — Pins and back-powering (rule zero, C5) [AMENDED 2026-11-22: story 2.6 D25, applied by story 2.7]

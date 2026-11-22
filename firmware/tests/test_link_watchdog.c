@@ -480,6 +480,50 @@ static void test_breaks(void)
     OCB_CHECK(count_events(&h, OCB_EVT_LINK_LOST, NULL) == 1u, "break + heartbeat: LINK_LOST");
     lh_hb_now(&h);
     OCB_CHECK(ocb_link_link_ok(&h.link) && h.link.wd.armed, "break + heartbeat: the next heartbeat did not recover");
+    /* D39 (review round 1): a break and then the ARMING heartbeat drained
+     * between two polls (bridge power-up, or a slow pass): the break happened
+     * while the link was down, so it is no loss; TX is still released (D8).
+     * Reviewer's sequence: poll, BE at t, heartbeat at t + 50 us, poll at
+     * t + 100 us. */
+    wh_init(&h, 1000000u, 16u, 0u, 0u, false);
+    lh_open_gate(&h);
+    poll(&h);
+    ocb_link_rx_entry(&h.link, OCB_LINK_RX_BE, h.now);
+    h.now += 50u;
+    lh_heartbeat(&h, 0u, 0u, 1u, OCB_HB_FLAG_DTR);
+    h.now += 50u;
+    poll(&h);
+    OCB_CHECK(ocb_link_link_ok(&h.link) && trips(&h) == 0u && !h.core.aborted && h.core.abort_count == 0u,
+              "break before the arming heartbeat: spurious loss (link_ok %d trips %u aborted %d)",
+              (int)ocb_link_link_ok(&h.link), trips(&h), (int)h.core.aborted);
+    OCB_CHECK(count_events(&h, OCB_EVT_LINK_LOST, NULL) == 0u, "break before the arming heartbeat: LINK_LOST sent");
+    OCB_CHECK(ocb_link_release_pending(&h.link), "break before the arming heartbeat: TX release not started (D8)");
+    ocb_link_tx_settled(&h.link, h.now, true);
+    OCB_CHECK(!gate_open(&h), "break before the arming heartbeat: TX not released");
+    lh_open_gate(&h);
+    /* The link stays up and armed: a later break is a real loss. */
+    ocb_link_rx_entry(&h.link, OCB_LINK_RX_BE, h.now);
+    poll(&h);
+    OCB_CHECK(!ocb_link_link_ok(&h.link) && trips(&h) == 1u, "armed break after D39 arming: no loss");
+
+    /* Same after a loss (disarmed): break + recovering heartbeat in one drain
+     * do not make a second loss. */
+    h.now += 10u * MS;
+    ocb_link_rx_entry(&h.link, OCB_LINK_RX_BE, h.now);
+    lh_hb_now(&h);
+    poll(&h);
+    OCB_CHECK(ocb_link_link_ok(&h.link) && trips(&h) == 1u, "break + recovering heartbeat: second loss");
+
+    /* Unit level: the arming heartbeat takes the counter as baseline and
+     * owes the release; an armed heartbeat does not resync. */
+    ocb_wd wd;
+    ocb_wd_init(&wd, 0u, 0u, 0u);
+    (void)ocb_wd_on_heartbeat(&wd, 1000u, true, OCB_MODE_IDLE, 3u);
+    OCB_CHECK(ocb_wd_check(&wd, 1100u, OCB_MODE_IDLE, 0u, false, 3u) == OCB_WD_RELEASE && wd.armed,
+              "unit: arming with prior breaks: not RELEASE only");
+    OCB_CHECK(ocb_wd_check(&wd, 1200u, OCB_MODE_IDLE, 0u, false, 3u) == 0u, "unit: release owed twice");
+    (void)ocb_wd_on_heartbeat(&wd, 1300u, true, OCB_MODE_IDLE, 4u);
+    OCB_CHECK(ocb_wd_check(&wd, 1400u, OCB_MODE_IDLE, 0u, false, 4u) == OCB_WD_BREAK, "unit: armed heartbeat resynced a break");
 }
 
 /* ------------------------------------------------------- D6: TX release */
@@ -840,13 +884,13 @@ static void test_dtr(void)
      * resets the memory. */
     ocb_wd wd;
     ocb_wd_init(&wd, 0u, 0u, 0u);
-    OCB_CHECK(!ocb_wd_on_heartbeat(&wd, 1000u, false, OCB_MODE_DIRECT), "first heartbeat DTR 0 is an edge");
-    OCB_CHECK(!ocb_wd_on_heartbeat(&wd, 2000u, true, OCB_MODE_DIRECT), "0 -> 1 is an edge");
+    OCB_CHECK(!ocb_wd_on_heartbeat(&wd, 1000u, false, OCB_MODE_DIRECT, 0u), "first heartbeat DTR 0 is an edge");
+    OCB_CHECK(!ocb_wd_on_heartbeat(&wd, 2000u, true, OCB_MODE_DIRECT, 0u), "0 -> 1 is an edge");
     OCB_CHECK(ocb_wd_check(&wd, 2000u + LINK_US + 1u, OCB_MODE_DIRECT, 2000u + LINK_US, true, 0u) ==
                   OCB_WD_LINK_TIMEOUT,
               "unit: timeout verdict");
     OCB_CHECK(!wd.armed, "unit: loss did not disarm");
-    OCB_CHECK(!ocb_wd_on_heartbeat(&wd, 3000000u, false, OCB_MODE_DIRECT), "DTR 1, loss, DTR 0 is an edge");
+    OCB_CHECK(!ocb_wd_on_heartbeat(&wd, 3000000u, false, OCB_MODE_DIRECT, 0u), "DTR 1, loss, DTR 0 is an edge");
     OCB_CHECK(wd.trips == 1u, "unit trips %u", wd.trips);
 }
 

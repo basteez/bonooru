@@ -26,6 +26,7 @@ void ocb_wd_init(ocb_wd *wd, uint16_t link_timeout_ms, uint16_t app_timeout_ms, 
     wd->app_limit_us = (uint64_t)app_ms * 1000u;
     wd->last_hb_us = 0u;
     wd->breaks_seen = breaks_now;
+    wd->release_owed = false;
 }
 
 uint16_t ocb_wd_link_timeout_ms(const ocb_wd *wd)
@@ -54,8 +55,17 @@ OCB_CORE_RAMFUNC void ocb_wd_note_loss(ocb_wd *wd)
     wd->dtr_prev = false;
 }
 
-OCB_CORE_RAMFUNC bool ocb_wd_on_heartbeat(ocb_wd *wd, uint64_t now_us, bool dtr, uint8_t mode)
+OCB_CORE_RAMFUNC bool ocb_wd_on_heartbeat(ocb_wd *wd, uint64_t now_us, bool dtr, uint8_t mode,
+                                          uint32_t breaks_total)
 {
+    if (!wd->armed) {
+        /* D39: a break drained before the arming heartbeat (same loop pass)
+         * happened while the link was down: release only, never a loss. */
+        if (breaks_total != wd->breaks_seen) {
+            wd->release_owed = true;
+        }
+        wd->breaks_seen = breaks_total;
+    }
     const bool edge = wd->dtr_prev && !dtr && mode == (uint8_t)OCB_MODE_DIRECT;
     wd->dtr_prev = dtr;
     wd->armed = true;
@@ -81,10 +91,15 @@ OCB_CORE_RAMFUNC uint8_t ocb_wd_check(ocb_wd *wd, uint64_t now_us, uint8_t mode,
         if (verdict != 0u) {
             count_trip(wd);
             ocb_wd_note_loss(wd);
+            wd->release_owed = false; /* the loss releases TX anyway */
             return verdict; /* the loss aborts the core: nothing else to check */
         }
     } else if (new_break) {
         verdict = (uint8_t)OCB_WD_RELEASE;
+    }
+    if (wd->release_owed) {
+        wd->release_owed = false;
+        verdict = (uint8_t)(verdict | OCB_WD_RELEASE);
     }
     if (mode == (uint8_t)OCB_MODE_DIRECT && have_app_frame &&
         ocb_wd_elapsed_us(now_us, last_app_frame_us) > wd->app_limit_us) {

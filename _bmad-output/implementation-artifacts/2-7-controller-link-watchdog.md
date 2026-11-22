@@ -495,6 +495,13 @@ All edits restored; afterwards the full suite is green again (below).
 - **D37. Two guards for the bench build**: CMake refuses `OCB_BENCH_FAKE_READY` without `OCB_DEBUG_BUILD` at configure time, and `main.c` keeps the `#error` the story asks for (proven red with a direct compile).
 - **D38. F.22 also checks controller-only values** written in the 2.7 section (`OCB_LINK_RELEASE_WAIT_US`) against `ocb_link/config.h`, so the one new value cannot drift either.
 
+**Review findings (round 1), 2026-11-22, after commit `8da0491`:**
+
+- **[Bug, fixed] Spurious `LINK_LOST` from a break drained before the arming heartbeat.** `ocb_wd_check()` took the break counter as its baseline only at poll time, so a BE entry followed by the arming HEARTBEAT in the same pass (bridge power-up, a slow pass, or a replug after a loss) made the next poll see a "new" break while armed: core aborted and latched, `watchdog_trips` 1. Reviewer repro (poll, BE at t, heartbeat at t + 50 µs, poll at t + 100 µs) gave `link_ok=0 trips=1 release=1`; with the fix it gives `link_ok=1 trips=0 release=1`. **D39:** `ocb_wd_on_heartbeat()` now takes the link's break counter; when it arms (the watchdog was not armed) the counter becomes the baseline, and a break among the uncounted ones sets `release_owed`, returned as `OCB_WD_RELEASE` by the next check (TX is still released once, as D8 requires for a break while the link is down; a loss in the same check clears it, the loss releases anyway). An armed heartbeat does not resync, so D26 (link up, break and heartbeat in one drain: the loss stands) is unchanged. New F.21 cases (`test_breaks`): the reviewer's sequence, a later armed break still a loss, a break plus the recovering heartbeat after a loss (no second loss: this one was also broken before the fix), and unit cases. Red proof: without the resync block `test_link_watchdog.c:498: FAIL: break before the arming heartbeat: spurious loss (link_ok 0 trips 1 aborted 1)` and `:515: FAIL: break + recovering heartbeat: second loss`; without the owed release `:500: FAIL: ... TX release not started (D8)`. `docs/link-protocol.md` Recovery bullet states the rule.
+- **[Text] risk register C5:** "symmetric (AD-20)" → "asymmetric (AD-20 as amended)" (closes the D36 note).
+- **[Text, pre-existing] AD-19 TX priority** in the spine (and the same line in `docs/link-protocol.md` "Controller → app reporting"): EVENT > NAK > INFO > ACK > STATUS, as the code and the Story 2.6 rules.
+- **[Doc] Backwards clock:** `ocb_link/watchdog.h` and `docs/link-protocol.md` state that time must be monotonic (RP2040 64-bit timer) and that a time earlier than a stored stamp counts as 0 elapsed: a timeout is suppressed until the clock passes the stamp again, never fired early.
+
 **Bench commands for Task 10 (owner):** exactly the H.8 to H.12 rows of `docs/test-plan.md` (port `/dev/cu.usbmodem101`).
 
 ### File List
@@ -551,3 +558,4 @@ Modified:
 
 - 2026-11-22: Story 2.7 created (ready-for-dev) by the create-story workflow, run autonomously. Decisions D1 to D25 recorded; AD-20 amendment of Story 2.6 D25 scheduled as Task 8.1.
 - 2026-11-22: Tasks 1 to 9 implemented by the dev-story workflow (watchdog module, link wiring, NAK NO_LINK, TX release, bench-only build, probe heartbeat and one-command bench steps, F.21 to F.23, docs, AD-20 amendment); decisions D26 to D38 recorded; host tests 25/25 green, three ARM presets with 0 warnings; status review. Task 10 (owner bench session, H.8 to H.12) open.
+- 2026-11-22: Code review round 1: D39 (break before the arming heartbeat is no loss, release still owed) with tests and red proof; C5 wording; AD-19 TX priority text; backwards-clock note.
