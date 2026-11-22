@@ -22,9 +22,11 @@ static void send_corrupted(lh *h, uint8_t seq)
     lh_feed(h, wire, n);
 }
 
+/* m->extra (debug counters) points into the decoded frame, so the frames
+ * must outlive this call: static storage, valid until the next call. */
 static bool get_status(lh *h, ocb_msg_status *m)
 {
-    lh_out o[16];
+    static lh_out o[16];
     const size_t n = lh_drain(h, o, 16u);
     for (size_t i = 0; i < n && i < 16u; i++) {
         if (lh_status_decode(&o[i], m)) {
