@@ -1,0 +1,23 @@
+{
+  "SPUSBDataType" : [
+    {
+      "_name" : "USB31Bus",
+      "host_controller" : "AppleT8142USBXHCI",
+      "_items" : [
+        {
+          "_name" : "Pro Controller",
+          "bcd_device" : "2.10",
+          "bus_power" : "500",
+          "bus_power_used" : "500",
+          "device_speed" : "full_speed",
+          "extra_current_used" : "0",
+          "location_id" : "0x00100000 / 1",
+          "manufacturer" : "Nintendo Co., Ltd.",
+          "product_id" : "0x2009",
+          "serial_num" : "000000000001",
+          "vendor_id" : "0x057e  (Nintendo Co., Ltd.)"
+        }
+      ]
+    }
+  ]
+}

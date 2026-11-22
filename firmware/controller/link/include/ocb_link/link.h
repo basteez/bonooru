@@ -58,6 +58,7 @@
 #include "ocb_core/core.h"
 #include "ocb_core/ramfunc.h"
 #include "ocb_link/config.h"
+#include "ocb_link/dbglog.h"
 #include "ocb_link/ready.h"
 #include "ocb_link/rxring.h"
 #include "ocb_link/txgate.h"
@@ -72,7 +73,7 @@ typedef struct {
     uint8_t hid_profile;     /* INFO.hid_profile, OCB_HID_PROFILE_* */
     uint16_t app_timeout_ms; /* INFO.app_timeout_ms and the DIRECT app timeout; 0 = default (story 2.7 D9) */
     uint16_t link_timeout_ms; /* heartbeat timeout; 0 = OCB_LINK_TIMEOUT_MS, clamped to OCB_LINK_TIMEOUT_MAX_MS */
-    bool debug_counters;     /* append the 7 STATUS debug bytes (D12) */
+    bool debug_counters;     /* append the STATUS debug counters (D12; v3 tail: story 2.3 D14) */
 } ocb_link_cfg;
 
 /* Counters, u32, wrap. dropped_bytes (STATUS debug counter) =
@@ -101,6 +102,7 @@ typedef struct {
     const ocb_usb_mailbox *mailbox;
     ocb_link_cfg cfg;
     uint16_t report_period_us;
+    uint32_t mb_period_seen; /* the mailbox report period last applied (story 2.3 D13) */
 
     ocb_rxring ring;
     ocb_rx rx;
@@ -151,6 +153,10 @@ typedef struct {
     uint32_t max_app_gap_us;
 
     ocb_link_counters cnt;
+
+    /* Story 2.3 D14: the USB profile's debug log window, filled by the
+     * firmware's drain (debug builds only), sent in the debug STATUS. */
+    ocb_dbglog_window dbg;
 } ocb_link;
 
 /* Session closed, gate closed, link_ok 0, watchdog disarmed, everything
@@ -166,8 +172,13 @@ void ocb_link_init(ocb_link *link, ocb_core *core, const ocb_usb_mailbox *mailbo
  * that events core 0 posted before core 1 initialised the link are seen. */
 void ocb_link_ready_rebase(ocb_link *link, const ocb_usb_mailbox *baseline, uint64_t now_us);
 
-/* INFO.report_period_us, and the core's LATE threshold (0 = unknown). */
+/* INFO.report_period_us, and the core's LATE threshold (0 = unknown).
+ * ocb_link_poll also applies the mailbox's report_period_us (story 2.3 D13)
+ * each time that value changes, saturated at 65535. */
 void ocb_link_set_report_period(ocb_link *link, uint16_t report_period_us);
+
+/* The debug log window the debug STATUS carries (story 2.3 D14). */
+ocb_dbglog_window *ocb_link_dbglog_window(ocb_link *link);
 
 /* The RX ring the UART interrupt pushes into (producer side). */
 ocb_rxring *ocb_link_rx_ring(ocb_link *link);
@@ -183,9 +194,9 @@ OCB_CORE_RAMFUNC void ocb_link_rx_entry(ocb_link *link, uint16_t entry, uint64_t
  * Returns the number handled. */
 OCB_CORE_RAMFUNC uint32_t ocb_link_rx_drain(ocb_link *link, uint64_t now_us, uint32_t max);
 
-/* USB mailbox and ready, the resulting aborts, the link watchdog (story
- * 2.7 D23: before the scheduler, so a dead link never applies a due event),
- * one scheduler pass. */
+/* USB mailbox and ready, the resulting aborts, the measured report period
+ * (story 2.3 D13), the link watchdog (story 2.7 D23: before the scheduler,
+ * so a dead link never applies a due event), one scheduler pass. */
 OCB_CORE_RAMFUNC void ocb_link_poll(ocb_link *link, uint64_t now_us);
 
 /* The next whole wire frame (COBS plus the 0x00 delimiter) into out, or 0

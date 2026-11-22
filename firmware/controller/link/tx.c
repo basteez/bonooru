@@ -22,16 +22,18 @@
 #include "ocb_proto/frame.h"
 #include "ocb_proto/msgs.h"
 
-/* Controller -> app bodies are small (STATUS with the v2 debug counters is
- * the largest: 11 + 21 = 32 bytes, checked below): keep the stack use of
- * the TX path low. */
+/* Controller -> app bodies are small (INFO, 14 bytes, is the largest of
+ * this path; the debug STATUS with its counters is built by
+ * ocb_link_tx_status_debug_ in tx_debug.c, with its own buffers, so the
+ * release stack of this path does not grow with the debug tail, story 2.3
+ * D14): keep the stack use of the TX path low. */
 #define TX_BODY_MAX 32u
 #define TX_WIRE_MAX 48u /* header 3 + body 32 + crc 2, COBS overhead 1, delimiter 1 */
 #define STATUS_PERIOD_US ((uint64_t)OCB_STATUS_PERIOD_MS * 1000u)
 #define STATUS_MIN_GAP_US ((uint64_t)OCB_STATUS_MIN_GAP_MS * 1000u)
 
-typedef char ocb_link_tx_body_fits[(OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_COUNTERS_LEN <= TX_BODY_MAX &&
-                                    OCB_BODY_LEN_INFO <= TX_BODY_MAX)
+typedef char ocb_link_tx_body_fits[(OCB_BODY_LEN_STATUS <= TX_BODY_MAX && OCB_BODY_LEN_INFO <= TX_BODY_MAX &&
+                                    OCB_FRAME_HEADER_SIZE + TX_BODY_MAX + OCB_FRAME_CRC_SIZE + 2u <= TX_WIRE_MAX)
                                        ? 1
                                        : -1];
 
@@ -74,13 +76,6 @@ OCB_CORE_RAMFUNC void ocb_link_q_info_(ocb_link *link)
     link->info_pending = true;
 }
 
-static OCB_CORE_RAMFUNC void put_u16(uint8_t *p, uint32_t v)
-{
-    const uint16_t s = v > 0xFFFFu ? (uint16_t)0xFFFFu : (uint16_t)v;
-    p[0] = (uint8_t)(s & 0xFFu);
-    p[1] = (uint8_t)(s >> 8);
-}
-
 static OCB_CORE_RAMFUNC bool status_due(const ocb_link *link, uint64_t now_us)
 {
     if (!link->status_sent) {
@@ -96,7 +91,8 @@ static OCB_CORE_RAMFUNC bool status_due(const ocb_link *link, uint64_t now_us)
     return link->status_requested && since >= STATUS_MIN_GAP_US;
 }
 
-static OCB_CORE_RAMFUNC int build_status(const ocb_link *link, uint64_t now_us, uint8_t *body, size_t cap)
+static OCB_CORE_RAMFUNC int build_status(const ocb_link *link, uint64_t now_us, const uint8_t *extra, size_t extra_len,
+                                         uint8_t *body, size_t cap)
 {
     ocb_core_status_view v;
     ocb_core_status(link->core, now_us, &v);
@@ -107,20 +103,6 @@ static OCB_CORE_RAMFUNC int build_status(const ocb_link *link, uint64_t now_us, 
     if (ocb_ready_is(&link->ready, now_us)) {
         flags |= (uint8_t)OCB_STATUS_CONSOLE_READY;
     }
-    uint8_t extra[OCB_LINK_DEBUG_COUNTERS_LEN];
-    put_u16(&extra[0], ocb_link_max_app_gap_ms(link));
-    extra[2] = link->wd.trips; /* watchdog_trips (story 2.7 D12), wraps */
-    put_u16(&extra[3], ocb_link_dropped_bytes(link));
-    put_u16(&extra[5], link->cnt.tx_dropped);
-    /* v2 (D35): the three causes of dropped_bytes, then the error bits. */
-    put_u16(&extra[7], link->cnt.rx_err_bytes);
-    put_u16(&extra[9], link->ring.dropped);
-    put_u16(&extra[11], link->cnt.overlong_bytes);
-    put_u16(&extra[13], link->cnt.rx_fe);
-    put_u16(&extra[15], link->cnt.rx_pe);
-    put_u16(&extra[17], link->cnt.breaks);
-    put_u16(&extra[19], link->cnt.rx_oe);
-
     ocb_msg_status m;
     m.free = v.free;
     m.now_us = v.now_us;
@@ -129,9 +111,26 @@ static OCB_CORE_RAMFUNC int build_status(const ocb_link *link, uint64_t now_us, 
     m.abort_count = v.abort_count;
     m.last_event = v.last_event;
     m.flags = (uint8_t)(flags & (uint8_t)~OCB_STATUS_RESERVED_MASK);
-    m.extra = link->cfg.debug_counters ? extra : NULL;
-    m.extra_len = link->cfg.debug_counters ? sizeof extra : 0u;
+    m.extra = extra_len > 0u ? extra : NULL;
+    m.extra_len = extra_len;
     return ocb_msg_status_encode(&m, body, cap);
+}
+
+/* The same body for tx_debug.c (build_status stays static, so the release
+ * path below inlines it as before story 2.3). */
+OCB_CORE_RAMFUNC int ocb_link_status_body_(const ocb_link *link, uint64_t now_us, const uint8_t *extra,
+                                           size_t extra_len, uint8_t *body, size_t cap)
+{
+    return build_status(link, now_us, extra, extra_len, body, cap);
+}
+
+OCB_CORE_RAMFUNC void ocb_link_status_sent_(ocb_link *link, uint64_t now_us)
+{
+    link->last_status_us = now_us;
+    link->status_sent = true;
+    link->status_requested = false;
+    link->tx_seq = (uint8_t)(link->tx_seq + 1u);
+    link->cnt.tx_frames++;
 }
 
 static OCB_CORE_RAMFUNC int build_info(const ocb_link *link, uint8_t *body, size_t cap)
@@ -213,7 +212,11 @@ OCB_CORE_RAMFUNC size_t ocb_link_tx_next(ocb_link *link, uint64_t now_us, uint8_
         type = OCB_MSG_ACK;
         kind = TX_ACK;
     } else if (status_due(link, now_us)) {
-        n = build_status(link, now_us, body, sizeof body);
+        if (link->cfg.debug_counters) {
+            /* Debug counters and the P2 log window (story 2.3 D14). */
+            return ocb_link_tx_status_debug_(link, now_us, out, cap);
+        }
+        n = build_status(link, now_us, NULL, 0u, body, sizeof body);
         type = OCB_MSG_STATUS;
         kind = TX_STATUS;
     } else {
@@ -248,10 +251,8 @@ OCB_CORE_RAMFUNC size_t ocb_link_tx_next(ocb_link *link, uint64_t now_us, uint8_
     case TX_STATUS:
     case TX_NONE:
     default:
-        link->last_status_us = now_us;
-        link->status_sent = true;
-        link->status_requested = false;
-        break;
+        ocb_link_status_sent_(link, now_us);
+        return len;
     }
     link->tx_seq = (uint8_t)(link->tx_seq + 1u);
     link->cnt.tx_frames++;

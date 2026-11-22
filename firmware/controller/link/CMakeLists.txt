@@ -4,7 +4,7 @@
 # headers: it builds in host-tests and in the firmware presets, and
 # tools/check-link-pure.sh enforces the include allow-list.
 # Links only ocb_core and ocb_proto (no SDK, no board library, no version).
-set(OCB_LINK_SOURCES rxring.c ready.c txgate.c watchdog.c link.c tx.c)
+set(OCB_LINK_SOURCES rxring.c ready.c txgate.c watchdog.c link.c tx.c tx_debug.c dbglog.c pubstate.c)
 add_library(ocb_link STATIC ${OCB_LINK_SOURCES})
 target_include_directories(ocb_link PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(ocb_link PUBLIC ocb_core ocb_proto)

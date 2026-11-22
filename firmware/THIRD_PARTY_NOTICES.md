@@ -18,11 +18,12 @@ Third-party material in `firmware/` and in the firmware binaries
 - **TinyUSB 0.18.0** (MIT)
   - Copyright (c) 2018, hathach (tinyusb.org)
   - Source: https://github.com/hathach/tinyusb (tag `0.18.0`), the pico-sdk's pinned `lib/tinyusb` submodule, not modified.
-  - Used: initialised and pinned, not linked until Stories 2.3 / 3.1. Licence text: MIT, below.
+  - Used: linked into the controller UF2 since Story 2.3 (the USB device stack of the P2 profile); the bridge links it from Story 3.1. Licence text: MIT, below.
 - ocb_proto: COBS and CRC-16 implemented from the published descriptions, no third-party code (references in the source headers).
 - ocb_core: written from the project's own architecture decisions (AD-8, AD-9), no third-party code.
 - ocb_link, uart_link, link_probe (Story 2.6): written from `docs/link-protocol.md` and the pico-sdk API, no third-party code.
-- watchdog, bench-ready hook, probe heartbeat (Story 2.7): written from `docs/link-protocol.md` and the pico-sdk API, no third-party code.
+- watchdog, probe heartbeat (Story 2.7): written from `docs/link-protocol.md` and the pico-sdk API, no third-party code. (The Story 2.7 bench-ready hook was removed by Story 2.3.)
+- ocb_p2, the USB glue, p2_probe, the P2 debug log (Story 2.3): written from public reverse-engineering documentation (dekuNukem, Nintendo_Switch_Reverse_Engineering: USB-HID-Notes, bluetooth_hid_notes, bluetooth_hid_subcommands_notes, spi_flash_notes; Chromium nintendo_controller.cc; SDL SDL_hidapi_switch.c; the mzyy94 and tmk hardware dumps and mzyy94's capture log of a real console and controller; a Joy-Con reply quoted in dekuNukem's issue #7; joycontrol, values only) and the TinyUSB API; no third-party code. The USB identifiers `057E:2009`, the descriptor bytes and the strings "Nintendo Co., Ltd." / "Pro Controller" / "000000000001" are those of the device the console expects; they are used only for interoperability with the owner's console, with no third-party code or assets.
 - No 2wiCC code in this tree (NFR-07, ADR-004).
 
 ## BSD-3-Clause licence text (pico-sdk and pico-examples)

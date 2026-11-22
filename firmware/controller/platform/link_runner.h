@@ -9,10 +9,13 @@
 #define OCB_CTRL_LINK_RUNNER_H
 
 #include "ocb_core/core.h"
+#include "ocb_link/dbglog.h"
 #include "ocb_link/ready.h"
+#include "ocb_proto/state.h"
 
-/* Zeroes the USB mailbox. Call once in main() on core 0, before core 1 is
- * launched and before anything posts to it (Story 2.3). */
+/* Zeroes the USB mailbox (and, in debug builds, the P2 debug log ring).
+ * Call once in main() on core 0, before core 1 is launched and before
+ * anything posts to it (story 2.3). */
 void ocb_ctrl_usb_mailbox_init(void);
 
 /* Builds the core (512-event static queue), the link and the TX gate, and
@@ -31,10 +34,21 @@ void ocb_ctrl_link_step(void);
 /* The core, for Story 2.5 (core->published is read after each step). */
 const ocb_core *ocb_ctrl_core(void);
 
-/* The USB mailbox: core 0 posts to it (Story 2.3) with the
+/* The USB mailbox: core 0 (the P2 glue, story 2.3) posts to it with the
  * ocb_usb_mailbox_* functions, any time after ocb_ctrl_usb_mailbox_init()
- * (posts made before core 1 initialises the link are kept, D28); nothing
- * posts yet, so console_ready is 0. */
+ * (posts made before core 1 initialises the link are kept, D28). */
 ocb_usb_mailbox *ocb_ctrl_usb_mailbox(void);
+
+#ifdef OCB_DEBUG_BUILD
+/* The P2 debug log ring (story 2.3 D14): core 0 pushes, core 1 drains it
+ * into the debug STATUS. Debug builds only. */
+ocb_dbglog_ring *ocb_ctrl_dbglog(void);
+#endif
+
+/* The state the USB profile reports (AD-12 build_report input, story 2.3
+ * D12, D35): in debug builds core 1's published state through a sequence
+ * lock (the last good copy when none is consistent in 3 tries); in release builds
+ * NEUTRAL until Story 2.5. Core 0. */
+void ocb_ctrl_published_read(ocb_state *out);
 
 #endif /* OCB_CTRL_LINK_RUNNER_H */

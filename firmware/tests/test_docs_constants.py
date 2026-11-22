@@ -17,6 +17,11 @@ This test makes the copies in docs/link-protocol.md fail loudly when they drift:
      prose sentences of the Watchdog section that state the values in words
      (a regex per sentence) still state the right ones. Controller-only
      values of ocb_link/config.h written there are checked against config.h.
+  4. story 2.3: the P2 descriptor table of docs/usb-controller-emulation.md
+     (VID:PID, bcdDevice, configuration length, report descriptor length,
+     default bInterval, report length) equals ocb_p2/config.h, and the STATUS
+     v3 tail sizes written in docs/link-protocol.md (24 bytes with an empty
+     window, at most 56, body at most 67) equal ocb_link/config.h.
 Stdlib only.
 """
 
@@ -144,12 +149,54 @@ def check(doc, consts, cfg):
     return errors
 
 
+def p2_config():
+    text = read("firmware", "controller", "profile_p2", "include", "ocb_p2", "config.h")
+    return {m.group(1): int(m.group(2), 0) for m in
+            re.finditer(r"^#define OCB_P2_([A-Z0-9_]+) (0x[0-9A-Fa-f]+|\d+)u?\b", text, re.M)}
+
+
+def check_p2(usb_doc, link_doc, p2, cfg):
+    """Story 2.3: the P2 tables and the STATUS v3 sizes."""
+    errors = []
+    table = section(usb_doc, "Descriptors (D3, D4)")
+    m = re.search(r"\| VID:PID \| `([0-9A-F]{4}):([0-9A-F]{4})`", table)
+    if m is None or (int(m.group(1), 16), int(m.group(2), 16)) != (p2["VID"], p2["PID"]):
+        errors.append("usb doc: VID:PID row differs from ocb_p2/config.h")
+    m = re.search(r"\| `bcdDevice`, `bcdUSB`, `bMaxPacketSize0` \| (\d+)\.(\d+), (\d+)\.(\d+), (\d+) \|", table)
+    if m is None or ((int(m.group(1)) << 8) | int(m.group(2), 16)) != p2["BCD_DEVICE"] or \
+            int(m.group(5)) != p2["EP0_SIZE"]:
+        errors.append("usb doc: bcdDevice / bMaxPacketSize0 row differs from ocb_p2/config.h")
+    m = re.search(r"\| Configuration \| (\d+) bytes", table)
+    if m is None or int(m.group(1)) != p2["CONFIG_DESC_LEN"]:
+        errors.append("usb doc: configuration length differs from OCB_P2_CONFIG_DESC_LEN")
+    m = re.search(r"report descriptor (\d+) bytes", table)
+    if m is None or int(m.group(1)) != p2["REPORT_DESC_LEN"]:
+        errors.append("usb doc: report descriptor length differs from OCB_P2_REPORT_DESC_LEN")
+    m = re.search(r"\| `bInterval` \| \*\*(\d+)\*\* by default .*?declares (\d+)", table)
+    if m is None or int(m.group(1)) != p2["BINTERVAL_DEFAULT"] or int(m.group(2)) != p2["BINTERVAL_REAL"]:
+        errors.append("usb doc: bInterval row differs from OCB_P2_BINTERVAL_DEFAULT / _REAL")
+    m = re.search(r"Every report is (\d+) bytes on the wire", table)
+    if m is None or int(m.group(1)) != p2["REPORT_LEN"]:
+        errors.append("usb doc: report length differs from OCB_P2_REPORT_LEN")
+    rules = section(link_doc, "Rules the controller link applies (Story 2.6)")
+    m = re.search(r"(\d+) bytes in all with an empty window, at most (\d+); a debug STATUS body is at most (\d+) "
+                  r"bytes", rules)
+    empty = cfg["LINK_DEBUG_COUNTERS_LEN"] + cfg["LINK_DEBUG_V3_HEADER_LEN"]
+    if m is None or (int(m.group(1)), int(m.group(2)), int(m.group(3))) != (
+            empty, cfg["LINK_DEBUG_TAIL_MAX_LEN"], 11 + cfg["LINK_DEBUG_TAIL_MAX_LEN"]):
+        errors.append("link doc: STATUS v3 sizes differ from ocb_link/config.h (%d, %d, %d)" % (
+            empty, cfg["LINK_DEBUG_TAIL_MAX_LEN"], 11 + cfg["LINK_DEBUG_TAIL_MAX_LEN"]))
+    return errors
+
+
 def main():
     global REPO
     if len(sys.argv) != 2:
         sys.exit("usage: test_docs_constants.py REPO_DIR")
     REPO = sys.argv[1]
     errors = check(read("docs", "link-protocol.md"), constants(), config_values())
+    errors += check_p2(read("docs", "usb-controller-emulation.md"), read("docs", "link-protocol.md"), p2_config(),
+                       config_values())
     for e in errors:
         print("docs_constants_check: FAIL %s" % e)
     if errors:
