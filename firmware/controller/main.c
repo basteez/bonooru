@@ -1,15 +1,22 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * controller firmware, Story 2.1 skeleton: blinks the onboard LED amber at
- * 2 Hz (250 ms on, 250 ms off), so the two boards are told apart at a
- * glance (Decisions D3, D5).
- * Later stories replace this super-loop with the real firmware.
+ * controller firmware. Core 0: the Story 2.1 LED blink, amber at 2 Hz
+ * (250 ms on, 250 ms off), so the two boards are told apart at a glance
+ * (Decisions D3, D5). Core 1 (Story 2.6 bring-up): the board link, UART
+ * plus ocb_link plus ocb_core, in a plain loop.
+ * Story 2.5 replaces core1_entry with the real core 1 super-loop (liveness
+ * counters, seqlock, 1 MHz timer) and keeps calling ocb_ctrl_link_step()
+ * from it; Story 2.3 adds the USB stack on core 0 and posts to the USB
+ * mailbox. Until then console_ready is always 0, so START and SET_STATE
+ * get NAK NOT_READY.
  */
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "link_runner.h"
 #include "ocb_hw/led.h"
+#include "pico/multicore.h"
 #include "pico/stdlib.h"
 
 /* Colour and rhythm, to be tuned at the bench (Story 2.1 Task 10). About 6 %
@@ -19,9 +26,22 @@
 #define BLINK_B 0u
 #define BLINK_HALF_PERIOD_US 250000u
 
+/* Core 1: init, the RX interrupt enabled from this core (the NVIC enable
+ * is per core), then the link loop. Core 1 is the only UART TX writer. */
+static void core1_entry(void)
+{
+    ocb_ctrl_link_init();
+    ocb_ctrl_link_start_rx();
+    for (;;) {
+        ocb_ctrl_link_step();
+    }
+}
+
 int main(void)
 {
     ocb_led_init();
+    ocb_ctrl_usb_mailbox_init(); /* before core 1 and before any core-0 post */
+    multicore_launch_core1(core1_entry);
 
     bool on = false;
     uint32_t next_edge = time_us_32();

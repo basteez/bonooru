@@ -13,12 +13,15 @@ endif()
 # ocb_hw: board hardware drivers (firmware builds only). Compiled against the
 # SDK *_headers targets so no SDK source is compiled into this archive; the
 # full SDK libraries are linked by the consuming executable (INTERFACE).
-add_library(ocb_hw STATIC led.c)
+# uart_link.c (story 2.6): the board-link UART driver, shared by both boards,
+# no frame knowledge; ocb_proto is linked for OCB_LINK_BAUD only.
+add_library(ocb_hw STATIC led.c uart_link.c)
 target_include_directories(ocb_hw PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(ocb_hw
-    PUBLIC ocb_hw_pins pico_stdlib_headers hardware_pio_headers hardware_clocks_headers
-    INTERFACE pico_stdlib hardware_pio hardware_clocks)
-ocb_strict_warnings(led.c)
+    PUBLIC ocb_hw_pins ocb_proto pico_stdlib_headers hardware_pio_headers hardware_clocks_headers
+           hardware_uart_headers hardware_gpio_headers hardware_irq_headers
+    INTERFACE pico_stdlib hardware_pio hardware_clocks hardware_uart hardware_gpio hardware_irq)
+ocb_strict_warnings(led.c uart_link.c)
 
 # The vendored pico-examples PIO program (BSD-3-Clause, verbatim); the header
 # is generated into the build tree, never committed.

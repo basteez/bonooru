@@ -257,3 +257,8 @@ void ocb_core_status(const ocb_core *core, uint64_t now_us, ocb_core_status_view
     v->abort_count = core->abort_count;
     v->last_event = core->last_event;
 }
+
+OCB_CORE_RAMFUNC void ocb_core_advance_expected(ocb_core *core, uint8_t seq)
+{
+    core->expected = (uint8_t)(seq + 1u);
+}

@@ -49,6 +49,8 @@ add_subdirectory(common/hw)
 # Controller playback core (story 2.4): pure C99, built in both modes so the
 # host tests and the ARM toolchain both compile it.
 add_subdirectory(controller/core)
+# Controller link layer (story 2.6): pure C99, built in both modes.
+add_subdirectory(controller/link)
 
 if(NOT OCB_HOST_TESTS)
     add_subdirectory(bridge)

@@ -2,7 +2,8 @@
 
 Switch-side board: wired Pro Controller emulation, on-device timeline scheduling, link watchdog (neutral within 100 ms) (milestone M3).
 
-Currently (Story 2.1) it only blinks the onboard LED amber at 2 Hz.
+Currently core 0 blinks the onboard LED amber at 2 Hz (Story 2.1) and core 1 runs the board
+link (Story 2.6, bring-up loop in `main.c`).
 
 ## `core/`: the playback core (Story 2.4)
 
@@ -13,11 +14,38 @@ profile's `ready()` as arguments, so it runs unchanged on the PC. It includes on
 headers on its allow-list, `ocb_proto/` and `ocb_core/` (`tools/check-core-pure.sh`, ctest
 `core_pure_check`, its own CI step). Its tests (F.3 to F.6, F.12 in `docs/test-plan.md`) run with
 the host preset: `cmake --preset host-tests && cmake --build --preset host-tests && ctest --preset host-tests`.
-The firmware links it, but `main.c` still only blinks the LED; Stories 2.5 to 2.7 wire it to the
-timer, USB and the link.
+Since Story 2.6 the link layer drives it on core 1; Stories 2.5, 2.3 and 2.7 wire it to the
+timer, USB and the watchdog.
 
 RAM placement (for Story 2.5): the hot functions of the core, including its private helpers, carry
 the `OCB_CORE_RAMFUNC` macro (empty by default, `ocb_core/ramfunc.h`). It does not cover the
 `ocb_proto` functions the core calls (message decoders, state predicates), the `OCB_NEUTRAL`
 constant or compiler-generated read-only tables; Story 2.5 must review where those live before
 claiming the hot path runs from RAM.
+
+## `link/`: the link layer (Story 2.6)
+
+`link/` is `ocb_link`, the controller side of the PC <-> controller link as a pure C99 library
+next to `ocb_core`: the RX error-byte policy and resync on top of the `ocb_rx` splitter, the
+session (HELLO / `NAK VERSION`), the go-back-N front (stale window, cached response, cumulative
+ACK, one transport NAK per `expected`), the console `ready` predicate fed by a cross-core USB
+mailbox, the TX slots (EVENT > NAK > INFO > ACK > STATUS), STATUS with its cadence and debug
+counters, and the TX gate state machine (AD-20). It reads no clock, does no I/O and allocates
+nothing: the glue passes RX entries and the time and pulls whole wire frames. Its rules are in
+`docs/link-protocol.md`, "Rules the controller link applies (Story 2.6)". Purity:
+`tools/check-link-pure.sh` (ctest `link_pure_check`, its own CI step). Tests F.1, F.2, F.10,
+F.14 to F.17 in `docs/test-plan.md`, under the host preset.
+
+## `platform/`: the glue on core 1 (Story 2.6)
+
+`platform/link_runner.c` connects `ocb_link` and `ocb_core` to the UART driver
+`common/hw/uart_link.c`: `ocb_ctrl_link_init()` (512-event static queue, version from the
+generated header, profile P2), `ocb_ctrl_link_start_rx()` (RX interrupt enabled from core 1) and
+`ocb_ctrl_link_step()` (one non-blocking pass: RX level into the TX gate, poll (USB mailbox,
+`ready`, scheduler), RX ring into the link, at most one frame into the UART TX ring). `main.c`
+zeroes the USB mailbox before core 1 starts, and the link counts mailbox events from zero, so
+core-0 posts made before core 1 is up are not lost. `main.c` launches core 1 with a bring-up loop
+that only calls `ocb_ctrl_link_step()`; Story 2.5 replaces that loop with the real super-loop
+and keeps the call. Core 1 is the only UART TX writer (a debug-build assertion). Nothing posts
+to the USB mailbox until Story 2.3, so on this firmware `console_ready` is always 0 and `START` /
+`SET_STATE` get `NAK NOT_READY`. Bench sender: `tools/link_probe.py`.
