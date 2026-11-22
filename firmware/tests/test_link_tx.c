@@ -8,6 +8,9 @@
  * STATUS fields in every mode and after every abort cause; reserved flag
  * bits; the 21 debug bytes (v1 prefix and the split of dropped_bytes); slot overflow; a too-small `cap`; the TX gate;
  * two independent links. Every output is decoded as a controller frame.
+ * Story 2.7: STATUS link_ok follows a loss and the recovery, debug byte 2 is
+ * watchdog_trips, and a gate closed by the watchdog's release discards
+ * exactly like a gate closed by hand.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -40,7 +43,7 @@ static void test_priority(void)
 {
     static lh h;
     lh_session(&h, 8u);
-    h.now += 50000u; /* STATUS due */
+    lh_advance(&h, 50000u); /* STATUS due */
     lh_send_seq(&h, OCB_MSG_HELLO, 200u, (const uint8_t[]){1u}, 1u); /* INFO */
     const uint8_t ping_seq = 201u;
     lh_send_seq(&h, OCB_MSG_PING, ping_seq, NULL, 0u); /* ACK */
@@ -88,25 +91,25 @@ static void test_cadence(void)
     /* ACK-triggered: 10 ms after the previous STATUS at the earliest. */
     lh_make_ready(&h);
     lh_hello(&h);
-    h.now += 1000u;
+    lh_advance(&h, 1000u);
     lh_discard_tx(&h); /* INFO; STATUS not due */
     uint64_t last_status = 0;
     n = 0;
     /* Find the time of the last STATUS: step until one appears. */
     for (int i = 0; i < 60 && n == 0u; i++) {
-        h.now += 1000u;
+        lh_advance(&h, 1000u);
         n = lh_drain(&h, o, 16u);
     }
     OCB_CHECK(n == 1u && o[0].type == OCB_MSG_STATUS, "setup periodic STATUS");
     last_status = h.now;
-    h.now += 2000u;
+    lh_advance(&h, 2000u);
     const uint8_t seq = h.seq;
     lh_ping(&h);
     n = lh_drain(&h, o, 16u);
     OCB_CHECK(n == 1u && o[0].type == OCB_MSG_ACK && o[0].body[0] == seq, "ACK alone at +2 ms (%zu)", n);
     uint64_t status_at = 0;
     for (uint32_t us = 0; us < 60000u && status_at == 0u; us += 100u) {
-        h.now += 100u;
+        lh_advance(&h, 100u);
         n = lh_drain(&h, o, 16u);
         if (n > 0u && o[0].type == OCB_MSG_STATUS) {
             status_at = h.now;
@@ -117,7 +120,7 @@ static void test_cadence(void)
 
     /* Prefill burst: 64 frames within 1 ms, TX drained after each frame. */
     lh_session(&h, 512u);
-    h.now += 50000u;
+    lh_advance(&h, 50000u);
     n = lh_drain(&h, o, 16u); /* a periodic STATUS now */
     const uint64_t burst0 = h.now;
     uint32_t acks = 0;
@@ -126,7 +129,7 @@ static void test_cadence(void)
     uint64_t min_gap = UINT64_MAX;
     for (uint32_t i = 0; i < 64u; i++) {
         lh_queue_event(&h, (i + 1u) * 1000u, lst_buttons(OCB_BTN_A));
-        h.now += 15u;
+        lh_advance(&h, 15u);
         lh_out b[8];
         const size_t m = lh_drain(&h, b, 8u);
         for (size_t k = 0; k < m && k < 8u; k++) {
@@ -142,7 +145,7 @@ static void test_cadence(void)
     /* Then STATUS every >= 10 ms with ACK traffic continuing. */
     for (uint32_t i = 0; i < 400u; i++) {
         lh_queue_event(&h, 100000u + i * 1000u, lst_buttons(OCB_BTN_A));
-        h.now += 500u;
+        lh_advance(&h, 500u);
         lh_out b[8];
         const size_t m = lh_drain(&h, b, 8u);
         for (size_t k = 0; k < m && k < 8u; k++) {
@@ -168,7 +171,7 @@ static void test_cadence(void)
 static void expect_status(lh *h, uint16_t free, uint32_t now_us, uint8_t last_seq, uint8_t mode, uint8_t abort_count,
                           uint8_t last_event, uint8_t flags, const char *what)
 {
-    h->now += 50000u;
+    lh_advance(h, 50000u);
     ocb_msg_status m;
     memset(&m, 0, sizeof m);
     const bool ok = get_status(h, &m);
@@ -193,6 +196,8 @@ static void test_fields(void)
     lh_open_gate(&h);
     expect_status(&h, 16u, 0u, 255u, OCB_MODE_IDLE, 0u, OCB_EVT_NONE, 0u, "boot");
     lh_heartbeat(&h, 1u, 2u, 3u, 0u);
+    h.hb_up = true; /* lh_advance keeps the link up from here (story 2.7) */
+    h.last_hb_sent = h.now;
     expect_status(&h, 16u, 0u, 255u, OCB_MODE_IDLE, 0u, OCB_EVT_NONE, OCB_STATUS_LINK_OK, "heartbeat");
     lh_make_ready(&h);
     /* Keep IN reports flowing so `ready` holds across the 50 ms steps. */
@@ -218,7 +223,7 @@ static void test_fields(void)
     ocb_usb_mailbox_in_report(&h.mb);
     ocb_link_poll(&h.link, h.now);
     expect_status(&h, 13u, 0u, 5u, OCB_MODE_PLAYING, 0u, OCB_EVT_NONE, both, "PLAYING in the lead");
-    h.now = t0 + 1000u;
+    lh_advance(&h, t0 + 1000u - h.now);
     ocb_usb_mailbox_in_report(&h.mb);
     ocb_link_poll(&h.link, h.now); /* applies t=1000 */
     lh_discard_tx(&h);
@@ -266,9 +271,9 @@ static void test_debug_counters(void)
     lh_open_gate(&h);
     lh_make_ready(&h);
     lh_hello(&h);
-    h.now += 1234567u; /* a gap of 1234.567 ms */
+    lh_advance(&h, 1234567u); /* a gap of 1234.567 ms */
     lh_ping(&h);
-    h.now += 5000u;
+    lh_advance(&h, 5000u);
     lh_ping(&h);
     /* 4 error bytes (FE, PE, BE, FE|OE), a 300-byte overlong run, and 8
      * bytes lost to a full RX ring (520 idle bytes pushed, then drained). */
@@ -288,7 +293,7 @@ static void test_debug_counters(void)
     for (int i = 0; i < 10; i++) {
         ocb_link_queue_event(&h.link, OCB_EVT_LATE);
     }
-    h.now += 50000u;
+    lh_advance(&h, 50000u);
     lh_out o[32];
     const size_t n = lh_drain(&h, o, 32u);
     ocb_msg_status m;
@@ -315,7 +320,7 @@ static void test_debug_counters(void)
     h.link.max_app_gap_us = 0xFFFFFFFFu;
     h.link.cnt.tx_dropped = 70000u;
     h.link.cnt.rx_err_bytes = 80000u;
-    h.now += 50000u;
+    lh_advance(&h, 50000u);
     OCB_CHECK(get_status(&h, &m) && m.extra_len == 21u, "debug: second STATUS");
     if (m.extra_len == 21u) {
         const uint8_t sat[21] = {0xFFu, 0xFFu, 0u,    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 8u, 0u,
@@ -419,11 +424,11 @@ static void test_gate(void)
     ocb_link_queue_event(&h.link, OCB_EVT_LATE);
     ocb_txgate_release(g);
     OCB_CHECK(!ocb_txgate_is_open(g), "release did not close");
-    h.now += 100000u;
+    lh_advance(&h, 100000u);
     OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, sizeof wire) == 0u, "released gate sent");
     OCB_CHECK(!ocb_txgate_sample(g, true, h.now), "reopened without a new idle-high run");
     OCB_CHECK(ocb_txgate_sample(g, true, h.now + 1000u), "did not reopen");
-    h.now += 1000u;
+    lh_advance(&h, 1000u);
     n = lh_drain(&h, o, 8u);
     OCB_CHECK(n == 1u && o[0].type == OCB_MSG_STATUS, "after release: stale EVENT left");
 }
@@ -445,6 +450,47 @@ static void test_gate_rearms_nak(void)
     lh_expect_nak(&h, OCB_NAK_CRC, E, 0u, "CRC after the closed gate discarded the first one");
     send_corrupted(&h, E);
     lh_expect_none(&h, "budget spent again by the NAK that left");
+}
+
+/* Story 2.7 (D6, D7, D12). */
+static void test_watchdog_status(void)
+{
+    static lh h;
+    lh_init_cfg(&h, 8u, true);
+    lh_open_gate(&h);
+    lh_hello(&h);
+    lh_discard_tx(&h);
+    lh_link_up(&h);
+    ocb_msg_status m;
+    lh_advance(&h, 50000u);
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra_len == 21u && m.extra[2] == 0u,
+              "link up: STATUS link_ok 1, watchdog_trips 0");
+    /* Loss by silence. */
+    h.auto_hb = false;
+    h.now = ocb_link_last_heartbeat_us(&h.link) + (uint64_t)OCB_LINK_TIMEOUT_MS * 1000u + 1u;
+    ocb_link_poll(&h.link, h.now);
+    lh_discard_tx(&h); /* the LINK_LOST EVENT */
+    ocb_link_tx_settled(&h.link, h.now, true);
+    OCB_CHECK(!ocb_txgate_is_open(ocb_link_gate(&h.link)), "loss: gate not released");
+    /* The released gate discards exactly as a closed gate does. */
+    const uint32_t dropped = ocb_link_counters_get(&h.link)->tx_dropped;
+    ocb_link_queue_event(&h.link, OCB_EVT_LATE);
+    lh_ping(&h);
+    uint8_t wire[OCB_MAX_WIRE_FRAME];
+    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, sizeof wire) == 0u, "released gate sent");
+    OCB_CHECK(ocb_link_counters_get(&h.link)->tx_dropped == dropped + 2u, "released gate: tx_dropped +%u, wanted 2",
+              ocb_link_counters_get(&h.link)->tx_dropped - dropped);
+    lh_open_gate(&h);
+    lh_advance(&h, 50000u);
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) == 0u && m.extra_len == 21u && m.extra[2] == 1u &&
+                  m.abort_count == 1u && m.last_event == OCB_EVT_LINK_LOST,
+              "after the loss: STATUS link_ok 0, watchdog_trips 1");
+    /* Recovery. */
+    h.auto_hb = true;
+    lh_hb_now(&h);
+    lh_advance(&h, 50000u);
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra[2] == 1u,
+              "after the recovery: STATUS link_ok 1, watchdog_trips still 1");
 }
 
 static void test_two_links(void)
@@ -475,6 +521,7 @@ int main(void)
     test_overflow_and_cap();
     test_gate();
     test_gate_rearms_nak();
+    test_watchdog_status();
     test_two_links();
     const int f = ocb_test_failures();
     if (f != 0) {

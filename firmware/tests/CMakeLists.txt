@@ -85,9 +85,10 @@ add_test(NAME core_pure_check
 
 # Controller link (story 2.6): one executable per test-plan block. F.14 RX
 # stream, F.15 session, F.1 go-back-N, F.2 NAK matrix, F.16 TX and STATUS,
-# F.10 console ready, F.17 byte-stream fuzz and lossy channel.
+# F.10 console ready, F.17 byte-stream fuzz and lossy channel; story 2.7:
+# F.21 link watchdog.
 set(OCB_LINK_TESTS test_link_rx test_link_session test_link_gbn test_link_nak test_link_tx test_link_ready
-    test_link_fuzz)
+    test_link_fuzz test_link_watchdog)
 foreach(_t IN LISTS OCB_LINK_TESTS)
     add_executable(${_t} ${_t}.c)
     target_link_libraries(${_t} PRIVATE ocb_link)
@@ -112,6 +113,9 @@ add_test(NAME link_pure_check
 # through a model of the 2wiCC_Comms bridge, on a fake clock. The link is
 # loaded with ctypes from a shared module built from the same sources without
 # sanitizers (a sanitized library cannot be loaded into a plain python3).
+# F.23 (story 2.7 D16): the one-command bench steps (linkup, silence, direct,
+# playing, breaks, soak --heartbeat) through the same model, with negative
+# controls.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 file(GLOB OCB_LINK_SIM_SOURCES CONFIGURE_DEPENDS
     "${OCB_FW_DIR}/controller/link/*.c" "${OCB_FW_DIR}/controller/core/*.c" "${OCB_FW_DIR}/common/proto/*.c")
@@ -125,4 +129,9 @@ set_target_properties(ocb_link_sim PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
 ocb_strict_warnings(link_sim_shim.c)
 add_test(NAME link_probe_selftest
     COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_link_probe.py" "${OCB_FW_DIR}"
-            "$<TARGET_FILE:ocb_link_sim>")
+            "$<TARGET_FILE:ocb_link_sim>" "${CMAKE_CURRENT_BINARY_DIR}")
+
+# F.22 (story 2.7 D18): the watchdog values written in docs/link-protocol.md
+# (timing table and prose) equal constants.txt and ocb_link/config.h.
+add_test(NAME docs_constants_check
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_docs_constants.py" "${OCB_FW_DIR}/..")

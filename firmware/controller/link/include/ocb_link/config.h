@@ -24,6 +24,13 @@
  * hypothesis to tune at the bench (test plan H.7). */
 #define OCB_LINK_TX_IDLE_HIGH_US 1000
 
+/* TX release bound (story 2.7 D6): after a link loss or a break the TX
+ * gate is released once the EVENT LINK_LOST has left and the UART is idle,
+ * or at the latest this long after the release started. 5000 us covers the
+ * worst backlog (128-byte driver ring + 32-byte FIFO = 3.5 ms at 460800).
+ * Local, not a wire value. */
+#define OCB_LINK_RELEASE_WAIT_US 5000
+
 /* STATUS debug counters (D12, D35), little-endian, after the 11 base bytes.
  * v1 prefix (7 bytes): max_app_gap_ms u16, watchdog_trips u8,
  * dropped_bytes u16, tx_dropped u16. v2 adds the causes of dropped_bytes

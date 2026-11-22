@@ -3,7 +3,7 @@
 Switch-side board: wired Pro Controller emulation, on-device timeline scheduling, link watchdog (neutral within 100 ms) (milestone M3).
 
 Currently core 0 blinks the onboard LED amber at 2 Hz (Story 2.1) and core 1 runs the board
-link (Story 2.6, bring-up loop in `main.c`).
+link (Story 2.6, bring-up loop in `main.c`) with its link watchdog (Story 2.7).
 
 ## `core/`: the playback core (Story 2.4)
 
@@ -49,3 +49,24 @@ that only calls `ocb_ctrl_link_step()`; Story 2.5 replaces that loop with the re
 and keeps the call. Core 1 is the only UART TX writer (a debug-build assertion). Nothing posts
 to the USB mailbox until Story 2.3, so on this firmware `console_ready` is always 0 and `START` /
 `SET_STATE` get `NAK NOT_READY`. Bench sender: `tools/link_probe.py`.
+
+## The link watchdog (Story 2.7)
+
+The fail-safe rules of AD-5 live in `link/watchdog.c` (`ocb_link/watchdog.h`), pure C99 inside
+`ocb_link`, covered by the same purity gate and tested on a fake clock (F.21): armed by the
+first valid bridge `HEARTBEAT`; more than 80 ms without one (`OCB_LINK_TIMEOUT_MS`, clamped to
+100) or a UART break while armed is a link loss (abort to IDLE and NEUTRAL, `EVENT LINK_LOST`,
+`link_ok` 0, then the TX pad released once that EVENT has left the UART, at most 5 ms later); in
+DIRECT only, no app frame for `app_timeout_ms` (1000) or a DTR falling edge in the heartbeat
+aborts with no EVENT; while the link is down `START` and `SET_STATE` get `NAK NO_LINK` (decided
+by the core from `env.link_ok`). The glue adds one call per pass, `ocb_link_tx_settled()` with
+the driver's `ocb_uart_link_tx_idle()`. Rules: `docs/link-protocol.md`, "Rules the controller
+link applies (Story 2.7)".
+
+Bench-only build: the preset `fw-debug-bench` (CMake option `OCB_BENCH_FAKE_READY`, its own
+build directory) makes core 0 post a console handshake and an IN report every millisecond to
+the USB mailbox, so `console_ready` reads 1 and DIRECT and PLAYING can be tested on the bench
+before Story 2.3 brings real USB (test plan H.11). It is debug-only on purpose (`main.c` and
+CMake refuse it otherwise): a build that claims a ready console without one must never be
+flashed for real use; CI compiles it as a gate and never uploads its UF2. Story 2.3 removes the
+option or keeps it for the same bench purpose.

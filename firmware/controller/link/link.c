@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: MIT
  *
  * Controller link: RX error policy, admission, session, go-back-N front,
- * NAK budget, heartbeat store, USB-ready polling (story 2.6 D4 to D11).
+ * NAK budget, heartbeat store, USB-ready polling (story 2.6 D4 to D11),
+ * the link watchdog's effects and the TX release sequence (story 2.7).
  * Frame bodies are read only through the ocb_proto decoders.
  */
 #include <stdbool.h>
@@ -17,6 +18,7 @@
 #include "ocb_link/ready.h"
 #include "ocb_link/rxring.h"
 #include "ocb_link/txgate.h"
+#include "ocb_link/watchdog.h"
 #include "ocb_proto/consts.h"
 #include "ocb_proto/err.h"
 #include "ocb_proto/frame.h"
@@ -40,6 +42,11 @@ void ocb_link_init(ocb_link *link, ocb_core *core, const ocb_usb_mailbox *mailbo
     link->nak_spent = false;
     link->status_sent = false;
     link->have_app_frame = false;
+    ocb_wd_init(&link->wd, cfg->link_timeout_ms, cfg->app_timeout_ms, link->cnt.breaks);
+    link->cfg.app_timeout_ms = ocb_wd_app_timeout_ms(&link->wd);
+    link->cfg.link_timeout_ms = ocb_wd_link_timeout_ms(&link->wd);
+    link->release_pending = false;
+    link->release_start_us = 0u;
 }
 
 void ocb_link_ready_rebase(ocb_link *link, const ocb_usb_mailbox *baseline, uint64_t now_us)
@@ -73,6 +80,7 @@ static OCB_CORE_RAMFUNC ocb_core_env make_env(const ocb_link *link, uint64_t now
     ocb_core_env e;
     e.now_us = now_us;
     e.ready = ocb_ready_is(&link->ready, now_us);
+    e.link_ok = link->link_ok;
     return e;
 }
 
@@ -142,7 +150,16 @@ static OCB_CORE_RAMFUNC void handle_bridge(ocb_link *link, const ocb_frame *f, u
     memcpy(link->bridge_ver, hb.bridge_fw_ver, sizeof link->bridge_ver);
     link->hb_flags = hb.flags;
     link->last_heartbeat_us = now_us;
-    link->link_ok = true; /* cleared by the Story 2.7 watchdog only */
+    /* Story 2.7: every valid heartbeat (re-)establishes the link and arms
+     * the watchdog (D3, D7). Only bit 0 of flags (DTR) is read (D10). */
+    link->link_ok = true;
+    const bool dtr = (hb.flags & (uint8_t)OCB_HB_FLAG_DTR) != 0u;
+    if (ocb_wd_on_heartbeat(&link->wd, now_us, dtr, link->core->mode, link->cnt.breaks)) {
+        /* DTR falling edge in DIRECT: an app timeout, no EVENT (AD-5, AD-8). */
+        ocb_core_out out;
+        ocb_core_abort(link->core, OCB_ABORT_APP_TIMEOUT, &out);
+        ocb_link_q_event_(link, out.event);
+    }
 }
 
 static OCB_CORE_RAMFUNC void handle_hello(ocb_link *link, const ocb_frame *f, const ocb_core_env *env)
@@ -318,6 +335,59 @@ OCB_CORE_RAMFUNC uint32_t ocb_link_rx_drain(ocb_link *link, uint64_t now_us, uin
     return n;
 }
 
+/* Starts the TX release sequence (story 2.7 D6, D8). A release already
+ * pending keeps its deadline. With the gate already closed there is nothing
+ * to drain: the release completes at once. */
+static OCB_CORE_RAMFUNC void start_release(ocb_link *link, uint64_t now_us)
+{
+    if (!ocb_txgate_is_open(&link->gate)) {
+        ocb_txgate_release(&link->gate);
+        link->release_pending = false;
+        return;
+    }
+    if (!link->release_pending) {
+        link->release_pending = true;
+        link->release_start_us = now_us;
+    }
+}
+
+/* The watchdog check and its effects (story 2.7 D3 to D12). */
+static OCB_CORE_RAMFUNC void watchdog_step(ocb_link *link, uint64_t now_us)
+{
+    ocb_core_out out;
+    const uint8_t v = ocb_wd_check(&link->wd, now_us, link->core->mode, link->last_app_frame_us,
+                                   link->have_app_frame, link->cnt.breaks);
+    if ((v & (uint8_t)OCB_WD_LOSS) != 0u) {
+        /* Abort (NEUTRAL, queue cleared, latch), EVENT LINK_LOST unless the
+         * latch was already set, link down, then release TX once the EVENT
+         * has left (D6). */
+        ocb_core_abort(link->core, OCB_ABORT_LINK_LOST, &out);
+        ocb_link_q_event_(link, out.event);
+        link->link_ok = false;
+        start_release(link, now_us);
+    }
+    if ((v & (uint8_t)OCB_WD_RELEASE) != 0u) {
+        start_release(link, now_us); /* break while not armed: release only (D8) */
+    }
+    if ((v & (uint8_t)OCB_WD_APP_TIMEOUT) != 0u) {
+        ocb_core_abort(link->core, OCB_ABORT_APP_TIMEOUT, &out); /* no EVENT (AD-8) */
+        ocb_link_q_event_(link, out.event);
+    }
+}
+
+OCB_CORE_RAMFUNC void ocb_link_tx_settled(ocb_link *link, uint64_t now_us, bool tx_hw_idle)
+{
+    if (!link->release_pending) {
+        return;
+    }
+    const bool drained = link->ev_count == 0u && tx_hw_idle;
+    const bool overdue = ocb_wd_elapsed_us(now_us, link->release_start_us) > (uint64_t)OCB_LINK_RELEASE_WAIT_US;
+    if (drained || overdue || !ocb_txgate_is_open(&link->gate)) {
+        ocb_txgate_release(&link->gate);
+        link->release_pending = false;
+    }
+}
+
 OCB_CORE_RAMFUNC void ocb_link_poll(ocb_link *link, uint64_t now_us)
 {
     ocb_core_out out;
@@ -334,6 +404,7 @@ OCB_CORE_RAMFUNC void ocb_link_poll(ocb_link *link, uint64_t now_us)
         ocb_core_abort(link->core, OCB_ABORT_USB_BUS_RESET, &out);
         ocb_link_q_event_(link, out.event);
     }
+    watchdog_step(link, now_us);
     const ocb_core_env env = make_env(link, now_us);
     ocb_core_tick(link->core, &env, &out);
     ocb_link_q_event_(link, out.event);
@@ -354,9 +425,14 @@ bool ocb_link_link_ok(const ocb_link *link)
     return link->link_ok;
 }
 
-void ocb_link_set_link_ok(ocb_link *link, bool ok)
+uint8_t ocb_link_watchdog_trips(const ocb_link *link)
 {
-    link->link_ok = ok;
+    return link->wd.trips;
+}
+
+bool ocb_link_release_pending(const ocb_link *link)
+{
+    return link->release_pending;
 }
 
 void ocb_link_queue_event(ocb_link *link, uint8_t code)

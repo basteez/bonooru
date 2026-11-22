@@ -7,6 +7,16 @@ ocb_strict_warnings(main.c platform/link_runner.c)
 set_property(SOURCE platform/link_runner.c APPEND PROPERTY COMPILE_OPTIONS -Wpedantic -Wshadow -Wconversion)
 target_link_libraries(controller PRIVATE ocb_hw ocb_proto ocb_core ocb_link ocb_version pico_multicore)
 
+# Story 2.7 D17: the bench-only build (preset fw-debug-bench) fakes a ready
+# console from core 0 so DIRECT and PLAYING are reachable on the bench.
+# Debug builds only (main.c refuses it otherwise); never uploaded by CI.
+if(OCB_BENCH_FAKE_READY)
+    if(NOT OCB_DEBUG_BUILD)
+        message(FATAL_ERROR "OCB_BENCH_FAKE_READY needs OCB_DEBUG_BUILD=ON (bench build is debug only)")
+    endif()
+    target_compile_definitions(controller PRIVATE OCB_BENCH_FAKE_READY=1)
+endif()
+
 # No stdio: keeps the UART pins untouched and TinyUSB unlinked (AC2).
 pico_enable_stdio_uart(controller 0)
 pico_enable_stdio_usb(controller 0)

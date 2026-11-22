@@ -30,6 +30,14 @@
       }
     },
     {
+      "name": "fw-debug-bench",
+      "displayName": "Firmware, debug, bench only: fake console_ready (story 2.7 D17, never shipped)",
+      "inherits": "fw-debug",
+      "cacheVariables": {
+        "OCB_BENCH_FAKE_READY": "ON"
+      }
+    },
+    {
       "name": "host-tests",
       "displayName": "Host tests (native compiler, no pico-sdk)",
       "generator": "Ninja",
@@ -44,6 +52,7 @@
   "buildPresets": [
     { "name": "fw-release", "configurePreset": "fw-release" },
     { "name": "fw-debug", "configurePreset": "fw-debug" },
+    { "name": "fw-debug-bench", "configurePreset": "fw-debug-bench" },
     { "name": "host-tests", "configurePreset": "host-tests" }
   ],
   "testPresets": [

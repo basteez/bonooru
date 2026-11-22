@@ -116,7 +116,7 @@ Controller firmware
 - AD-11: core 0 = TinyUSB task + profile + report sending (only TinyUSB toucher); core 1 = non-blocking RAM super-loop (`__not_in_flash_func`, < 50 µs) for UART, decode, modes, queue, 1 MHz scheduler, watchdogs; seqlock double buffer, reader retries ≤ 3 then NEUTRAL; core 1 sole UART TX writer; core0→core1 via latched atomic flags and SPSC log ring that drops; hardware watchdog ≤ 100 ms fed only while core 1 liveness < 20 ms old; core 1 forces reboot if core 0 report counter > 20 ms old; report sent on every host poll.
 - AD-12: exactly one profile per build (`OCB_PROFILE`, default P2); interface = descriptors, control/OUT handler (handshake), `build_report(const ocb_state*)`, `tick()`, `ready()`; profile reads only the published state; P2 (057E:2009) clean-room handshake (USB `0x80` commands, subcommands: device info, SPI flash reads, player lights, IMU enable with zero data, `0x30` reports), refuses firmware-update subcommands (C7), restarts handshake after bus reset, logs subcommands in debug builds only; `INFO.hid_profile` = profile id; `INFO.report_period_us` = measured median IN interval.
 - AD-19: STATUS body `free u16, now_us u32, last_seq, mode, abort_count, last_event, flags u8` (+ debug counters: max app-frame gap, watchdog trips, dropped bytes); flags bit0 `link_ok`, bit1 `console_ready`, bits 2–7 reserved 0; `console_ready` = profile `ready()` (1 after handshake; 0 on suspend/unmount/bus reset and > 100 ms without IN report — flag only, not abort); STATUS every 50 ms plus after ACKs, coalesced ≤ 1/10 ms; TX priority EVENT > NAK > ACK > STATUS, drop lowest on overflow, never block; unknown codes logged, never fatal.
-- AD-20: firmware configures only GP0 (TX), GP1 (RX), GP16 (LED) from `ocb_hw/pins.h`; CI grep forbids other pin numbers; debug toggle pin only in debug builds; both boards pull down RX, keep TX high-Z until RX idle-high, release TX on break or link loss (H.1, A.3).
+- AD-20: firmware configures only GP0 (TX), GP1 (RX), GP16 (LED) from `ocb_hw/pins.h`; CI grep forbids other pin numbers; debug toggle pin only in debug builds; both boards pull down RX; the controller keeps TX high-Z until RX idle-high and the bridge leads with short TX probe pulses; both release TX on break or link loss (H.1, A.3).
 - ADR-006 / R13: clean re-enumeration on dock/undock or resume; README says "don't dock mid-song".
 
 App architecture
@@ -678,7 +678,7 @@ So that the controller has a reliable link and a fail-safe signal independent of
 
 **Given** power-up (AD-20)
 **When** the board starts
-**Then** RX has an internal pull-down, TX stays high-Z until RX sees idle-high, and TX is released again on a break or link loss
+**Then** RX has an internal pull-down, the bridge probes with TX idle-high pulses of about 5 ms every 500 ms until RX shows the controller, then keeps TX enabled, and returns to probing on a break or link loss; F-test for the probe state machine
 
 ### Story 3.2: Rust workspace and protocol codec (`ocb-core`)
 

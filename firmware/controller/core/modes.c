@@ -126,12 +126,16 @@ static OCB_CORE_RAMFUNC void sync_point(ocb_core *core, const ocb_frame *frame)
     core->expected = (uint8_t)(frame->seq + 1u);
 }
 
+/* NAK precedence for SET_STATE and START (story 2.4 D3, story 2.7 D11),
+ * first match wins: ABORTED, NO_LINK, BUSY, NOT_READY, BAD_STATE. */
 static OCB_CORE_RAMFUNC void handle_set_state(ocb_core *core, const ocb_core_env *env,
                                               const ocb_frame *frame, ocb_core_out *out)
 {
     ocb_msg_set_state m;
     if (core->aborted) {
         reply_nak(out, OCB_NAK_ABORTED);
+    } else if (!env->link_ok) {
+        reply_nak(out, OCB_NAK_NO_LINK);
     } else if (core->mode == OCB_MODE_PLAYING) {
         reply_nak(out, OCB_NAK_BUSY);
     } else if (!env->ready) {
@@ -153,6 +157,8 @@ static OCB_CORE_RAMFUNC void handle_start(ocb_core *core, const ocb_core_env *en
     ocb_msg_start m;
     if (core->aborted) {
         reply_nak(out, OCB_NAK_ABORTED);
+    } else if (!env->link_ok) {
+        reply_nak(out, OCB_NAK_NO_LINK);
     } else if (core->mode == OCB_MODE_PLAYING) {
         reply_nak(out, OCB_NAK_BUSY);
     } else if (!env->ready) {

@@ -4,10 +4,14 @@
  * Host test F.3 (story 2.4): the AD-8 mode table as a hand-written matrix
  * (8 frame kinds x 3 modes x latch x ready), entering IDLE, and the abort
  * latch (every cause from every mode, NAK ABORTED, cleared only by STOP and
- * HELLO, abort_count and last_event rules of D5).
+ * HELLO, abort_count and last_event rules of D5). Story 2.7 adds the
+ * NAK NO_LINK rows (D11): link down in every mode, the precedence pairs, and
+ * that NO_LINK is semantic with no effect. The matrix itself runs with the
+ * link up (the harness default).
  */
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "core_fixture.h"
 
@@ -373,12 +377,111 @@ static void test_idle_entry_by_request(void)
     }
 }
 
+
+/* NAK NO_LINK (story 2.7 D11): SET_STATE and START with env.link_ok false. */
+static void test_no_link(void)
+{
+    const uint8_t modes[] = {I, D, P};
+    for (size_t mi = 0; mi < sizeof modes; mi++) {
+        for (int k = 0; k < 2; k++) {
+            const char *mn = mode_name(modes[mi]);
+            const char *fn = k == 0 ? "SET_STATE" : "START";
+            harness h;
+            h_init(&h, 16u, 1000u);
+            h_enter_mode(&h, modes[mi]);
+            h.link_ok = false;
+            const ocb_state before_pub = h.core.published;
+            const uint16_t before_count = ocb_queue_count(&h.core.queue);
+            const uint32_t before_pc = h.core.publish_count;
+            const uint8_t seq = 200u;
+            h.seq = seq;
+            const ocb_core_out o = k == 0 ? h_set_state(&h, matrix_set_state()) : h_start(&h, 0u);
+            OCB_CHECK(o.kind == R_NAK && o.nak_reason == OCB_NAK_NO_LINK, "%s/%s link down: kind %d NAK 0x%02x",
+                      fn, mn, (int)o.kind, o.nak_reason);
+            OCB_CHECK(o.event == OCB_EVT_NONE, "%s/%s: NO_LINK emitted an event", fn, mn);
+            OCB_CHECK(h.core.expected == (uint8_t)(seq + 1u), "%s/%s: NO_LINK is semantic, expected %u", fn, mn,
+                      h.core.expected);
+            OCB_CHECK(h.core.mode == modes[mi], "%s/%s: NO_LINK changed the mode", fn, mn);
+            OCB_CHECK(!h.core.aborted && h.core.abort_count == 0u, "%s/%s: NO_LINK touched the latch", fn, mn);
+            OCB_CHECK(ocb_queue_count(&h.core.queue) == before_count, "%s/%s: NO_LINK changed the queue", fn, mn);
+            OCB_CHECK(st_eq(&h.core.published, &before_pub) && h.core.publish_count == before_pc,
+                      "%s/%s: NO_LINK published", fn, mn);
+            OCB_CHECK(h_invariants_ok(&h), "%s/%s: invariants", fn, mn);
+        }
+    }
+
+    /* Precedence pairs: ABORTED over NO_LINK; NO_LINK over BUSY (PLAYING,
+     * above), over NOT_READY and over BAD_STATE. */
+    for (int k = 0; k < 2; k++) {
+        const char *fn = k == 0 ? "SET_STATE" : "START";
+        harness h;
+        h_init(&h, 16u, 1000u);
+        h_enter_mode(&h, D);
+        (void)h_abort(&h, OCB_ABORT_LINK_LOST);
+        h.link_ok = false;
+        ocb_core_out o = k == 0 ? h_set_state(&h, st_neutral()) : h_start(&h, 0u);
+        OCB_CHECK(o.kind == R_NAK && o.nak_reason == OCB_NAK_ABORTED, "%s: ABORTED must precede NO_LINK (0x%02x)",
+                  fn, o.nak_reason);
+
+        h_init(&h, 16u, 1000u);
+        h_enter_mode(&h, I);
+        h.link_ok = false;
+        h.ready = false;
+        o = k == 0 ? h_set_state(&h, st_neutral()) : h_start(&h, 0u);
+        OCB_CHECK(o.kind == R_NAK && o.nak_reason == OCB_NAK_NO_LINK,
+                  "%s: NO_LINK must precede NOT_READY (0x%02x)", fn, o.nak_reason);
+
+        /* BAD_STATE: a body of the wrong length for SET_STATE, START with an
+         * empty queue. */
+        h_init(&h, 16u, 1000u);
+        h.link_ok = false;
+        if (k == 0) {
+            const uint8_t bad[3] = {1, 2, 3};
+            o = h_raw(&h, OCB_MSG_SET_STATE, bad, 3u);
+        } else {
+            o = h_start(&h, 0u);
+        }
+        OCB_CHECK(o.kind == R_NAK && o.nak_reason == OCB_NAK_NO_LINK,
+                  "%s: NO_LINK must precede BAD_STATE (0x%02x)", fn, o.nak_reason);
+        /* With the link up the same frame is BAD_STATE: the check above is
+         * not vacuous. */
+        h.link_ok = true;
+        if (k == 0) {
+            const uint8_t bad[3] = {1, 2, 3};
+            o = h_raw(&h, OCB_MSG_SET_STATE, bad, 3u);
+        } else {
+            o = h_start(&h, 0u);
+        }
+        OCB_CHECK(o.kind == R_NAK && o.nak_reason == OCB_NAK_BAD_STATE, "%s: link up control (0x%02x)", fn,
+                  o.nak_reason);
+    }
+
+    /* A zero-initialised env is "no link" (D11 polarity). */
+    {
+        harness h;
+        h_init(&h, 16u, 1000u);
+        h_enter_mode(&h, I);
+        ocb_core_env e;
+        memset(&e, 0, sizeof e);
+        e.ready = true;
+        ocb_frame f;
+        memset(&f, 0, sizeof f);
+        f.type = OCB_MSG_START;
+        ocb_msg_start m = {0u};
+        f.len = (uint8_t)ocb_msg_start_encode(&m, f.body, sizeof f.body);
+        ocb_core_out o;
+        ocb_core_frame(&h.core, &e, &f, &o);
+        OCB_CHECK(o.kind == R_NAK && o.nak_reason == OCB_NAK_NO_LINK, "zeroed env: START not NO_LINK");
+    }
+}
+
 int main(void)
 {
     test_matrix();
     test_latch_every_cause_every_mode();
     test_abort_count_wraps();
     test_idle_entry_by_request();
+    test_no_link();
     const int f = ocb_test_failures();
     if (f != 0) {
         fprintf(stderr, "test_core_modes (F.3): %d failure(s)\n", f);

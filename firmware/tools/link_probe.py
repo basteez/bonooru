@@ -13,9 +13,37 @@ is checked against the shared conformance vectors by ctest
 Needs Python 3 and, only when a port is opened, pyserial
 (pip install pyserial). Nothing is sent until `hello` has been answered,
 except what a subcommand says it sends (`noise`, `fill --no-hello`,
-`loopback`).
+`loopback`) and the emulated bridge HEARTBEAT (story 2.7).
 
-Subcommands: hello, watch, fill, soak, noise, try, loopback. Run with -h.
+Subcommands: hello, watch, fill, soak, noise, try, loopback (story 2.6), and
+the one-command bench steps of story 2.7: linkup (H.8), silence (H.9),
+direct and playing (H.11, bench build), breaks (H.12). Run with -h.
+
+Bridge heartbeat emulation (story 2.7 D15): until the bridge firmware exists
+(Story 3.1) the probe itself sends the bridge's HEARTBEAT (type 0x40, body
+bridge_fw_ver 0.0.1 and flags bit 0 = DTR) every --hb-period-ms (default 20)
+through the transparent bench peer. The schedule is absolute; a late tick
+sends one heartbeat and re-bases, never a burst. It runs inside the port's
+poll() and sleep(), so every wait loop keeps it alive without threads; the
+probe prints its own send statistics (max gap, gaps above 27 ms) so a host
+stall can be told apart from a firmware trip. Options: --heartbeat (the
+2.6 subcommands, default off), --no-heartbeat (the new ones, default on).
+When a command ends its heartbeat stops: the controller then sees a link
+loss 80 ms later (EVENT LINK_LOST, latch set), which the next command's
+HELLO clears.
+
+Every story 2.7 subcommand runs one whole bench step in one process with
+one open session, prints one line per check and ends with `PASS` or
+`FAIL <reason>` (exit 0 or 1; 2 for a step skipped because the board is not
+the bench build). Where the owner must act it prints one prominent line and
+waits for the evidence (an EVENT, a counter, STATUS stopping or resuming).
+Their requests are resent with the same seq every 50 ms until answered (a
+stop-and-wait AD-6 sender); `breaks` writes one 0x00 after each replug and
+waits for the line to settle (1 s with no new break, framing error, link
+loss or STATUS gap) before it checks the round and prompts the next unplug.
+--trace FILE (those five subcommands only; the 2.6 ones ignore it) writes
+every frame sent and received with a timestamp; `breaks` prints the tail of
+the trace when it fails.
 """
 
 import argparse
@@ -48,6 +76,19 @@ DEFAULT_BAUD = 460800
 ACK_WINDOW = 64
 ACK_TIMEOUT_S = 0.050
 HELLO_RESEND_S = 0.100
+# Watchdog timing (docs/link-protocol.md "Timing constants"; compared with
+# common/proto/vectors/constants.txt by the self-test, story 2.7 D18).
+HEARTBEAT_PERIOD_MS = 20
+HEARTBEAT_MAX_GAP_MS = 27
+LINK_TIMEOUT_MS = 80
+APP_TIMEOUT_MS_DEFAULT = 1000
+APP_PING_DIVISOR = 4
+HB_FLAG_DTR = 0x01
+PROBE_BRIDGE_VER = bytes([0, 0, 1])  # what the emulated heartbeat reports
+STATUS_LINK_OK = 0x01
+STATUS_CONSOLE_READY = 0x02
+MODE_IDLE, MODE_DIRECT, MODE_PLAYING = 0, 1, 2
+EVT_PLAYBACK_DONE, EVT_LINK_LOST = 0x01, 0x02
 NEUTRAL = bytes([0x00, 0x00, 0x08, 0x80, 0x80, 0x80, 0x80, 0x00])
 BTN_A = 0x0004
 
@@ -512,8 +553,89 @@ class Pacer:
         return True
 
 
+# --------------------------------------------------- heartbeat emulation
+class HeartbeatService:
+    """The bridge's HEARTBEAT, emulated by the probe (story 2.7 D15).
+
+    Mixed into a port that has now() and write(). service() is called from
+    the port's poll() and sleep(). Absolute schedule: next due = previous due
+    + period; a late tick sends one heartbeat and re-bases on now (no burst,
+    like the real bridge's alarm). Heartbeat writes bypass the pacer and the
+    in-flight cap (11 bytes every 20 ms, about 0.5 KB/s)."""
+
+    def _hb_init(self):
+        self.hb_period = None
+        self.hb_dtr = True
+        self.hb_due = 0.0
+        self.hb_seq = 0
+        self.hb_sent = 0
+        self.hb_last = None
+        self.hb_max_gap_ms = 0.0
+        self.hb_late = 0  # gaps above HEARTBEAT_MAX_GAP_MS
+
+    def hb_start(self, period_ms=HEARTBEAT_PERIOD_MS, dtr=None):
+        """Starts (or restarts) the heartbeat; the first one is due at once.
+        The gap statistics ignore the pause before a restart."""
+        if not hasattr(self, "hb_period"):
+            self._hb_init()
+        if dtr is not None:
+            self.hb_dtr = dtr
+        self.hb_period = period_ms / 1000.0
+        self.hb_due = self.now()
+        self.hb_last = None
+        self.service()
+
+    def hb_stop(self):
+        """Stops the heartbeat; returns the time of the last heartbeat written."""
+        if not hasattr(self, "hb_period"):
+            self._hb_init()
+        self.hb_period = None
+        return self.hb_last
+
+    def hb_set_dtr(self, on):
+        if not hasattr(self, "hb_period"):
+            self._hb_init()
+        self.hb_dtr = bool(on)
+
+    def hb_running(self):
+        return getattr(self, "hb_period", None) is not None
+
+    def hb_frame(self):
+        flags = HB_FLAG_DTR if self.hb_dtr else 0
+        return frame_encode(HEARTBEAT, self.hb_seq,
+                            msg_encode(HEARTBEAT, {"bridge_fw_ver": PROBE_BRIDGE_VER, "flags": flags}))
+
+    def hb_emit(self, frame):
+        """Writes one heartbeat frame (a test port may override it)."""
+        self.write(frame)
+
+    def service(self):
+        if getattr(self, "hb_period", None) is None:
+            return
+        t = self.now()
+        if t < self.hb_due:
+            return
+        self.hb_emit(self.hb_frame())
+        self.hb_seq = (self.hb_seq + 1) & 0xFF
+        self.hb_sent += 1
+        if self.hb_last is not None:
+            gap = (t - self.hb_last) * 1000.0
+            self.hb_max_gap_ms = max(self.hb_max_gap_ms, gap)
+            if gap > HEARTBEAT_MAX_GAP_MS:
+                self.hb_late += 1
+        self.hb_last = t
+        nxt = self.hb_due + self.hb_period
+        self.hb_due = nxt if nxt > t else t + self.hb_period
+
+    def hb_stats(self):
+        if not hasattr(self, "hb_period"):
+            self._hb_init()
+        return "heartbeat: sent %d, max send gap %.1f ms, gaps above %d ms: %d" % (
+            self.hb_sent, self.hb_max_gap_ms, HEARTBEAT_MAX_GAP_MS, self.hb_late)
+
+
 # -------------------------------------------------------------- serial I/O
-class Port:
+class Port(HeartbeatService):
     """A serial port (pyserial imported only here) with a frame splitter.
     `now()` and `sleep()` are the only clock the commands use, so a test can
     replace the port with a simulated one on a fake clock."""
@@ -526,19 +648,27 @@ class Port:
         self.ser = serial.Serial(name, baud, timeout=0)
         self.rx = Splitter("APP")
         self.ser.reset_input_buffer()
+        self._hb_init()
 
     @staticmethod
     def now():
         return time.monotonic()
 
-    @staticmethod
-    def sleep(seconds):
-        time.sleep(seconds)
+    def sleep(self, seconds):
+        """Sleeps in slices of at most 1 ms, servicing the heartbeat."""
+        end = time.monotonic() + seconds
+        while True:
+            self.service()
+            rem = end - time.monotonic()
+            if rem <= 0:
+                break
+            time.sleep(min(rem, 0.001))
 
     def write(self, data):
         self.ser.write(data)
 
     def poll(self):
+        self.service()
         data = self.ser.read(4096)
         return self.rx.feed(data) if data else []
 
@@ -692,10 +822,44 @@ def make_impair(rng, corrupt, drop, garbage):
     return impair
 
 
+def _status_now(port, timeout=1.0):
+    """The next STATUS (decoded) within `timeout`, or None."""
+    end = port.now() + timeout
+    while port.now() < end:
+        for fr in port.poll():
+            if fr[0] == STATUS:
+                try:
+                    return msg_decode(STATUS, fr[2])
+                except ProtoError:
+                    pass
+        port.sleep(0.001)
+    return None
+
+
+def _trips(st):
+    d = debug_counters(st["extra"]) if st else None
+    return d["watchdog_trips"] if d else None
+
+
 def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pace=True,
-         baud=DEFAULT_BAUD, cycle_timeout=30.0, out=print, pace_share=PACE_SHARE, max_inflight=MAX_INFLIGHT):
+         baud=DEFAULT_BAUD, cycle_timeout=30.0, out=print, pace_share=PACE_SHARE, max_inflight=MAX_INFLIGHT,
+         heartbeat=False, hb_period_ms=HEARTBEAT_PERIOD_MS):
     """H.5: `cycles` x (HELLO, `events` QUEUE_EVENTs through the AD-6 sender,
-    check STATUS free / last_seq, STOP). Returns (passed, totals)."""
+    check STATUS free / last_seq, STOP). Returns (passed, totals).
+    heartbeat (story 2.7, H.10): the emulated bridge heartbeat runs for the
+    whole soak, and the run fails unless the last STATUS shows link_ok 1 and
+    the same abort_count and watchdog_trips as before the first cycle."""
+    hb_base = None
+    hb_fail = None
+    if heartbeat:
+        port.hb_start(hb_period_ms)
+        end = port.now() + 1.0
+        while port.now() < end:
+            hb_base = _status_now(port, 0.2)
+            if hb_base is not None and hb_base["flags"] & STATUS_LINK_OK:
+                break
+        if hb_base is None or not hb_base["flags"] & STATUS_LINK_OK:
+            hb_fail = "link_ok never became 1 with the heartbeat running"
     rng = random.Random(seed)
     impair = make_impair(rng, corrupt, drop, garbage)
     pacer = Pacer(port.now, baud, share=pace_share) if pace else None
@@ -746,6 +910,25 @@ def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pac
     if first_dbg or last_dbg:
         out("debug counters first: %s" % " ".join("%s=%d" % kv for kv in (first_dbg or {}).items()))
         out("debug counters last:  %s" % " ".join("%s=%d" % kv for kv in (last_dbg or {}).items()))
+    if heartbeat:
+        out(port.hb_stats())
+        last = _status_now(port, 0.5)
+        if hb_fail is None:
+            if last is None:
+                hb_fail = "no STATUS at the end"
+            elif not last["flags"] & STATUS_LINK_OK:
+                hb_fail = "link_ok 0 at the end"
+            elif last["abort_count"] != hb_base["abort_count"]:
+                hb_fail = "abort_count %d -> %d (a watchdog trip?)" % (hb_base["abort_count"], last["abort_count"])
+            elif _trips(last) != _trips(hb_base):
+                hb_fail = "watchdog_trips %s -> %s" % (_trips(hb_base), _trips(last))
+        if last is not None:
+            out("watchdog: link_ok %d, abort_count %d -> %d, watchdog_trips %s -> %s" % (
+                last["flags"] & STATUS_LINK_OK, hb_base["abort_count"] if hb_base else -1, last["abort_count"],
+                _trips(hb_base), _trips(last)))
+        if hb_fail is not None:
+            failures += 1
+            out("FAIL heartbeat: %s" % hb_fail)
     out("%s: %d events enqueued exactly once and in order" % ("PASS" if failures == 0 else "FAIL",
                                                               totals["events"]))
     return failures == 0, totals
@@ -755,7 +938,9 @@ def cmd_soak(port, args):
     passed, _ = soak(port, args.cycles, args.events, seed=args.seed, corrupt=args.corrupt, drop=args.drop,
                      garbage=args.garbage, pace=not args.no_pace, baud=args.baud,
                      pace_share=getattr(args, "pace_share", PACE_SHARE),
-                     max_inflight=getattr(args, "max_inflight", MAX_INFLIGHT))
+                     max_inflight=getattr(args, "max_inflight", MAX_INFLIGHT),
+                     heartbeat=getattr(args, "hb_enabled", False),
+                     hb_period_ms=getattr(args, "hb_period_ms", HEARTBEAT_PERIOD_MS))
     return 0 if passed else 1
 
 
@@ -802,6 +987,719 @@ def cmd_loopback(port, args):
     return 0 if bad == 0 else 1
 
 
+# ------------------------------------------------- story 2.7 bench steps
+BREAKS_UNPLUG_TIMEOUT_S = 60.0  # breaks: wait for the unplug evidence
+BREAKS_REPLUG_TIMEOUT_S = 30.0  # breaks: wait for STATUS to resume after REPLUG
+BREAKS_SETTLE_S = 1.0           # breaks: a quiet line this long after a replug = settled (D42)
+BREAKS_SETTLE_TIMEOUT_S = 15.0  # breaks: give up if the line never settles
+STATUS_GAP_S = 0.2              # breaks, settling: no STATUS for this long = TX released again
+LOSS_WINDOW_MS = (80.0, 120.0)  # H.9: EVENT LINK_LOST after the last heartbeat written
+STATUS_SILENT_S = 0.3           # breaks, unarmed: STATUS silent this long = TX released
+TRACE_TAIL = 120                # breaks: trace lines printed when it fails
+
+
+class Link:
+    """One open session for a whole bench step (story 2.7 D16): app seq
+    numbering, every frame received recorded (STATUS, EVENT, ACK, NAK), and
+    small request / wait helpers. Frames are written unpaced: the steps send
+    a few frames at a time, each waiting for its reply."""
+
+    def __init__(self, port, out=print, trace=None):
+        self.port = port
+        self.out = out
+        self.trace_path = trace  # --trace FILE: every frame sent and received
+        self.trace = []          # ["  t.tttttt TX|RX ..."], kept in memory, written by close()
+        self.seq = 0
+        self.info = None
+        self.status = None      # last STATUS fields (with "dbg")
+        self.status_t = None    # its arrival time
+        self.status_count = 0
+        self.events = []        # [(time, code)]
+        self.replies = []       # [(kind, fields)]: ("ACK", seq) or ("NAK", fields)
+        self.nak_version = 0
+        self.nak_seq = 0
+        self.last_app_write = None
+        self.t0 = port.now()
+
+    def log(self, text):
+        self.out("%8.3f  %s" % (self.port.now() - self.t0, text))
+
+    def _trace(self, direction, text):
+        self.trace.append("%11.6f %s %s" % (self.port.now() - self.t0, direction, text))
+
+    def write(self, data, what):
+        """Every app-side write goes through here (traced)."""
+        self.port.write(data)
+        self._trace("TX", what)
+
+    def close(self, rc):
+        """Writes the trace file (--trace); returns rc."""
+        if self.trace_path:
+            with open(self.trace_path, "w", encoding="ascii", errors="replace") as f:
+                f.write("\n".join(self.trace) + "\n")
+        return rc
+
+    def dump_tail(self, n=TRACE_TAIL):
+        self.out("trace (last %d of %d frames; --trace FILE keeps all):" % (min(n, len(self.trace)), len(self.trace)))
+        for line in self.trace[-n:]:
+            self.out("  " + line)
+
+    def pump(self):
+        for ftype, seq, body in self.port.poll():
+            self._trace("RX", describe(ftype, seq, body))
+            try:
+                f = msg_decode(ftype, body) if ftype in FIELDS else None
+            except ProtoError:
+                continue
+            if f is None:
+                continue
+            if ftype == STATUS:
+                f["dbg"] = debug_counters(f["extra"])
+                self.status = f
+                self.status_t = self.port.now()
+                self.status_count += 1
+            elif ftype == EVENT:
+                self.events.append((self.port.now(), f["code"]))
+            elif ftype == ACK:
+                self.replies.append(("ACK", f["seq"]))
+            elif ftype == NAK:
+                self.replies.append(("NAK", f))
+                if f["reason"] == 0x10:
+                    self.nak_version += 1
+                elif f["reason"] == 0x02:
+                    self.nak_seq += 1
+            elif ftype == INFO:
+                self.info = f
+
+    def wait(self, seconds, until=None):
+        """Pumps for up to `seconds`; returns True as soon as until() is true."""
+        end = self.port.now() + seconds
+        while True:
+            self.pump()
+            if until is not None and until():
+                return True
+            if self.port.now() >= end:
+                return False
+            self.port.sleep(0.001)
+
+    def hello(self, timeout=3.0):
+        """HELLO every 100 ms until INFO (AD-7). Returns the INFO fields or None."""
+        hello_seq = self.seq
+        self.info = None
+        end = self.port.now() + timeout
+        last = None
+        while self.port.now() < end:
+            if last is None or self.port.now() - last >= HELLO_RESEND_S:
+                self.write(frame_encode(HELLO, hello_seq, bytes([PROTO_VERSION])), "HELLO seq=%d" % hello_seq)
+                self.last_app_write = last = self.port.now()
+            self.pump()
+            if self.info is not None:
+                self.seq = (hello_seq + 1) & 0xFF
+                return self.info
+            self.port.sleep(0.001)
+        return None
+
+    def send(self, ftype, body=b"", seq=None):
+        """Writes one frame with the next seq (or `seq`, for a resend)."""
+        fresh = seq is None
+        if fresh:
+            seq = self.seq
+        self.write(frame_encode(ftype, seq, body), "%s seq=%d len=%d%s" % (
+            TYPE_NAMES.get(ftype, hex(ftype)), seq, len(body), "" if fresh else " (resend)"))
+        self.last_app_write = self.port.now()
+        if fresh:
+            self.seq = (seq + 1) & 0xFF
+        return seq, len(self.replies)
+
+    def delimiter(self):
+        """One 0x00: ends whatever partial run the controller's receiver may
+        hold (AD-7 writes one on open; story 2.7 D40 after a replug)."""
+        self.write(b"\x00", "0x00 (delimiter)")
+
+    def reply(self, ticket, timeout=0.5):
+        """'ACK', a NAK name, or None: the reply to the frame of `ticket`."""
+        seq, idx = ticket
+        result = []
+
+        def found():
+            for kind, f in self.replies[idx:]:
+                if kind == "ACK" and ((f - seq) & 0xFF) < ACK_WINDOW:
+                    result.append("ACK")
+                    return True
+                # A NAK CRC carries got = 0 for any frame (the seq of a
+                # damaged frame is unknown): it names no frame, not seq 0.
+                if kind == "NAK" and f["reason"] != 0x01 and f["got"] == seq:
+                    result.append(NAK_NAMES.get(f["reason"], hex(f["reason"])))
+                    return True
+            return False
+
+        self.wait(timeout, found)
+        return result[0] if result else None
+
+    def request(self, ftype, body=b"", timeout=0.5):
+        return self.reply(self.send(ftype, body), timeout)
+
+    def request_reliable(self, ftype, body=b"", timeout=1.0):
+        """Stop-and-wait AD-6 sender (window 1, story 2.7 D40): the frame is
+        resent with the same seq every OCB_ACK_TIMEOUT_MS (50 ms) while it
+        has no reply, or after a transport NAK, until `timeout`. A lost or
+        damaged frame gets at most one NAK CRC (got = 0, which names no
+        frame) and the frames after it nothing (one transport NAK per
+        `expected`), so the resend is what recovers, exactly as the app's
+        go-back-N does. Returns 'ACK', a semantic NAK name, or None."""
+        ticket = self.send(ftype, body)
+        seq = ticket[0]
+        end = self.port.now() + timeout
+        while True:
+            slot_end = min(self.port.now() + ACK_TIMEOUT_S, end)
+            r = self.reply(ticket, max(0.0, slot_end - self.port.now()))
+            if r is not None and r not in ("SEQ", "FULL"):
+                return r
+            # A transport NAK came early: still wait out the 50 ms slot, so
+            # resends are paced (at most one per OCB_ACK_TIMEOUT_MS).
+            self.wait(max(0.0, slot_end - self.port.now()))
+            if self.port.now() >= end:
+                return r
+            # A fresh ticket: only replies received after this resend count.
+            ticket = self.send(ftype, body, seq=seq)
+
+    def next_status(self, timeout=0.5, pred=None):
+        """The next STATUS received after now (satisfying pred), or None."""
+        count = self.status_count
+
+        def ok():
+            return self.status_count > count and (pred is None or pred(self.status))
+
+        return self.status if self.wait(timeout, ok) else None
+
+    def event_after(self, t, code):
+        for et, c in self.events:
+            if et >= t and c == code:
+                return et
+        return None
+
+
+class Checks:
+    """One line per check, a single PASS / FAIL line at the end."""
+
+    def __init__(self, link):
+        self.link = link
+        self.failed = []
+
+    def check(self, ok, text):
+        self.link.log("%s %s" % ("ok  " if ok else "FAIL", text))
+        if not ok:
+            self.failed.append(text)
+        return ok
+
+    def note(self, text):
+        self.link.log("     " + text)
+
+    def finish(self):
+        if self.failed:
+            self.link.out("FAIL %s" % self.failed[0])
+            return self.link.close(1)
+        self.link.out("PASS")
+        return self.link.close(0)
+
+
+def _hb_period(args):
+    return getattr(args, "hb_period_ms", HEARTBEAT_PERIOD_MS)
+
+
+def _status_str(st):
+    if st is None:
+        return "no STATUS"
+    d = st.get("dbg") or {}
+    return "mode=%d free=%d abort_count=%d last_event=%d link_ok=%d console_ready=%d trips=%s rx_be=%s rx_fe=%s" % (
+        st["mode"], st["free"], st["abort_count"], st["last_event"], st["flags"] & STATUS_LINK_OK,
+        (st["flags"] & STATUS_CONSOLE_READY) >> 1, d.get("watchdog_trips", "-"), d.get("rx_be", "-"),
+        d.get("rx_fe", "-"))
+
+
+def _link_up(link, c, timeout=0.5):
+    """Starts the heartbeat if needed and waits for STATUS link_ok 1."""
+    t = link.port.now()
+    st = link.next_status(timeout, lambda s: s["flags"] & STATUS_LINK_OK)
+    return c.check(st is not None, "STATUS link_ok 1 within %d ms (%s)" % (
+        timeout * 1000, ("%.0f ms" % ((link.status_t - t) * 1000)) if st else "never"))
+
+
+def _try_pair(link):
+    """SET_STATE (neutral) and START: their replies, then STOP if needed."""
+    r1 = link.request_reliable(SET_STATE, NEUTRAL)
+    r2 = link.request_reliable(START, struct.pack("<I", 100000))
+    return r1, r2
+
+
+def _expect_ready(link, args):
+    mode = getattr(args, "expect_ready", "auto")
+    if mode == "auto":
+        st = link.status or link.next_status(0.5)
+        return bool(st and st["flags"] & STATUS_CONSOLE_READY)
+    return mode == "yes"
+
+
+def cmd_linkup(port, args):
+    """H.8: boot state, NAK NO_LINK, link-up time, bridge_ver, then a hold."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    hb = getattr(args, "hb_enabled", True)
+    if not c.check(hb, "the heartbeat is on (linkup needs it)"):
+        return c.finish()
+    if args.expect_fresh:
+        st = link.next_status(1.0)
+        c.check(st is not None, "STATUS before the first HELLO (gate open)")
+        if st is not None:
+            c.note("boot counters: %s" % _status_str(st))
+            c.check(st["abort_count"] == 0 and st["last_event"] == 0,
+                    "fresh boot: abort_count 0 and last_event NONE (the boot break did not latch)")
+    info = link.hello()
+    if not c.check(info is not None, "INFO received"):
+        return c.finish()
+    ver = ".".join(str(x) for x in info["bridge_ver"])
+    c.note("INFO bridge_ver %s" % ver)
+    if args.expect_fresh:
+        c.check(info["bridge_ver"] == bytes(3), "bridge_ver 0.0.0 before any heartbeat")
+    r1, r2 = _try_pair(link)
+    c.check(r1 == "NO_LINK" and r2 == "NO_LINK", "link down: SET_STATE %s, START %s (want NO_LINK twice)" % (r1, r2))
+    port.hb_start(_hb_period(args))
+    t_hb = port.hb_last
+    st = link.next_status(0.5, lambda s: s["flags"] & STATUS_LINK_OK)
+    dt = (link.status_t - t_hb) * 1000.0 if st else None
+    c.check(st is not None and dt <= 100.0, "link_ok 1 %s after the first heartbeat (want <= 100 ms)" % (
+        ("%.1f ms" % dt) if dt is not None else "never"))
+    info = link.hello()
+    c.check(info is not None and info["bridge_ver"] == PROBE_BRIDGE_VER, "second HELLO: bridge_ver %s (want 0.0.1)" % (
+        ".".join(str(x) for x in info["bridge_ver"]) if info else "no INFO"))
+    ready = _expect_ready(link, args)
+    r1, r2 = _try_pair(link)
+    if ready:
+        c.check(r1 == "ACK" and r2 == "BAD_STATE", "link up, ready: SET_STATE %s, START %s (want ACK, BAD_STATE)"
+                % (r1, r2))
+    else:
+        c.check(r1 == "NOT_READY" and r2 == "NOT_READY",
+                "link up, not ready: SET_STATE %s, START %s (want NOT_READY twice)" % (r1, r2))
+    c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed")
+    base = link.next_status(0.5)
+    if c.check(base is not None, "STATUS before the hold"):
+        n0 = link.status_count
+        bad = []
+
+        def watch():
+            st = link.status
+            if link.status_count > n0 and not bad:
+                if not st["flags"] & STATUS_LINK_OK:
+                    bad.append("link_ok 0")
+                elif st["abort_count"] != base["abort_count"]:
+                    bad.append("abort_count %d -> %d" % (base["abort_count"], st["abort_count"]))
+                elif _trips(st) != _trips(base):
+                    bad.append("watchdog_trips %s -> %s" % (_trips(base), _trips(st)))
+            return False
+
+        link.wait(args.seconds, watch)
+        n = link.status_count - n0
+        c.check(not bad and n >= int(args.seconds * 10), "hold %.0f s: %d STATUS, link_ok stayed 1, abort_count and "
+                "watchdog_trips unchanged%s" % (args.seconds, n, (" -- " + bad[0]) if bad else ""))
+        c.note("last STATUS: %s" % _status_str(link.status))
+    c.check(link.nak_version == 0, "no NAK VERSION")
+    c.note(port.hb_stats())
+    return c.finish()
+
+
+def _fill(link, count, t_start=1000, step=1000):
+    """Sends `count` QUEUE_EVENTs one at a time; stops at the first one that
+    gets no ACK (the later seqs would only hit the transport NAK budget and
+    blur the trace). Returns how many were ACKed."""
+    ok = 0
+    for i in range(count):
+        r = link.request_reliable(QUEUE_EVENT, queue_event_body(t_start + i * step))
+        if r != "ACK":
+            link.log("     event %d of %d: %s, the remaining events are not sent" % (i + 1, count, r or "no reply"))
+            break
+        ok += 1
+    return ok
+
+
+def _stop_heartbeat_and_wait_loss(link, c, what, timeout=1.0):
+    port = link.port
+    t0 = port.hb_stop()
+    et = None
+    if link.wait(timeout, lambda: link.event_after(t0, EVT_LINK_LOST) is not None):
+        et = link.event_after(t0, EVT_LINK_LOST)
+    dt = (et - t0) * 1000.0 if et is not None else None
+    lo, hi = LOSS_WINDOW_MS
+    c.check(dt is not None and lo <= dt <= hi, "%s: EVENT LINK_LOST %s after the last heartbeat (want %d..%d ms)" % (
+        what, ("%.1f ms" % dt) if dt is not None else "never", lo, hi))
+    return dt
+
+
+def cmd_silence(port, args):
+    """H.9: heartbeat timeout and recovery, no physical action."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    info = link.hello()
+    if not c.check(info is not None, "INFO received"):
+        return c.finish()
+    port.hb_start(_hb_period(args))
+    _link_up(link, c)
+    cap = info["queue_cap"]
+    c.check(_fill(link, 5) == 5, "5 QUEUE_EVENTs ACKed")
+    st = link.next_status(0.5, lambda s: s["free"] == cap - 5)
+    c.check(st is not None, "STATUS free %d" % (cap - 5))
+    base = link.status or {"abort_count": 0}
+    _stop_heartbeat_and_wait_loss(link, c, "silence")
+    st = link.next_status(0.5)
+    c.check(st is not None and not st["flags"] & STATUS_LINK_OK and st["mode"] == MODE_IDLE and
+            st["abort_count"] == (base["abort_count"] + 1) & 0xFF and st["last_event"] == EVT_LINK_LOST and
+            st["free"] == cap, "STATUS after the loss: %s" % _status_str(st))
+    r = link.request_reliable(SET_STATE, NEUTRAL)
+    c.check(r == "ABORTED", "SET_STATE after the loss: %s (want ABORTED)" % r)
+    r = link.request_reliable(STOP)
+    c.check(r == "ACK", "STOP: %s (want ACK)" % r)
+    r = link.request_reliable(SET_STATE, NEUTRAL)
+    c.check(r == "NO_LINK", "SET_STATE with the link down: %s (want NO_LINK)" % r)
+    port.hb_start(_hb_period(args))
+    t_hb = port.hb_last
+    st = link.next_status(0.5, lambda s: s["flags"] & STATUS_LINK_OK)
+    dt = (link.status_t - t_hb) * 1000.0 if st else None
+    c.check(st is not None and dt <= 100.0, "heartbeats resumed: link_ok 1 %s later (want <= 100 ms)" % (
+        ("%.1f ms" % dt) if dt is not None else "never"))
+    ready = _expect_ready(link, args)
+    r = link.request_reliable(SET_STATE, NEUTRAL)
+    c.check(r == ("ACK" if ready else "NOT_READY"), "SET_STATE after the recovery: %s (want %s)" % (
+        r, "ACK" if ready else "NOT_READY"))
+    link.request_reliable(STOP)
+    c.check(link.nak_version == 0, "no NAK VERSION (the session stayed open)")
+    c.note(port.hb_stats())
+    return c.finish()
+
+
+def _bench_build(link):
+    st = link.status or link.next_status(0.5)
+    return bool(st and st["flags"] & STATUS_CONSOLE_READY)
+
+
+def _skip(link):
+    link.out("SKIP: console_ready is 0, flash the bench build (fw-debug-bench)")
+    return link.close(2)
+
+
+def cmd_direct(port, args):
+    """H.11 (bench build): the DIRECT app timeout and the DTR edge."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    info = link.hello()
+    if not c.check(info is not None, "INFO received"):
+        return c.finish()
+    port.hb_start(_hb_period(args), dtr=True)
+    _link_up(link, c)
+    if not _bench_build(link):
+        return _skip(link)
+    app_ms = info["app_timeout_ms"]
+    ping_s = app_ms / APP_PING_DIVISOR / 1000.0
+
+    def keepalive(seconds, until=None):
+        end = port.now() + seconds
+        while port.now() < end:
+            link.send(PING)
+            if link.wait(min(ping_s, end - port.now()), until):
+                return True
+        return False
+
+    # (a) SET_STATE, then PING every app_timeout_ms / 4.
+    r = link.request_reliable(SET_STATE, NEUTRAL)
+    c.check(r == "ACK", "SET_STATE: %s (want ACK, mode DIRECT)" % r)
+    base = link.next_status(0.5)
+    aborts = base["abort_count"] if base else 0
+    keepalive(args.keepalive_seconds)
+    st = link.next_status(0.5)
+    c.check(st is not None and st["mode"] == MODE_DIRECT and st["abort_count"] == aborts,
+            "(a) PING every %d ms for %.0f s: DIRECT kept (%s)" % (ping_s * 1000, args.keepalive_seconds,
+                                                                _status_str(st)))
+    # (b) no app frame at all: the app timeout.
+    t_last = link.last_app_write
+    n_ev = len(link.events)
+    st = link.next_status(app_ms / 1000.0 + 1.0, lambda s: s["mode"] == MODE_IDLE)
+    dt = (link.status_t - t_last) * 1000.0 if st else None
+    c.check(st is not None and app_ms <= dt <= app_ms + 150.0 and st["abort_count"] == (aborts + 1) & 0xFF and
+            st["flags"] & STATUS_LINK_OK and len(link.events) == n_ev,
+            "(b) no app frame: abort seen %s after the last one (want %d..%d ms), no EVENT, link_ok 1 (%s)" % (
+                ("%.0f ms" % dt) if dt is not None else "never", app_ms, app_ms + 150, _status_str(st)))
+    # (c) DTR 1 -> 0 while PINGs continue.
+    c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed")
+    c.check(link.request_reliable(SET_STATE, NEUTRAL) == "ACK", "SET_STATE ACKed")
+    aborts = link.status["abort_count"] if link.status else 0
+    keepalive(0.2)
+    port.hb_set_dtr(False)
+    sent0 = port.hb_sent
+    link.wait(0.1, lambda: port.hb_sent > sent0)
+    t_flip = port.hb_last  # the first DTR-0 heartbeat written
+
+    def dtr_abort_seen():
+        return link.status_t is not None and link.status_t >= t_flip and link.status["mode"] == MODE_IDLE
+
+    got = keepalive(0.5, dtr_abort_seen)
+    dt = (link.status_t - t_flip) * 1000.0 if got else None
+    st = link.status
+    c.check(got and dt <= 100.0 and st["abort_count"] == (aborts + 1) & 0xFF and len(link.events) == n_ev,
+            "(c) DTR 1 -> 0: abort seen %s after the first DTR-0 heartbeat (want <= 100 ms), no EVENT" % (
+                ("%.0f ms" % dt) if dt is not None else "never"))
+    # (d) DTR held at 0, PINGs continue: no abort (an edge, not a level).
+    c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed")
+    c.check(link.request_reliable(SET_STATE, NEUTRAL) == "ACK", "SET_STATE ACKed with DTR 0")
+    aborts = link.status["abort_count"] if link.status else 0
+    keepalive(3.0)
+    st = link.next_status(0.5)
+    c.check(st is not None and st["mode"] == MODE_DIRECT and st["abort_count"] == aborts,
+            "(d) DTR held at 0 for 3 s with PINGs: no abort (%s)" % _status_str(st))
+    link.request_reliable(STOP)
+    port.hb_set_dtr(True)
+    c.check(link.nak_version == 0, "no NAK VERSION")
+    c.note(port.hb_stats())
+    return c.finish()
+
+
+def _queue_piece(link, seconds, n_mid=3):
+    """A neutral / A piece of `seconds`, last event NEUTRAL|END."""
+    total_us = int(seconds * 1e6)
+    ok = True
+    for i in range(n_mid):
+        t = i * total_us // (n_mid + 1)
+        state = button_state(BTN_A) if i % 2 == 0 else NEUTRAL
+        ok = link.request_reliable(QUEUE_EVENT, queue_event_body(t, state)) == "ACK" and ok
+    end = NEUTRAL[:7] + bytes([0x01])
+    ok = link.request_reliable(QUEUE_EVENT, queue_event_body(total_us, end)) == "ACK" and ok
+    return ok
+
+
+def cmd_playing(port, args):
+    """H.11 (bench build): no app-timeout and no DTR rule in PLAYING; a
+    heartbeat loss in PLAYING."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    info = link.hello()
+    if not c.check(info is not None, "INFO received"):
+        return c.finish()
+    port.hb_start(_hb_period(args), dtr=True)
+    _link_up(link, c)
+    if not _bench_build(link):
+        return _skip(link)
+    cap = info["queue_cap"]
+    for flip in (False, True):
+        what = "DTR flip mid-piece" if flip else "no app frames"
+        c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed")
+        port.hb_set_dtr(True)
+        c.check(_queue_piece(link, args.seconds), "%s: %.0f s piece queued" % (what, args.seconds))
+        trips0 = _trips(link.status)
+        t_start = port.now()
+        c.check(link.request_reliable(START, struct.pack("<I", 100000)) == "ACK", "%s: START ACKed" % what)
+        left_playing = []
+
+        def watch():
+            st = link.status
+            if link.status_t and link.status_t > t_start + 0.2 and st["mode"] != MODE_PLAYING and \
+                    link.event_after(t_start, EVT_PLAYBACK_DONE) is None and not left_playing:
+                left_playing.append(_status_str(st))
+            if flip and port.now() - t_start > args.seconds / 2 and port.hb_dtr:
+                port.hb_set_dtr(False)
+            return link.event_after(t_start, EVT_PLAYBACK_DONE) is not None
+
+        done = link.wait(args.seconds + 2.0, watch)
+        c.check(done and not left_playing and _trips(link.status) == trips0 and
+                link.event_after(t_start, EVT_LINK_LOST) is None,
+                "%s for %.0f s (> app_timeout_ms %d): PLAYING until EVENT PLAYBACK_DONE%s" % (
+                    what, args.seconds, info["app_timeout_ms"],
+                    (" -- left PLAYING early: " + left_playing[0]) if left_playing else ("" if done else
+                                                                                         " -- no PLAYBACK_DONE")))
+    port.hb_set_dtr(True)
+    # Phase 2: a heartbeat loss in PLAYING.
+    c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed")
+    c.check(_queue_piece(link, 10.0), "10 s piece queued")
+    c.check(link.request_reliable(START, struct.pack("<I", 100000)) == "ACK", "START ACKed")
+    link.wait(1.5)
+    c.check(link.status is not None and link.status["mode"] == MODE_PLAYING, "PLAYING 1.5 s in")
+    _stop_heartbeat_and_wait_loss(link, c, "PLAYING")
+    st = link.next_status(0.5)
+    c.check(st is not None and st["mode"] == MODE_IDLE and st["free"] == cap, "after the loss: %s (want mode 0, "
+            "free %d)" % (_status_str(st), cap))
+    port.hb_start(_hb_period(args))
+    link.wait(0.1)
+    link.request_reliable(STOP)
+    c.check(link.nak_version == 0, "no NAK VERSION")
+    c.note(port.hb_stats())
+    return c.finish()
+
+
+def cmd_breaks(port, args):
+    """H.12: real wire pulls (bridge TX -> controller GP1) and the TX release.
+    On a failure the tail of the frame trace is printed (all of it with
+    --trace FILE)."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    rc = _breaks(port, args, link)
+    if rc == 1:
+        link.dump_tail()
+    return link.close(rc)
+
+
+def _settle(link, armed):
+    """Waits until the line has been quiet for BREAKS_SETTLE_S: STATUS keeps
+    arriving (no gap above STATUS_GAP_S, i.e. TX was not released again),
+    the break and framing-error counters do not move, no new EVENT
+    LINK_LOST, and (armed) STATUS link_ok 1. Returns (seconds it took, a
+    description of what was absorbed) or None after BREAKS_SETTLE_TIMEOUT_S
+    (story 2.7 D42)."""
+    port = link.port
+    t0 = port.now()
+    end = t0 + BREAKS_SETTLE_TIMEOUT_S
+
+    def counters():
+        d = (link.status or {}).get("dbg") or {}
+        return d.get("rx_be"), d.get("rx_fe")
+
+    first = last = counters()
+    n_ev = len(link.events)
+    lost = 0
+    gaps = 0
+    quiet_since = port.now()
+    in_gap = False
+    while port.now() < end:
+        link.wait(0.01)
+        now = port.now()
+        disturbed = False
+        gap = link.status_t is None or now - link.status_t > STATUS_GAP_S
+        if gap:
+            disturbed = True
+            if not in_gap:
+                gaps += 1
+        in_gap = gap
+        k = counters()
+        if k != last:
+            disturbed = True
+            last = k
+        new = link.events[n_ev:]
+        if new:
+            lost += sum(1 for _, code in new if code == EVT_LINK_LOST)
+            disturbed = disturbed or any(code == EVT_LINK_LOST for _, code in new)
+            n_ev = len(link.events)
+        if armed and not (link.status and link.status["flags"] & STATUS_LINK_OK):
+            disturbed = True
+        if disturbed:
+            quiet_since = now
+        elif now - quiet_since >= BREAKS_SETTLE_S:
+            parts = []
+            if first[0] is not None and last[0] is not None:
+                parts.append("rx_be %d -> %d, rx_fe %d -> %d while settling" % (first[0], last[0], first[1], last[1]))
+            parts.append("%d STATUS gap(s), %d extra LINK_LOST absorbed" % (gaps, lost))
+            return now - t0, "; ".join(parts)
+    return None
+
+
+def _breaks(port, args, link):
+    c = Checks(link)
+    armed = getattr(args, "hb_enabled", True) and not args.no_heartbeat
+    if args.mode == "playing" and not armed:
+        link.out("FAIL --mode playing needs the heartbeat (the link must be up to START)")
+        return 2
+    info = link.hello()
+    if not c.check(info is not None, "INFO received"):
+        return c.finish()
+    cap = info["queue_cap"]
+    if armed:
+        port.hb_start(_hb_period(args))
+        _link_up(link, c)
+    if args.mode == "playing" and not _bench_build(link):
+        return _skip(link)
+    t_next = [1000]
+    round_fail = 0
+    for rnd in range(1, args.rounds + 1):
+        fails_before = len(c.failed)
+        if args.mode == "playing":
+            c.check(_queue_piece(link, 60.0), "round %d: 60 s piece queued" % rnd)
+            c.check(link.request_reliable(START, struct.pack("<I", 100000)) == "ACK", "round %d: START ACKed" % rnd)
+        base = link.next_status(0.5)
+        if not c.check(base is not None, "round %d: STATUS before the unplug" % rnd):
+            break
+        link.out("ROUND %d/%d: UNPLUG the bridge-TX wire (GP1 side) now" % (rnd, args.rounds))
+        t_prompt = port.now()
+        if armed:
+            ok = link.wait(BREAKS_UNPLUG_TIMEOUT_S, lambda: link.event_after(t_prompt, EVT_LINK_LOST) is not None)
+            if not c.check(ok, "round %d: EVENT LINK_LOST after the unplug" % rnd):
+                link.out("FAIL round %d: no EVENT LINK_LOST within %.0f s of the UNPLUG prompt" % (
+                    rnd, BREAKS_UNPLUG_TIMEOUT_S))
+                return 1
+            t_ev = link.event_after(t_prompt, EVT_LINK_LOST)
+            n = link.status_count
+            link.wait(STATUS_SILENT_S)
+            c.check(link.status_count == n, "round %d: STATUS silent for %.0f ms after the EVENT (TX released)" % (
+                rnd, (port.now() - t_ev) * 1000.0))
+        else:
+            def silent():
+                return link.status_t is not None and port.now() - max(link.status_t, t_prompt) > STATUS_SILENT_S
+
+            ok = link.wait(BREAKS_UNPLUG_TIMEOUT_S, silent)
+            if not c.check(ok, "round %d: STATUS went silent after the unplug (TX released)" % rnd):
+                link.out("FAIL round %d: STATUS never went silent within %.0f s of the UNPLUG prompt" % (
+                    rnd, BREAKS_UNPLUG_TIMEOUT_S))
+                return 1
+        if rnd == 1:
+            link.out("READ the multimeter on GP0 now (expect about 0 V); waiting %.0f s" % args.meter_seconds)
+            link.wait(args.meter_seconds)
+        link.out("REPLUG the wire now")
+        t_replug = port.now()
+        want = (lambda s: s["flags"] & STATUS_LINK_OK) if armed else None
+        st = link.next_status(BREAKS_REPLUG_TIMEOUT_S, want)
+        if st is None:
+            c.check(False, "round %d: STATUS resumed after the replug" % rnd)
+            link.out("FAIL round %d: STATUS did not resume%s within %.0f s of the REPLUG prompt (wire still "
+                     "unplugged?)" % (rnd, " with link_ok 1" if armed else "", BREAKS_REPLUG_TIMEOUT_S))
+            return 1
+        c.note("round %d: STATUS resumed %.0f ms after the REPLUG prompt: %s" % (
+            rnd, (link.status_t - t_replug) * 1000.0, _status_str(st)))
+        # D40: a bouncing contact can leave a partial run in the receiver.
+        link.delimiter()
+        # D42: a replugged contact bounces for a while; every break in that
+        # time belongs to this round, never to the next one.
+        settled = _settle(link, armed)
+        if settled is None:
+            c.check(False, "round %d: the line settled after the replug" % rnd)
+            link.out("FAIL round %d: the line did not settle within %.0f s after the replug (breaks kept coming: "
+                     "a loose contact? press the wire in and re-run)" % (rnd, BREAKS_SETTLE_TIMEOUT_S))
+            return 1
+        c.note("round %d: line settled %.0f ms after STATUS resumed (%s)" % (rnd, settled[0] * 1000.0, settled[1]))
+        link.delimiter()
+        st = link.next_status(0.5, want) or link.status
+        bd, sd = base.get("dbg") or {}, st.get("dbg") or {}
+        if bd and sd:
+            c.note("round %d: rx_be %d -> %d, rx_fe %d -> %d" % (rnd, bd["rx_be"], sd["rx_be"], bd["rx_fe"],
+                                                                 sd["rx_fe"]))
+        if armed:
+            c.check(st["abort_count"] == (base["abort_count"] + 1) & 0xFF and st["mode"] == MODE_IDLE and
+                    st["free"] == cap and st["last_event"] == EVT_LINK_LOST,
+                    "round %d: abort_count +1, mode IDLE, free %d, last_event LINK_LOST" % (rnd, cap))
+            r = link.request_reliable(QUEUE_EVENT, queue_event_body(t_next[0]))
+            c.check(r == "ABORTED", "round %d: QUEUE_EVENT %s (want ABORTED)" % (rnd, r))
+            r = link.request_reliable(STOP)
+            c.check(r == "ACK", "round %d: STOP %s (want ACK)" % (rnd, r))
+            t_next[0] = 1000
+        else:
+            c.check(st["abort_count"] == base["abort_count"] and st["mode"] == MODE_IDLE,
+                    "round %d: abort_count unchanged, mode IDLE" % rnd)
+        ok = _fill(link, args.count, t_next[0])
+        t_next[0] += args.count * 1000
+        c.check(ok == args.count, "round %d: %d of %d events ACKed in the open session" % (rnd, ok, args.count))
+        c.check(link.nak_version == 0 and (armed or link.nak_seq == 0), "round %d: no NAK VERSION%s" % (
+            rnd, "" if armed else ", no NAK SEQ"))
+        good = len(c.failed) == fails_before
+        round_fail += 0 if good else 1
+        link.out("round %d: %s" % (rnd, "PASS" if good else "FAIL"))
+        if args.mode == "playing":
+            link.request_reliable(STOP)
+    if armed:
+        c.note(port.hb_stats())
+    return c.finish()
+
+
 def cmd_hello(port, args):
     info = do_hello(port, timeout=args.seconds)
     if info is None:
@@ -837,6 +1735,41 @@ def max_inflight_arg(text):
     return v
 
 
+def hb_period_arg(text):
+    try:
+        v = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not an integer: %r" % text) from None
+    if not 5 <= v <= 40:
+        raise argparse.ArgumentTypeError("must be in 5..40 ms (the 80 ms link timeout needs a few heartbeats), "
+                                         "got %d" % v)
+    return v
+
+
+def seconds_arg(text):
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not a number: %r" % text) from None
+    if not 0.0 <= v <= 3600.0:
+        raise argparse.ArgumentTypeError("must be in 0..3600 s, got %s" % text)
+    return v
+
+
+def positive_int_arg(text):
+    try:
+        v = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not an integer: %r" % text) from None
+    if not 1 <= v <= 1000:
+        raise argparse.ArgumentTypeError("must be in 1..1000, got %d" % v)
+    return v
+
+
+# Story 2.7 subcommands: the heartbeat is on by default.
+HEARTBEAT_COMMANDS = ("linkup", "silence", "direct", "playing", "breaks")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", required=True)
@@ -849,6 +1782,17 @@ def main(argv=None):
     ap.add_argument("--max-inflight", type=max_inflight_arg, default=MAX_INFLIGHT,
                     help="max bytes of unconfirmed QUEUE_EVENTs on the wire, 0 = no cap, else at least "
                          "%d (default %%(default)s)" % min_inflight())
+    ap.add_argument("--heartbeat", action="store_true",
+                    help="send the emulated bridge HEARTBEAT (default for linkup, silence, direct, playing, breaks; "
+                         "opt-in for the other subcommands)")
+    ap.add_argument("--no-heartbeat", dest="no_heartbeat_global", action="store_true",
+                    help="never send the emulated HEARTBEAT")
+    ap.add_argument("--trace", metavar="FILE",
+                    help="linkup, silence, direct, playing, breaks: write every frame sent and received, with "
+                         "a timestamp, to FILE (breaks also prints the tail of it when it fails); the 2.6 "
+                         "subcommands ignore it")
+    ap.add_argument("--hb-period-ms", type=hb_period_arg, default=HEARTBEAT_PERIOD_MS,
+                    help="heartbeat period, 5..40 ms (default %(default)s)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("hello", help="HELLO until INFO, print INFO")
     p.add_argument("--seconds", type=float, default=3.0)
@@ -870,11 +1814,44 @@ def main(argv=None):
     p = sub.add_parser("try", help="one SET_STATE and one START, print the replies")
     p = sub.add_parser("loopback", help="rig check R0: TX wired to RX of the same port")
     p.add_argument("--repeat", type=int, default=100)
+    p = sub.add_parser("linkup", help="H.8: boot state, NAK NO_LINK, link-up time, bridge_ver, hold")
+    p.add_argument("--seconds", type=seconds_arg, default=20.0, help="hold time (default %(default)s)")
+    p.add_argument("--expect-fresh", action="store_true",
+                   help="require abort_count 0 and last_event NONE before the first HELLO (just power-cycled)")
+    p.add_argument("--expect-ready", choices=("auto", "no", "yes"), default="auto",
+                   help="console_ready of the build: no (fw-debug), yes (fw-debug-bench), auto (from STATUS)")
+    p = sub.add_parser("silence", help="H.9: stop the heartbeat, EVENT LINK_LOST in 80..120 ms, recovery")
+    p.add_argument("--expect-ready", choices=("auto", "no", "yes"), default="auto")
+    p = sub.add_parser("direct", help="H.11 (bench build): DIRECT app timeout and DTR edge")
+    p.add_argument("--keepalive-seconds", type=seconds_arg, default=5.0)
+    p = sub.add_parser("playing", help="H.11 (bench build): no app timeout or DTR rule in PLAYING; loss in PLAYING")
+    p.add_argument("--seconds", type=seconds_arg, default=3.0, help="piece length (default %(default)s)")
+    p = sub.add_parser("breaks", help="H.12: unplug / replug the bridge-TX wire, TX release, session continues")
+    p.add_argument("--rounds", type=positive_int_arg, default=10)
+    p.add_argument("--mode", choices=("idle", "playing"), default="idle",
+                   help="playing (bench build): a 60 s piece is playing at each unplug")
+    p.add_argument("--no-heartbeat", action="store_true", help="the unarmed case: no heartbeat at all")
+    p.add_argument("--meter-seconds", type=seconds_arg, default=15.0,
+                   help="round 1: time to read the multimeter on GP0 (default %(default)s)")
+    p.add_argument("--count", type=positive_int_arg, default=5, help="events sent after each replug")
     args = ap.parse_args(argv)
+    if args.cmd in HEARTBEAT_COMMANDS:
+        args.hb_enabled = not args.no_heartbeat_global
+    else:
+        args.hb_enabled = args.heartbeat and not args.no_heartbeat_global
+    if args.cmd != "breaks":
+        args.no_heartbeat = False
     port = Port(args.port, args.baud)
+    if args.hb_enabled and args.cmd not in HEARTBEAT_COMMANDS:
+        port.hb_start(args.hb_period_ms)
     handler = {"hello": cmd_hello, "watch": cmd_watch, "fill": cmd_fill, "soak": cmd_soak,
-               "noise": cmd_noise, "try": cmd_try, "loopback": cmd_loopback}[args.cmd]
-    return handler(port, args)
+               "noise": cmd_noise, "try": cmd_try, "loopback": cmd_loopback, "linkup": cmd_linkup,
+               "silence": cmd_silence, "direct": cmd_direct, "playing": cmd_playing,
+               "breaks": cmd_breaks}[args.cmd]
+    rc = handler(port, args)
+    if port.hb_running() and args.cmd not in HEARTBEAT_COMMANDS:
+        print(port.hb_stats())
+    return rc
 
 
 if __name__ == "__main__":

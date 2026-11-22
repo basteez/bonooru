@@ -7,8 +7,8 @@
  * HELLO opens the session from every state with STOP semantics and INFO
  * (every field checked); a mismatched or empty HELLO answers INFO, closes
  * the session and forces the core neutral; duplicate HELLOs; a rebooted
- * controller facing an app in mid-sequence; the session survives aborts
- * and USB events.
+ * controller facing an app in mid-sequence; the session survives aborts,
+ * USB events and (story 2.7) watchdog link losses.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -270,6 +270,29 @@ static void test_session_survives(void)
     lh_expect_ack(&h, seq, "PING after abort and USB events");
     lh_stop(&h);
     OCB_CHECK(ocb_link_session_open(&h.link), "STOP closed the session");
+
+    /* Story 2.7: a watchdog link loss (silence, then a break) does not close
+     * the session either (2.6 D8). */
+    lh_session(&h, 8u);
+    h.auto_hb = false;
+    h.now = ocb_link_last_heartbeat_us(&h.link) + (uint64_t)OCB_LINK_TIMEOUT_MS * 1000u + 1u;
+    ocb_link_poll(&h.link, h.now);
+    OCB_CHECK(!ocb_link_link_ok(&h.link) && ocb_link_session_open(&h.link), "link loss closed the session");
+    lh_discard_tx(&h);
+    ocb_link_tx_settled(&h.link, h.now, true);
+    lh_open_gate(&h);
+    lh_discard_tx(&h);
+    lh_hb_now(&h);
+    ocb_link_rx_entry(&h.link, OCB_LINK_RX_BE, h.now);
+    ocb_link_poll(&h.link, h.now);
+    OCB_CHECK(!ocb_link_link_ok(&h.link) && ocb_link_session_open(&h.link), "break closed the session");
+    lh_discard_tx(&h);
+    ocb_link_tx_settled(&h.link, h.now, true);
+    lh_open_gate(&h);
+    lh_discard_tx(&h);
+    const uint8_t seq2 = h.seq;
+    lh_ping(&h);
+    lh_expect_ack(&h, seq2, "PING after two link losses: no NAK VERSION");
 }
 
 int main(void)

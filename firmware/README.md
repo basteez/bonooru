@@ -47,6 +47,9 @@ Presets (`CMakePresets.json`):
 - `fw-release`: release UF2s, `build/fw-release/bridge/bridge.uf2` and
   `build/fw-release/controller/controller.uf2`.
 - `fw-debug`: debug build, defines `OCB_DEBUG_BUILD=1` (debug-only pins and aids).
+- `fw-debug-bench`: the debug build plus `OCB_BENCH_FAKE_READY` (Story 2.7 D17): the controller
+  fakes a ready console for bench tests (test plan H.11). Own build directory; bench only,
+  never shipped, never uploaded by CI.
 - `host-tests`: native compiler, ctest, no pico-sdk (`ctest --preset host-tests` fails
   if no test is found). Built with AddressSanitizer and UBSan (`OCB_SANITIZE=ON`); if a
   sanitizer runtime is missing on a machine, configure with `-DOCB_SANITIZE=OFF`.
@@ -87,6 +90,15 @@ pin number anywhere else in the firmware sources; use the `OCB_PIN_*` names.
   include `ocb_link/*`; its banned identifier list must equal the core gate's (CI step; ctest
   `link_pure_check` with a self-test and the drift check).
 
+## Host test names
+
+ctest (`host-tests` preset): `test_pins`, `test_pins_debug`, `test_version`, `pin_grep_selftest`,
+`test_vectors`, `test_proto_api`, `test_core_modes`, `test_core_end_late`, `test_core_sync`,
+`test_core_mask`, `test_core_edge`, `proto_version_check`, `proto_pure_check`, `core_pure_check`,
+`test_link_rx`, `test_link_session`, `test_link_gbn`, `test_link_nak`, `test_link_tx`,
+`test_link_ready`, `test_link_fuzz`, `test_link_watchdog` (Story 2.7, F.21), `link_pure_check`,
+`link_probe_selftest`, `docs_constants_check` (Story 2.7, F.22).
+
 ## Bench sender (Story 2.6)
 
 `tools/link_probe.py` speaks the binary link protocol over a serial port (a 3.3 V USB-UART
@@ -95,10 +107,16 @@ adapter on the controller's UART pins): `hello`, `watch`, `fill`, `soak`, `noise
 codec is written from `docs/link-protocol.md` and checked against the shared vectors by ctest
 `link_probe_selftest`. Bench procedure: `docs/test-plan.md`, H.4 to H.7.
 
+Story 2.7 adds the emulated bridge heartbeat (`--heartbeat`, `--no-heartbeat`,
+`--hb-period-ms`) and one subcommand per bench step, each one process and one session ending
+in `PASS` / `FAIL`: `linkup` (H.8), `silence` (H.9), `direct` and `playing` (H.11, bench
+build), `breaks` (H.12); `--heartbeat soak` is H.10 (global options go before the subcommand). ctest runs them against the real link on a
+fake clock (F.23).
+
 ## CI
 
 `.github/workflows/firmware.yml` runs on every push and pull request: it checks the
-submodule pins, installs the pinned tools, builds `fw-release` and `fw-debug`, runs the
+submodule pins, installs the pinned tools, builds `fw-release`, `fw-debug` and `fw-debug-bench` (a compile gate), runs the
 host tests and the pin check, and uploads `bridge.uf2` and `controller.uf2` as the
 `firmware-uf2` artifact. UF2s are never committed.
 

@@ -3,7 +3,8 @@
  *
  * Controller link TX (AD-19, story 2.6 D12, D15): slots instead of a byte
  * FIFO, one whole frame per call by priority EVENT > NAK > INFO > ACK >
- * STATUS, STATUS cadence and body, the closed-gate discard. Frames are
+ * STATUS, STATUS cadence and body, the closed-gate discard and the
+ * EVENT-only output of a pending TX release (story 2.7 D6). Frames are
  * built with the ocb_proto encoders only.
  */
 #include <stdbool.h>
@@ -108,7 +109,7 @@ static OCB_CORE_RAMFUNC int build_status(const ocb_link *link, uint64_t now_us, 
     }
     uint8_t extra[OCB_LINK_DEBUG_COUNTERS_LEN];
     put_u16(&extra[0], ocb_link_max_app_gap_ms(link));
-    extra[2] = 0u; /* watchdog_trips: Story 2.7 */
+    extra[2] = link->wd.trips; /* watchdog_trips (story 2.7 D12), wraps */
     put_u16(&extra[3], ocb_link_dropped_bytes(link));
     put_u16(&extra[5], link->cnt.tx_dropped);
     /* v2 (D35): the three causes of dropped_bytes, then the error bits. */
@@ -146,23 +147,31 @@ static OCB_CORE_RAMFUNC int build_info(const ocb_link *link, uint8_t *body, size
     return ocb_msg_info_encode(&m, body, cap);
 }
 
-/* Closed gate (D15): nothing leaves, and nothing stale may leave later.
+/* Discards everything but the EVENT ring: a pending TX release (story 2.7
+ * D6) lets only EVENTs leave, and the closed gate below discards the rest.
  * A discarded transport NAK never reached the app, so the budget for the
  * current `expected` is re-armed (D27). */
-static OCB_CORE_RAMFUNC void discard_pending(ocb_link *link)
+static OCB_CORE_RAMFUNC void discard_non_event(ocb_link *link)
 {
     if (link->nak_count > 0u) {
         link->nak_spent = false;
     }
-    link->cnt.tx_dropped += (uint32_t)link->ev_count + (uint32_t)link->nak_count + (link->info_pending ? 1u : 0u) +
-                            (link->ack_pending ? 1u : 0u);
-    link->ev_count = 0u;
-    link->ev_head = 0u;
+    link->cnt.tx_dropped +=
+        (uint32_t)link->nak_count + (link->info_pending ? 1u : 0u) + (link->ack_pending ? 1u : 0u);
     link->nak_count = 0u;
     link->nak_head = 0u;
     link->info_pending = false;
     link->ack_pending = false;
     link->status_requested = false;
+}
+
+/* Closed gate (D15): nothing leaves, and nothing stale may leave later. */
+static OCB_CORE_RAMFUNC void discard_pending(ocb_link *link)
+{
+    discard_non_event(link);
+    link->cnt.tx_dropped += (uint32_t)link->ev_count;
+    link->ev_count = 0u;
+    link->ev_head = 0u;
 }
 
 typedef enum { TX_NONE, TX_EVENT, TX_NAK, TX_INFO, TX_ACK, TX_STATUS } tx_kind;
@@ -172,6 +181,14 @@ OCB_CORE_RAMFUNC size_t ocb_link_tx_next(ocb_link *link, uint64_t now_us, uint8_
     if (!ocb_txgate_is_open(&link->gate)) {
         discard_pending(link);
         return 0u;
+    }
+    if (link->release_pending) {
+        /* Story 2.7 D6: the LINK_LOST EVENT (and any older EVENT) leaves
+         * before the release; nothing else is sent any more. */
+        discard_non_event(link);
+        if (link->ev_count == 0u) {
+            return 0u;
+        }
     }
     uint8_t body[TX_BODY_MAX];
     int n;

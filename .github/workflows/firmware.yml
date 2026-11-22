@@ -98,6 +98,13 @@ jobs:
           cmake --preset fw-debug
           cmake --build --preset fw-debug
 
+      # Story 2.7 D17: compile gate only; the bench UF2 is never uploaded.
+      - name: Build fw-debug-bench (compile gate for the bench-only build)
+        working-directory: firmware
+        run: |
+          cmake --preset fw-debug-bench
+          cmake --build --preset fw-debug-bench
+
       - name: Host tests
         working-directory: firmware
         run: |

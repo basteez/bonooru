@@ -5,7 +5,9 @@
  * property test. Queue capacity and NAK FULL, the D3 NAK precedence, the
  * NOT_READY gate, validation (hat, body lengths), unassigned and foreign
  * frame types, the STATUS view, a clock above 2^32, two independent cores,
- * and invariants over random frame / tick / abort sequences (D10).
+ * and invariants over random frame / tick / abort sequences (D10). Story
+ * 2.7: QUEUE_EVENT, PING, STOP and HELLO are unchanged with the link down
+ * (env.link_ok false): NO_LINK gates only SET_STATE and START (D11).
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -77,7 +79,7 @@ static void test_queue_capacity(void)
     ocb_msg_queue_event m = {10u, OCB_NEUTRAL_INIT};
     f.type = OCB_MSG_QUEUE_EVENT;
     f.len = (uint8_t)ocb_msg_queue_event_encode(&m, f.body, sizeof f.body);
-    const ocb_core_env env = {0u, true};
+    const ocb_core_env env = {0u, true, true};
     ocb_core_out out;
     ocb_core_frame(&c, &env, &f, &out);
     expect_nak(out, OCB_NAK_FULL, "zero-capacity core");
@@ -571,6 +573,27 @@ static void test_property(void)
     }
 }
 
+
+/* Story 2.7 D11: with the link down, only SET_STATE and START are gated. */
+static void test_link_down_other_frames(void)
+{
+    harness h;
+    h_init(&h, 16u, 1000u);
+    h.link_ok = false;
+    expect_ack(h_queue_event(&h, 10u, st_neutral()), "link down: QUEUE_EVENT");
+    OCB_CHECK(ocb_queue_count(&h.core.queue) == 1u, "link down: QUEUE_EVENT not queued");
+    expect_ack(h_ping(&h), "link down: PING");
+    expect_ack(h_stop(&h), "link down: STOP");
+    OCB_CHECK(h_hello(&h).kind == OCB_CORE_REPLY_HELLO, "link down: HELLO");
+    OCB_CHECK(h_raw(&h, 0x07, NULL, 0u).nak_reason == OCB_NAK_UNKNOWN_TYPE, "link down: unassigned type");
+    expect_nak(h_set_state(&h, st_neutral()), OCB_NAK_NO_LINK, "link down: SET_STATE");
+    expect_nak(h_start(&h, 0u), OCB_NAK_NO_LINK, "link down: START");
+    /* QUEUE_EVENT keeps its own precedence: ABORTED, then the body rules. */
+    (void)h_abort(&h, OCB_ABORT_LINK_LOST);
+    expect_nak(h_queue_event(&h, 20u, st_neutral()), OCB_NAK_ABORTED, "link down + latch: QUEUE_EVENT");
+    OCB_CHECK(h_invariants_ok(&h), "link down: invariants");
+}
+
 int main(void)
 {
     test_queue_capacity();
@@ -583,6 +606,7 @@ int main(void)
     test_two_cores();
     test_advance_expected();
     test_property();
+    test_link_down_other_frames();
     const int f = ocb_test_failures();
     if (f != 0) {
         fprintf(stderr, "test_core_edge (F.12): %d failure(s)\n", f);
