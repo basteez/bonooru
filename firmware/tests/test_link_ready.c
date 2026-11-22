@@ -292,11 +292,31 @@ static void test_flags_and_wrap(void)
     OCB_CHECK(ocb_ready_is(&ra, 20u), "a's ready lost");
 }
 
+/* Posts made before the link is initialised are kept when the tracker is
+ * rebased on a zero baseline, as the firmware does (D28). */
+static void test_rebase(void)
+{
+    static lh h;
+    fake_profile p;
+    lh_init(&h, 16u);
+    p.mb = &h.mb;
+    /* Without the rebase, a handshake posted before init is taken as seen. */
+    fp_handshake(&p);
+    ocb_ready_init(&h.link.ready, &h.mb, h.now); /* what ocb_link_init does */
+    ocb_link_poll(&h.link, h.now);
+    OCB_CHECK(!ocb_link_console_ready(&h.link, h.now), "snapshot baseline: pre-init handshake counted");
+    static const ocb_usb_mailbox zero = {0u, 0u, 0u, 0u, 0u};
+    ocb_link_ready_rebase(&h.link, &zero, h.now);
+    ocb_link_poll(&h.link, h.now);
+    OCB_CHECK(ocb_link_console_ready(&h.link, h.now), "zero baseline: pre-init handshake lost");
+}
+
 int main(void)
 {
     test_handshake_and_down();
     test_stall();
     test_flags_and_wrap();
+    test_rebase();
     const int f = ocb_test_failures();
     if (f != 0) {
         fprintf(stderr, "test_link_ready (F.10): %d failure(s)\n", f);

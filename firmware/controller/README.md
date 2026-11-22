@@ -41,8 +41,10 @@ F.14 to F.17 in `docs/test-plan.md`, under the host preset.
 `platform/link_runner.c` connects `ocb_link` and `ocb_core` to the UART driver
 `common/hw/uart_link.c`: `ocb_ctrl_link_init()` (512-event static queue, version from the
 generated header, profile P2), `ocb_ctrl_link_start_rx()` (RX interrupt enabled from core 1) and
-`ocb_ctrl_link_step()` (one non-blocking pass: RX level into the TX gate, RX ring into the link,
-poll, at most one frame into the UART TX ring). `main.c` launches core 1 with a bring-up loop
+`ocb_ctrl_link_step()` (one non-blocking pass: RX level into the TX gate, poll (USB mailbox,
+`ready`, scheduler), RX ring into the link, at most one frame into the UART TX ring). `main.c`
+zeroes the USB mailbox before core 1 starts, and the link counts mailbox events from zero, so
+core-0 posts made before core 1 is up are not lost. `main.c` launches core 1 with a bring-up loop
 that only calls `ocb_ctrl_link_step()`; Story 2.5 replaces that loop with the real super-loop
 and keeps the call. Core 1 is the only UART TX writer (a debug-build assertion). Nothing posts
 to the USB mailbox until Story 2.3, so on this firmware `console_ready` is always 0 and `START` /

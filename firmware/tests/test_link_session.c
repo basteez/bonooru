@@ -233,6 +233,24 @@ static void test_rebooted(void)
     expect_info(&h, k_zero_ver, 0u, "HELLO after the reboot");
 }
 
+/* A HELLO drops an ACK still pending from the numbering before it (D26):
+ * HELLO(0), PING(1) not yet sent out, HELLO(100) -> only INFO leaves. */
+static void test_hello_drops_stale_ack(void)
+{
+    static lh h;
+    for (int v = 0; v < 2; v++) {
+        lh_init(&h, 8u);
+        lh_open_gate(&h);
+        lh_send_seq(&h, OCB_MSG_HELLO, 0u, (const uint8_t[]){(uint8_t)OCB_PROTO_VERSION}, 1u);
+        lh_discard_tx(&h);
+        lh_send_seq(&h, OCB_MSG_PING, 1u, NULL, 0u); /* ACK(1) pending, not drained */
+        const uint8_t pv = v == 0 ? (uint8_t)OCB_PROTO_VERSION : 9u; /* matching, then mismatched */
+        lh_send_seq(&h, OCB_MSG_HELLO, 100u, &pv, 1u);
+        expect_info(&h, k_zero_ver, 0u, v == 0 ? "matching HELLO after an undrained ACK"
+                                               : "mismatched HELLO after an undrained ACK");
+    }
+}
+
 static void test_session_survives(void)
 {
     static lh h;
@@ -260,6 +278,7 @@ int main(void)
     test_matching_hello();
     test_mismatched_hello();
     test_rebooted();
+    test_hello_drops_stale_ack();
     test_session_survives();
     const int f = ocb_test_failures();
     if (f != 0) {

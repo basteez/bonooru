@@ -47,17 +47,18 @@ OCB_CORE_RAMFUNC void ocb_link_q_event_(ocb_link *link, uint8_t code)
     link->ev_count++;
 }
 
-OCB_CORE_RAMFUNC void ocb_link_q_nak_(ocb_link *link, uint8_t reason, uint8_t expected, uint8_t got)
+OCB_CORE_RAMFUNC bool ocb_link_q_nak_(ocb_link *link, uint8_t reason, uint8_t expected, uint8_t got)
 {
     if (link->nak_count >= (uint8_t)OCB_LINK_TX_NAK_CAP) {
         link->cnt.tx_dropped++;
-        return;
+        return false;
     }
     const uint8_t i = (uint8_t)((link->nak_head + link->nak_count) % (uint8_t)OCB_LINK_TX_NAK_CAP);
     link->nak_buf[i].reason = reason;
     link->nak_buf[i].expected = expected;
     link->nak_buf[i].got = got;
     link->nak_count++;
+    return true;
 }
 
 OCB_CORE_RAMFUNC void ocb_link_q_ack_(ocb_link *link, uint8_t seq)
@@ -136,9 +137,14 @@ static OCB_CORE_RAMFUNC int build_info(const ocb_link *link, uint8_t *body, size
     return ocb_msg_info_encode(&m, body, cap);
 }
 
-/* Closed gate (D15): nothing leaves, and nothing stale may leave later. */
+/* Closed gate (D15): nothing leaves, and nothing stale may leave later.
+ * A discarded transport NAK never reached the app, so the budget for the
+ * current `expected` is re-armed (D27). */
 static OCB_CORE_RAMFUNC void discard_pending(ocb_link *link)
 {
+    if (link->nak_count > 0u) {
+        link->nak_spent = false;
+    }
     link->cnt.tx_dropped += (uint32_t)link->ev_count + (uint32_t)link->nak_count + (link->info_pending ? 1u : 0u) +
                             (link->ack_pending ? 1u : 0u);
     link->ev_count = 0u;

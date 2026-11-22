@@ -37,6 +37,21 @@ static ocb_uart_link_rx_sink s_rx_sink;
 
 typedef char ocb_uart_tx_ring_pow2[((OCB_UART_LINK_TX_RING & TX_MASK) == 0u) ? 1 : -1];
 
+/* The driver hard-codes UART0 (D29). RP2040 GPIO function table (datasheet,
+ * section 2.19.2, function F2): the UART instance of a pin is
+ * ((pin + 4) / 8) % 2, and within each group of four pins the order is TX,
+ * RX, CTS, RTS. These checks use only the pins.h names, so moving a link
+ * pin to a UART1 pin or to a non-TX/RX position fails the build. */
+#define OCB_UART_INDEX_OF_PIN(p) ((((p) + 4u) / 8u) % 2u)
+typedef char ocb_uart_tx_pin_is_uart0_tx[(OCB_UART_INDEX_OF_PIN(OCB_PIN_UART_TX) == 0u && OCB_PIN_UART_TX % 4u == 0u &&
+                                          OCB_PIN_UART_TX < 30u)
+                                             ? 1
+                                             : -1];
+typedef char ocb_uart_rx_pin_is_uart0_rx[(OCB_UART_INDEX_OF_PIN(OCB_PIN_UART_RX) == 0u && OCB_PIN_UART_RX % 4u == 1u &&
+                                          OCB_PIN_UART_RX < 30u)
+                                             ? 1
+                                             : -1];
+
 uint32_t ocb_uart_link_init(void)
 {
     /* TX: a high-Z input until the gate opens (AD-20). */

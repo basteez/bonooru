@@ -33,9 +33,13 @@ static bool s_tx_enabled;
 
 typedef char ocb_queue_cap_fits_u16[(OCB_QUEUE_CAP_DEFAULT <= 0xFFFF) ? 1 : -1];
 
-void ocb_ctrl_link_init(void)
+void ocb_ctrl_usb_mailbox_init(void)
 {
     ocb_usb_mailbox_init(&s_mailbox);
+}
+
+void ocb_ctrl_link_init(void)
+{
     (void)ocb_core_init(&s_core, s_queue, (uint16_t)OCB_QUEUE_CAP_DEFAULT, 0u);
     ocb_link_cfg cfg;
     cfg.fw_ver[0] = (uint8_t)OCB_VERSION_MAJOR;
@@ -44,7 +48,12 @@ void ocb_ctrl_link_init(void)
     cfg.hid_profile = (uint8_t)OCB_HID_PROFILE_P2;
     cfg.app_timeout_ms = (uint16_t)OCB_APP_TIMEOUT_MS_DEFAULT;
     cfg.debug_counters = OCB_LINK_DEBUG_COUNTERS;
-    ocb_link_init(&s_link, &s_core, &s_mailbox, &cfg, time_us_64());
+    const uint64_t t = time_us_64();
+    ocb_link_init(&s_link, &s_core, &s_mailbox, &cfg, t);
+    /* D28: the mailbox was zeroed by main() before core 1 started, so count
+     * from zero: anything core 0 posted in between is seen, not lost. */
+    static const ocb_usb_mailbox k_zero_mailbox = {0u, 0u, 0u, 0u, 0u};
+    ocb_link_ready_rebase(&s_link, &k_zero_mailbox, t);
 
     const uint32_t baud = ocb_uart_link_init();
 #ifdef OCB_DEBUG_BUILD
@@ -80,8 +89,10 @@ void __not_in_flash_func(ocb_ctrl_link_step)(void)
         s_tx_enabled = open;
     }
 
-    (void)ocb_link_rx_drain(&s_link, now, (uint32_t)OCB_LINK_RX_RING_CAP);
+    /* Poll first (USB mailbox, ready, aborts, scheduler), so a START or
+     * SET_STATE drained in this pass sees a fresh `ready` (D28). */
     ocb_link_poll(&s_link, now);
+    (void)ocb_link_rx_drain(&s_link, now, (uint32_t)OCB_LINK_RX_RING_CAP);
 
 #ifdef OCB_DEBUG_BUILD
     hard_assert(get_core_num() == 1u); /* AC1, AD-11: core 1 is the only TX writer */

@@ -40,6 +40,7 @@ static void core1_entry(void)
 int main(void)
 {
     ocb_led_init();
+    ocb_ctrl_usb_mailbox_init(); /* before core 1 and before any core-0 post */
     multicore_launch_core1(core1_entry);
 
     bool on = false;

@@ -141,6 +141,11 @@ typedef struct {
 void ocb_link_init(ocb_link *link, ocb_core *core, const ocb_usb_mailbox *mailbox, const ocb_link_cfg *cfg,
                    uint64_t now_us);
 
+/* Re-takes the `ready` tracker's baseline from `baseline` instead of the
+ * mailbox's values at init (D28): the firmware passes an all-zero mailbox so
+ * that events core 0 posted before core 1 initialised the link are seen. */
+void ocb_link_ready_rebase(ocb_link *link, const ocb_usb_mailbox *baseline, uint64_t now_us);
+
 /* INFO.report_period_us, and the core's LATE threshold (0 = unknown). */
 void ocb_link_set_report_period(ocb_link *link, uint16_t report_period_us);
 

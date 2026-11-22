@@ -42,6 +42,11 @@ void ocb_link_init(ocb_link *link, ocb_core *core, const ocb_usb_mailbox *mailbo
     link->have_app_frame = false;
 }
 
+void ocb_link_ready_rebase(ocb_link *link, const ocb_usb_mailbox *baseline, uint64_t now_us)
+{
+    ocb_ready_init(&link->ready, baseline, now_us);
+}
+
 void ocb_link_set_report_period(ocb_link *link, uint16_t report_period_us)
 {
     link->report_period_us = report_period_us;
@@ -80,9 +85,12 @@ static OCB_CORE_RAMFUNC void q_transport_nak(ocb_link *link, uint8_t reason, uin
         link->cnt.nak_suppressed++;
         return;
     }
-    link->nak_spent = true;
-    link->nak_expected = e;
-    ocb_link_q_nak_(link, reason, e, got);
+    /* The budget is spent only by a NAK that is actually queued: one lost
+     * to a full NAK ring does not count (D27). */
+    if (ocb_link_q_nak_(link, reason, e, got)) {
+        link->nak_spent = true;
+        link->nak_expected = e;
+    }
 }
 
 /* A new value of `expected` re-arms the budget. */
@@ -158,6 +166,9 @@ static OCB_CORE_RAMFUNC void handle_hello(ocb_link *link, const ocb_frame *f, co
     }
     after_sync_point(link);
     reset_app_gap(link);
+    /* A pending ACK belongs to the numbering before this HELLO: the app
+     * restarts from the HELLO's seq, so it must not leave after INFO (D26). */
+    link->ack_pending = false;
     ocb_link_q_info_(link);
 }
 
@@ -176,7 +187,7 @@ static OCB_CORE_RAMFUNC void handle_in_order(ocb_link *link, const ocb_frame *f,
         if (OCB_NAK_IS_TRANSPORT(out.nak_reason)) {
             q_transport_nak(link, out.nak_reason, f->seq);
         } else {
-            ocb_link_q_nak_(link, out.nak_reason, link->core->expected, f->seq);
+            (void)ocb_link_q_nak_(link, out.nak_reason, link->core->expected, f->seq);
             link->cache_valid = true;
             link->cache_seq = f->seq;
             link->cache_nak = out.nak_reason;
@@ -214,7 +225,7 @@ static OCB_CORE_RAMFUNC void handle_frame(ocb_link *link, uint64_t now_us)
         /* D5: the session gate comes before the seq check. */
         const uint8_t before = link->core->expected;
         ocb_core_advance_expected(link->core, f->seq);
-        ocb_link_q_nak_(link, OCB_NAK_VERSION, link->core->expected, f->seq);
+        (void)ocb_link_q_nak_(link, OCB_NAK_VERSION, link->core->expected, f->seq);
         expected_moved(link, before);
         return;
     }
@@ -224,7 +235,7 @@ static OCB_CORE_RAMFUNC void handle_frame(ocb_link *link, uint64_t now_us)
         handle_in_order(link, f, &env);
     } else if (d == 1u) {
         if (link->cache_valid && link->cache_seq == f->seq && link->cache_nak != 0u) {
-            ocb_link_q_nak_(link, link->cache_nak, expected, f->seq);
+            (void)ocb_link_q_nak_(link, link->cache_nak, expected, f->seq);
         } else {
             ocb_link_q_ack_(link, (uint8_t)(expected - 1u));
         }

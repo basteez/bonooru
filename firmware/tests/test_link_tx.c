@@ -41,11 +41,11 @@ static void test_priority(void)
     static lh h;
     lh_session(&h, 8u);
     h.now += 50000u; /* STATUS due */
-    const uint8_t ping_seq = h.seq;
-    lh_ping(&h);                                  /* ACK */
-    send_corrupted(&h, h.seq);                    /* NAK CRC */
-    ocb_link_queue_event(&h.link, OCB_EVT_LATE);  /* EVENT */
     lh_send_seq(&h, OCB_MSG_HELLO, 200u, (const uint8_t[]){1u}, 1u); /* INFO */
+    const uint8_t ping_seq = 201u;
+    lh_send_seq(&h, OCB_MSG_PING, ping_seq, NULL, 0u); /* ACK */
+    send_corrupted(&h, 202u);                          /* NAK CRC */
+    ocb_link_queue_event(&h.link, OCB_EVT_LATE);       /* EVENT */
     lh_out o[8];
     const size_t n = lh_drain(&h, o, 8u);
     const uint8_t want[] = {OCB_MSG_EVENT, OCB_MSG_NAK, OCB_MSG_INFO, OCB_MSG_ACK, OCB_MSG_STATUS};
@@ -382,11 +382,10 @@ static void test_gate(void)
     uint8_t wire[OCB_MAX_WIRE_FRAME];
     /* Closed: nothing leaves, STATUS not due, pending output discarded. */
     ocb_link_queue_event(&h.link, OCB_EVT_LATE);
-    lh_hello(&h); /* INFO pending */
-    lh_ping(&h);  /* ACK pending */
-    lh_ping(&h);  /* (replaces the ACK) */
-    lh_hello_v(&h, 9u);
-    lh_ping(&h); /* NAK VERSION */
+    lh_hello_v(&h, 9u); /* INFO pending, session closed */
+    lh_stop(&h);        /* ACK pending */
+    lh_stop(&h);        /* (replaces the ACK) */
+    lh_ping(&h);        /* NAK VERSION */
     OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, sizeof wire) == 0u, "closed gate sent");
     OCB_CHECK(ocb_link_counters_get(&h.link)->tx_dropped == 4u, "closed gate: tx_dropped %u (EVENT, NAK, INFO, ACK)",
               ocb_link_counters_get(&h.link)->tx_dropped);
@@ -419,6 +418,25 @@ static void test_gate(void)
     OCB_CHECK(n == 1u && o[0].type == OCB_MSG_STATUS, "after release: stale EVENT left");
 }
 
+/* A transport NAK discarded by the closed gate never reached the app: the
+ * budget for that `expected` is re-armed (D27). */
+static void test_gate_rearms_nak(void)
+{
+    static lh h;
+    lh_session(&h, 8u);
+    const uint8_t E = h.core.expected;
+    ocb_txgate_release(ocb_link_gate(&h.link));
+    send_corrupted(&h, E);
+    uint8_t wire[OCB_MAX_WIRE_FRAME];
+    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, sizeof wire) == 0u, "closed gate sent");
+    lh_open_gate(&h);
+    lh_discard_tx(&h); /* STATUS */
+    send_corrupted(&h, E);
+    lh_expect_nak(&h, OCB_NAK_CRC, E, 0u, "CRC after the closed gate discarded the first one");
+    send_corrupted(&h, E);
+    lh_expect_none(&h, "budget spent again by the NAK that left");
+}
+
 static void test_two_links(void)
 {
     static lh a;
@@ -446,6 +464,7 @@ int main(void)
     test_debug_counters();
     test_overflow_and_cap();
     test_gate();
+    test_gate_rearms_nak();
     test_two_links();
     const int f = ocb_test_failures();
     if (f != 0) {

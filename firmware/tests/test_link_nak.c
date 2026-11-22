@@ -97,6 +97,23 @@ static void test_crc_budget(void)
     OCB_CHECK(h.link.rx.stats.range_errors == 1u, "range error not counted");
 }
 
+/* A transport NAK lost to a full NAK ring does not spend the budget (D27). */
+static void test_ring_full_keeps_budget(void)
+{
+    static lh h;
+    lh_session(&h, 8u);
+    /* Fill the NAK ring with semantic NAKs (UNKNOWN_TYPE), not drained. */
+    for (int i = 0; i < OCB_LINK_TX_NAK_CAP; i++) {
+        lh_send_seq(&h, 0x07u, h.core.expected, NULL, 0u);
+    }
+    const uint8_t E = h.core.expected;
+    send_corrupted(&h, E); /* NAK CRC lost: ring full */
+    OCB_CHECK(!h.link.nak_spent, "a NAK lost to a full ring spent the budget");
+    lh_discard_tx(&h);
+    send_corrupted(&h, E);
+    lh_expect_nak(&h, OCB_NAK_CRC, E, 0u, "CRC after a ring-full loss");
+}
+
 static void test_full(void)
 {
     static lh h;
@@ -216,6 +233,7 @@ static void test_semantic(void)
 int main(void)
 {
     test_crc_budget();
+    test_ring_full_keeps_budget();
     test_full();
     test_full_retry();
     test_semantic();
