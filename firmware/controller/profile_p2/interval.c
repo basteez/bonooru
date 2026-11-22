@@ -1,0 +1,95 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Median IN interval (story 2.3 D13, AC5b): the time between two IN
+ * completions, measured on core 0, published as INFO.report_period_us.
+ *
+ * Structure: a histogram of 401 bins of 50 us (bin k holds intervals in
+ * [50k - 25, 50k + 25) us, so k * 50 is the bin's centre) and a ring of the
+ * bin index of the last 256 samples, so the oldest sample leaves the
+ * histogram when a new one enters. Cost: ocb_p2_interval_note is O(1)
+ * (one ring slot, two bin updates); the median is recomputed in
+ * ocb_p2_tick only when samples arrived, by one walk over at most 401 bins
+ * (ops_median <= OCB_P2_IV_BINS, asserted by the F.29 test). Memory: 802 +
+ * 512 bytes.
+ */
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "ocb_p2/config.h"
+#include "ocb_p2/internal.h"
+#include "ocb_p2/p2.h"
+
+void ocb_p2_interval_clear_(ocb_p2_interval *iv)
+{
+    memset(iv, 0, sizeof *iv);
+}
+
+void ocb_p2_interval_note(ocb_p2 *p, uint64_t now_us)
+{
+    ocb_p2_interval *iv = &p->iv;
+    const uint32_t now = (uint32_t)(now_us & 0xFFFFFFFFu);
+    iv->ops_note = 0u;
+    if (!iv->have_last) {
+        iv->have_last = true;
+        iv->last_us = now;
+        return;
+    }
+    /* Unsigned difference of the low 32 bits: wrap-safe for 32-bit and
+     * 64-bit clocks; a backwards step gives a huge value and is dropped. */
+    const uint32_t dt = now - iv->last_us;
+    iv->last_us = now;
+    if (dt > OCB_P2_IV_MAX_US) {
+        return; /* the host stopped polling, or the clock went back */
+    }
+    const uint16_t bin = (uint16_t)((dt + OCB_P2_IV_BIN_US / 2u) / OCB_P2_IV_BIN_US);
+    if (iv->count >= OCB_P2_IV_WINDOW) {
+        const uint16_t old = iv->ring[iv->ring_head];
+        if (old < OCB_P2_IV_BINS && iv->bins[old] > 0u) {
+            iv->bins[old]--;
+        }
+    } else {
+        iv->count++;
+    }
+    iv->ring[iv->ring_head] = bin;
+    iv->ring_head = (uint16_t)((iv->ring_head + 1u) % OCB_P2_IV_WINDOW);
+    if (bin < OCB_P2_IV_BINS) {
+        iv->bins[bin]++;
+    }
+    iv->dirty = true;
+    iv->ops_note = 1u;
+}
+
+void ocb_p2_tick(ocb_p2 *p, uint64_t now_us)
+{
+    (void)now_us;
+    ocb_p2_interval *iv = &p->iv;
+    if (!iv->dirty) {
+        return;
+    }
+    iv->dirty = false;
+    iv->ops_median = 0u;
+    if (iv->count < OCB_P2_IV_MIN_SAMPLES) {
+        iv->median_us = 0u;
+        return;
+    }
+    /* Lower median: the k-th smallest sample, k = (count + 1) / 2. */
+    const uint32_t k = ((uint32_t)iv->count + 1u) / 2u;
+    uint32_t seen = 0u;
+    for (uint32_t b = 0u; b < OCB_P2_IV_BINS; b++) {
+        iv->ops_median++;
+        seen += iv->bins[b];
+        if (seen >= k) {
+            iv->median_us = b * OCB_P2_IV_BIN_US;
+            return;
+        }
+    }
+    iv->median_us = 0u; /* unreachable: count samples are in the bins */
+}
+
+uint32_t ocb_p2_report_period_us(const ocb_p2 *p)
+{
+    return p->iv.median_us;
+}

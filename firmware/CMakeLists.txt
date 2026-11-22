@@ -8,7 +8,6 @@ cmake_minimum_required(VERSION 3.25)
 
 option(OCB_HOST_TESTS "Build host-side tests only (native compiler, no pico-sdk)" OFF)
 option(OCB_DEBUG_BUILD "Define OCB_DEBUG_BUILD=1 for our targets (debug-only pins and aids)" OFF)
-option(OCB_BENCH_FAKE_READY "controller, debug builds only: fake a ready console for bench tests (story 2.7 D17)" OFF)
 option(OCB_ALLOW_OTHER_TOOLCHAIN "Accept a compiler other than the pinned one (local experiments only)" OFF)
 option(OCB_SANITIZE "host-tests only: build with AddressSanitizer and UBSan" OFF)
 
@@ -52,6 +51,8 @@ add_subdirectory(common/hw)
 add_subdirectory(controller/core)
 # Controller link layer (story 2.6): pure C99, built in both modes.
 add_subdirectory(controller/link)
+# Controller P2 profile (story 2.3): pure C99, built in both modes.
+add_subdirectory(controller/profile_p2)
 
 if(NOT OCB_HOST_TESTS)
     add_subdirectory(bridge)

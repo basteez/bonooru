@@ -98,13 +98,6 @@ jobs:
           cmake --preset fw-debug
           cmake --build --preset fw-debug
 
-      # Story 2.7 D17: compile gate only; the bench UF2 is never uploaded.
-      - name: Build fw-debug-bench (compile gate for the bench-only build)
-        working-directory: firmware
-        run: |
-          cmake --preset fw-debug-bench
-          cmake --build --preset fw-debug-bench
-
       - name: Host tests
         working-directory: firmware
         run: |
@@ -126,6 +119,16 @@ jobs:
 
       - name: Controller link is pico-sdk free (AD-2)
         run: firmware/tools/check-link-pure.sh
+
+      - name: Controller P2 profile is pico-sdk and TinyUSB free (AD-2)
+        run: firmware/tools/check-p2-pure.sh
+
+      # Story 2.3 AC5a: the P2 debug log exists in debug builds only. The
+      # debug ELF must contain it, so a rename cannot make the gate vacuous.
+      - name: Release has no debug log (AC5a)
+        run: |
+          firmware/tools/check-release-nolog.sh firmware/build/fw-release/controller/controller.elf
+          firmware/tools/check-release-nolog.sh --expect-present firmware/build/fw-debug/controller/controller.elf
 
       - name: Job summary
         run: |

@@ -91,7 +91,7 @@ static inline void lh_open_gate(lh *h)
     OCB_CHECK(open, "gate did not open");
 }
 
-/* Console handshake through the mailbox, as Story 2.3 will post it. */
+/* Console handshake through the mailbox, as the P2 glue posts it (story 2.3). */
 static inline void lh_make_ready(lh *h)
 {
     ocb_usb_mailbox_handshake_done(&h->mb);

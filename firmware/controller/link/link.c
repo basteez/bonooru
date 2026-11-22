@@ -47,6 +47,8 @@ void ocb_link_init(ocb_link *link, ocb_core *core, const ocb_usb_mailbox *mailbo
     link->cfg.link_timeout_ms = ocb_wd_link_timeout_ms(&link->wd);
     link->release_pending = false;
     link->release_start_us = 0u;
+    /* link->dbg is zeroed by the memset above; no ocb_dbglog_* call here,
+     * so a release build links none of the debug log (story 2.3 D14). */
 }
 
 void ocb_link_ready_rebase(ocb_link *link, const ocb_usb_mailbox *baseline, uint64_t now_us)
@@ -58,6 +60,11 @@ void ocb_link_set_report_period(ocb_link *link, uint16_t report_period_us)
 {
     link->report_period_us = report_period_us;
     ocb_core_set_report_period(link->core, report_period_us);
+}
+
+ocb_dbglog_window *ocb_link_dbglog_window(ocb_link *link)
+{
+    return &link->dbg;
 }
 
 ocb_rxring *ocb_link_rx_ring(ocb_link *link)
@@ -403,6 +410,13 @@ OCB_CORE_RAMFUNC void ocb_link_poll(ocb_link *link, uint64_t now_us)
     if ((down & OCB_READY_DOWN_BUS_RESET) != 0u) {
         ocb_core_abort(link->core, OCB_ABORT_USB_BUS_RESET, &out);
         ocb_link_q_event_(link, out.event);
+    }
+    /* Story 2.3 D13: one load of the measured period; applied when core 0
+     * changed it (a direct ocb_link_set_report_period stays until then). */
+    const uint32_t period = link->mailbox->report_period_us;
+    if (period != link->mb_period_seen) {
+        link->mb_period_seen = period;
+        ocb_link_set_report_period(link, period > 0xFFFFu ? (uint16_t)0xFFFFu : (uint16_t)period);
     }
     watchdog_step(link, now_us);
     const ocb_core_env env = make_env(link, now_us);

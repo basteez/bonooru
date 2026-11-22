@@ -37,9 +37,15 @@ typedef struct {
     volatile uint32_t suspends;   /* core 0 only */
     volatile uint32_t unmounts;   /* core 0 only */
     volatile uint32_t bus_resets; /* core 0 only */
+    /* Story 2.3 D13: the median IN interval measured by core 0, us; 0 =
+     * unknown (fewer than 64 samples, or a USB-down event since). Not a
+     * counter: core 1 applies it to INFO and the LATE threshold when it
+     * changes (ocb_link_poll). */
+    volatile uint32_t report_period_us; /* core 0 only */
 } ocb_usb_mailbox;
 
-/* Zeroes the counters. Call once, before either core uses the mailbox. */
+/* Zeroes the counters and the report period. Call once, before either
+ * core uses the mailbox. */
 void ocb_usb_mailbox_init(ocb_usb_mailbox *m);
 
 /* Core 0 (Story 2.3): one increment each. */
@@ -48,6 +54,8 @@ void ocb_usb_mailbox_in_report(ocb_usb_mailbox *m);
 void ocb_usb_mailbox_suspend(ocb_usb_mailbox *m);
 void ocb_usb_mailbox_unmount(ocb_usb_mailbox *m);
 void ocb_usb_mailbox_bus_reset(ocb_usb_mailbox *m);
+/* Core 0 (Story 2.3 D13): one aligned store. */
+void ocb_usb_mailbox_set_report_period(ocb_usb_mailbox *m, uint32_t report_period_us);
 
 /* USB-down events returned by ocb_ready_poll (a bit mask). */
 #define OCB_READY_DOWN_SUSPEND 0x01u

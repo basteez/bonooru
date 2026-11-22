@@ -307,15 +307,34 @@ static void test_rebase(void)
     ocb_ready_init(&h.link.ready, &h.mb, h.now); /* what ocb_link_init does */
     ocb_link_poll(&h.link, h.now);
     OCB_CHECK(!ocb_link_console_ready(&h.link, h.now), "snapshot baseline: pre-init handshake counted");
-    static const ocb_usb_mailbox zero = {0u, 0u, 0u, 0u, 0u};
+    static const ocb_usb_mailbox zero = {0u, 0u, 0u, 0u, 0u, 0u};
     ocb_link_ready_rebase(&h.link, &zero, h.now);
     ocb_link_poll(&h.link, h.now);
     OCB_CHECK(ocb_link_console_ready(&h.link, h.now), "zero baseline: pre-init handshake lost");
 }
 
+/* Story 2.3 D13: the mailbox also carries the measured report period; it
+ * starts at 0 and never touches `ready` (not a counter, not an event). */
+static void test_report_period_field(void)
+{
+    static lh h;
+    fake_profile p;
+    setup(&h, &p);
+    OCB_CHECK(h.mb.report_period_us == 0u, "mailbox init: report period %u", h.mb.report_period_us);
+    ocb_usb_mailbox_set_report_period(&h.mb, 1000u);
+    poll(&h);
+    expect_ready(&h, false, "a report period is not a handshake");
+    fp_handshake(&p);
+    poll(&h);
+    ocb_usb_mailbox_set_report_period(&h.mb, 0u);
+    poll(&h);
+    expect_ready(&h, true, "a period of 0 is not a USB-down event");
+}
+
 int main(void)
 {
     test_handshake_and_down();
+    test_report_period_field();
     test_stall();
     test_flags_and_wrap();
     test_rebase();

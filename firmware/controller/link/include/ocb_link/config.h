@@ -39,6 +39,11 @@
  * Every u16 saturates at 65535. */
 #define OCB_LINK_DEBUG_COUNTERS_V1_LEN 7
 #define OCB_LINK_DEBUG_COUNTERS_LEN 21
+/* v3 (story 2.3 D14) appends the P2 debug log window: p2_log_total u16,
+ * p2_log_n u8 (0..16), then p2_log_n records of 2 bytes (kind, id), oldest
+ * first. Debug tail: 24 bytes with an empty window, at most 56. */
+#define OCB_LINK_DEBUG_V3_HEADER_LEN 3
+#define OCB_LINK_DEBUG_TAIL_MAX_LEN 56
 
 /* RX ring entry layout: the PL011 data register value (dr & 0x0FFF). */
 #define OCB_LINK_RX_DATA_MASK 0x00FFu

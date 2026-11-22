@@ -86,9 +86,10 @@ add_test(NAME core_pure_check
 # Controller link (story 2.6): one executable per test-plan block. F.14 RX
 # stream, F.15 session, F.1 go-back-N, F.2 NAK matrix, F.16 TX and STATUS,
 # F.10 console ready, F.17 byte-stream fuzz and lossy channel; story 2.7:
-# F.21 link watchdog.
+# F.21 link watchdog; story 2.3: F.31 the P2 debug log ring, the STATUS v3
+# tail and the measured report period.
 set(OCB_LINK_TESTS test_link_rx test_link_session test_link_gbn test_link_nak test_link_tx test_link_ready
-    test_link_fuzz test_link_watchdog)
+    test_link_fuzz test_link_watchdog test_link_dbglog)
 foreach(_t IN LISTS OCB_LINK_TESTS)
     add_executable(${_t} ${_t}.c)
     target_link_libraries(${_t} PRIVATE ocb_link)
@@ -135,3 +136,56 @@ add_test(NAME link_probe_selftest
 # (timing table and prose) equal constants.txt and ocb_link/config.h.
 add_test(NAME docs_constants_check
     COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_docs_constants.py" "${OCB_FW_DIR}/..")
+
+# Controller P2 profile (story 2.3): F.24 descriptors, F.25 handshake, F.26
+# subcommands and refusals (C7), F.27 the 0x30 report, F.28 the fuzz test,
+# F.29 the IN interval median.
+set(OCB_P2_TESTS test_p2_desc test_p2_handshake test_p2_subcmd test_p2_report test_p2_interval test_p2_fuzz)
+foreach(_t IN LISTS OCB_P2_TESTS)
+    add_executable(${_t} ${_t}.c)
+    target_link_libraries(${_t} PRIVATE ocb_p2)
+    ocb_strict_warnings(${_t}.c)
+    add_test(NAME ${_t} COMMAND ${_t})
+endforeach()
+if(OCB_TEST_ENV)
+    set_tests_properties(${OCB_P2_TESTS} PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
+endif()
+
+# F.30: ocb_p2 includes only the allowed headers and uses no heap, I/O or
+# clock identifiers (AD-2, story 2.3 D16); bad fixtures flagged, good
+# fixture and the real controller/profile_p2 tree pass, the banned list
+# equals the core gate's.
+add_test(NAME p2_pure_check
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/p2_pure_selftest.sh"
+            "${OCB_FW_DIR}/tools/check-p2-pure.sh" "${OCB_FW_DIR}")
+
+# F.32 (story 2.3 D18): tools/p2_probe.py (the Mac-side host of the P2
+# handshake) against its fixtures and the real ocb_p2 through a ctypes
+# shared module built from the same sources without sanitizers, as
+# ocb_link_sim; its link_probe.py part (p2check, p2watch) is in
+# link_probe_selftest.
+file(GLOB OCB_P2_SIM_SOURCES CONFIGURE_DEPENDS
+    "${OCB_FW_DIR}/controller/profile_p2/*.c" "${OCB_FW_DIR}/common/proto/*.c")
+add_library(ocb_p2_sim MODULE p2_sim_shim.c ${OCB_P2_SIM_SOURCES})
+target_include_directories(ocb_p2_sim PRIVATE
+    "${OCB_FW_DIR}/controller/profile_p2/include" "${OCB_FW_DIR}/common/proto/include")
+target_compile_options(ocb_p2_sim PRIVATE -fno-sanitize=all)
+target_link_options(ocb_p2_sim PRIVATE -fno-sanitize=all)
+set_target_properties(ocb_p2_sim PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+ocb_strict_warnings(p2_sim_shim.c)
+add_test(NAME p2_probe_selftest
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_p2_probe.py" "${OCB_FW_DIR}"
+            "$<TARGET_FILE:ocb_p2_sim>")
+
+# Optional (story 2.3 D17): a libFuzzer entry over ocb_p2_on_output, only
+# with -DOCB_FUZZ=ON and clang; never in a preset or in CI.
+option(OCB_FUZZ "host-tests only: build the libFuzzer target fuzz_p2 (clang)" OFF)
+if(OCB_FUZZ)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "OCB_FUZZ needs clang (libFuzzer)")
+    endif()
+    add_executable(fuzz_p2 fuzz/fuzz_p2.c)
+    target_link_libraries(fuzz_p2 PRIVATE ocb_p2)
+    target_compile_options(fuzz_p2 PRIVATE -fsanitize=fuzzer)
+    target_link_options(fuzz_p2 PRIVATE -fsanitize=fuzzer)
+endif()

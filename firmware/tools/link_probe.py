@@ -15,9 +15,16 @@ Needs Python 3 and, only when a port is opened, pyserial
 except what a subcommand says it sends (`noise`, `fill --no-hello`,
 `loopback`) and the emulated bridge HEARTBEAT (story 2.7).
 
-Subcommands: hello, watch, fill, soak, noise, try, loopback (story 2.6), and
-the one-command bench steps of story 2.7: linkup (H.8), silence (H.9),
-direct and playing (H.11, bench build), breaks (H.12). Run with -h.
+Subcommands: hello, watch, fill, soak, noise, try, loopback (story 2.6), the
+one-command bench steps of story 2.7: linkup (H.8), silence (H.9), direct
+and playing (H.11), breaks (H.12), and of story 2.3: p2check (H.15) and
+p2watch (H.16). Run with -h.
+
+console_ready (story 2.3 D15): it now comes only from a real USB host that
+completed the P2 handshake, the Switch 2 or, on the bench Mac,
+`python3 firmware/tools/p2_probe.py handshake --hold 120 &` started in the
+same shell line. direct, playing and `breaks --mode playing` need it; the
+bench-only fake (fw-debug-bench) is gone.
 
 Bridge heartbeat emulation (story 2.7 D15): until the bridge firmware exists
 (Story 3.1) the probe itself sends the bridge's HEARTBEAT (type 0x40, body
@@ -34,8 +41,7 @@ HELLO clears.
 
 Every story 2.7 subcommand runs one whole bench step in one process with
 one open session, prints one line per check and ends with `PASS` or
-`FAIL <reason>` (exit 0 or 1; 2 for a step skipped because the board is not
-the bench build). Where the owner must act it prints one prominent line and
+`FAIL <reason>` (exit 0 or 1). Where the owner must act it prints one prominent line and
 waits for the evidence (an EVENT, a counter, STATUS stopping or resuming).
 Their requests are resent with the same seq every 50 ms until answered (a
 stop-and-wait AD-6 sender); `breaks` writes one 0x00 after each replug and
@@ -329,7 +335,9 @@ def describe(ftype, seq, body):
                 f["last_event"], f["flags"]))
         d = debug_counters(f["extra"])
         if d:
-            s += " | " + " ".join("%s=%d" % kv for kv in d.items())
+            s += " | " + dbg_str(d)
+            if d.get("p2_log"):
+                s += " | p2_log: " + ", ".join(p2_log_str(k, i) for k, i in d["p2_log"])
         return s
     return "%s %s (tx seq %d)" % (name, " ".join("%s=%s" % kv for kv in f.items()), seq)
 
@@ -341,16 +349,47 @@ DEBUG_V2 = ("rx_err_bytes", "rx_overflow_bytes", "overlong_bytes", "rx_fe", "rx_
 DROP_SPLIT = ("rx_err_bytes", "rx_overflow_bytes", "overlong_bytes", "rx_fe", "rx_pe", "rx_be", "rx_oe")
 
 
+# v3 (story 2.3 D14): the P2 debug log window after the 21 bytes:
+# p2_log_total u16, p2_log_n u8, then p2_log_n records (kind, id), oldest first.
+P2_LOG_KINDS = {0x01: "usb", 0x02: "sub", 0x03: "report", 0x04: "REFUSED", 0x05: "overflow",
+                0x06: "HANDSHAKE", 0x07: "restart"}
+P2_RESTART_CAUSES = {0x01: "mount", 0x02: "unmount", 0x03: "suspend", 0x04: "bus-reset"}
+
+
+def p2_log_str(kind, ident):
+    """One P2 debug log record as text: 'usb 80 04', 'sub 10', 'restart mount'."""
+    if kind == 0x01:
+        return "usb 80 %02x" % ident
+    if kind == 0x07:
+        return "restart %s" % P2_RESTART_CAUSES.get(ident, "%02x" % ident)
+    if kind == 0x06:
+        return "HANDSHAKE"
+    if kind == 0x05:
+        return "overflow (%d lost)" % ident
+    return "%s %02x" % (P2_LOG_KINDS.get(kind, "kind%02x" % kind), ident)
+
+
 def debug_counters(extra):
     """STATUS debug counters (docs/link-protocol.md) as a dict: the v1 prefix
-    (7 bytes) and, when present, the v2 split of dropped_bytes (14 more
-    bytes); None without debug counters."""
+    (7 bytes), when present the v2 split of dropped_bytes (14 more bytes)
+    and the v3 P2 debug log window (p2_log_total and p2_log, a list of
+    (kind, id)); None without debug counters."""
     if len(extra) < 7:
         return None
     d = dict(zip(DEBUG_V1, struct.unpack("<HBHH", extra[:7])))
     if len(extra) >= 21:
         d.update(zip(DEBUG_V2, struct.unpack("<7H", extra[7:21])))
+    if len(extra) >= 24:
+        total, n = struct.unpack("<HB", extra[21:24])
+        recs = extra[24:24 + 2 * n]
+        d["p2_log_total"] = total
+        d["p2_log"] = [(recs[i], recs[i + 1]) for i in range(0, len(recs) - 1, 2)]
     return d
+
+
+def dbg_str(d):
+    """The numeric debug counters as k=v (the P2 log list is printed apart)."""
+    return " ".join("%s=%d" % kv for kv in (d or {}).items() if kv[0] != "p2_log")
 
 
 def drop_split(d):
@@ -908,8 +947,8 @@ def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pac
         cycles, events, elapsed, ("%.2f" % pace_share) if pace else "off",
         ("%d B" % max_inflight) if max_inflight and max_inflight > 0 else "off", totals))
     if first_dbg or last_dbg:
-        out("debug counters first: %s" % " ".join("%s=%d" % kv for kv in (first_dbg or {}).items()))
-        out("debug counters last:  %s" % " ".join("%s=%d" % kv for kv in (last_dbg or {}).items()))
+        out("debug counters first: %s" % dbg_str(first_dbg))
+        out("debug counters last:  %s" % dbg_str(last_dbg))
     if heartbeat:
         out(port.hb_stats())
         last = _status_now(port, 0.5)
@@ -998,6 +1037,34 @@ STATUS_SILENT_S = 0.3           # breaks, unarmed: STATUS silent this long = TX 
 TRACE_TAIL = 120                # breaks: trace lines printed when it fails
 
 
+class P2Log:
+    """The P2 debug log seen through the debug STATUS v3 window (story 2.3
+    D14): every record once, in order, with the time its STATUS arrived. A
+    jump of p2_log_total larger than the window is counted as a gap."""
+
+    def __init__(self):
+        self.total = None
+        self.records = []  # [(time, kind, id)]
+        self.gaps = 0
+
+    def feed(self, d, t):
+        if not d or "p2_log_total" not in d:
+            return
+        total, recs = d["p2_log_total"], d["p2_log"]
+        if self.total is None:
+            new = recs
+        else:
+            k = (total - self.total) & 0xFFFF
+            if k > len(recs):
+                self.gaps += k - len(recs)
+            new = recs[len(recs) - min(k, len(recs)):] if k else []
+        self.total = total
+        self.records += [(t, kd, i) for kd, i in new]
+
+    def since(self, t):
+        return [(kd, i) for rt, kd, i in self.records if rt >= t]
+
+
 class Link:
     """One open session for a whole bench step (story 2.7 D16): app seq
     numbering, every frame received recorded (STATUS, EVENT, ACK, NAK), and
@@ -1020,6 +1087,7 @@ class Link:
         self.nak_seq = 0
         self.last_app_write = None
         self.t0 = port.now()
+        self.p2log = P2Log()  # story 2.3: the P2 debug log, from the debug STATUS
 
     def log(self, text):
         self.out("%8.3f  %s" % (self.port.now() - self.t0, text))
@@ -1055,6 +1123,7 @@ class Link:
                 continue
             if ftype == STATUS:
                 f["dbg"] = debug_counters(f["extra"])
+                self.p2log.feed(f["dbg"], self.port.now())
                 self.status = f
                 self.status_t = self.port.now()
                 self.status_count += 1
@@ -1375,18 +1444,20 @@ def cmd_silence(port, args):
     return c.finish()
 
 
-def _bench_build(link):
-    st = link.status or link.next_status(0.5)
-    return bool(st and st["flags"] & STATUS_CONSOLE_READY)
+READY_HINT = ("console_ready is 0: it needs a USB host that completed the P2 handshake. On the bench Mac start "
+              "`python3 firmware/tools/p2_probe.py handshake --hold 120 &` in the same shell line, or plug the "
+              "controller into the console (story 2.3 D15)")
 
 
-def _skip(link):
-    link.out("SKIP: console_ready is 0, flash the bench build (fw-debug-bench)")
-    return link.close(2)
+def _need_ready(link, c, seconds=5.0):
+    """console_ready 1 from a real host within `seconds` (story 2.3 D15: the
+    bench-only fake is gone). False after a FAIL line with the hint."""
+    st = link.next_status(seconds, lambda s: s["flags"] & STATUS_CONSOLE_READY)
+    return c.check(st is not None, "console_ready 1 from a real host" if st is not None else READY_HINT)
 
 
 def cmd_direct(port, args):
-    """H.11 (bench build): the DIRECT app timeout and the DTR edge."""
+    """H.11: the DIRECT app timeout and the DTR edge (needs console_ready 1)."""
     link = Link(port, trace=getattr(args, "trace", None))
     c = Checks(link)
     info = link.hello()
@@ -1394,8 +1465,8 @@ def cmd_direct(port, args):
         return c.finish()
     port.hb_start(_hb_period(args), dtr=True)
     _link_up(link, c)
-    if not _bench_build(link):
-        return _skip(link)
+    if not _need_ready(link, c):
+        return c.finish()
     app_ms = info["app_timeout_ms"]
     ping_s = app_ms / APP_PING_DIVISOR / 1000.0
 
@@ -1474,8 +1545,8 @@ def _queue_piece(link, seconds, n_mid=3):
 
 
 def cmd_playing(port, args):
-    """H.11 (bench build): no app-timeout and no DTR rule in PLAYING; a
-    heartbeat loss in PLAYING."""
+    """H.11: no app-timeout and no DTR rule in PLAYING; a heartbeat loss in
+    PLAYING (needs console_ready 1)."""
     link = Link(port, trace=getattr(args, "trace", None))
     c = Checks(link)
     info = link.hello()
@@ -1483,8 +1554,8 @@ def cmd_playing(port, args):
         return c.finish()
     port.hb_start(_hb_period(args), dtr=True)
     _link_up(link, c)
-    if not _bench_build(link):
-        return _skip(link)
+    if not _need_ready(link, c):
+        return c.finish()
     cap = info["queue_cap"]
     for flip in (False, True):
         what = "DTR flip mid-piece" if flip else "no app frames"
@@ -1608,8 +1679,8 @@ def _breaks(port, args, link):
     if armed:
         port.hb_start(_hb_period(args))
         _link_up(link, c)
-    if args.mode == "playing" and not _bench_build(link):
-        return _skip(link)
+    if args.mode == "playing" and not _need_ready(link, c):
+        return c.finish()
     t_next = [1000]
     round_fail = 0
     for rnd in range(1, args.rounds + 1):
@@ -1700,6 +1771,157 @@ def _breaks(port, args, link):
     return c.finish()
 
 
+# ------------------------------------------------------------ story 2.3
+P2_WAIT_S = 120.0      # p2check: time for the owner to plug the controller in
+P2_STEP_S = 90.0       # p2watch: time per owner action
+P2_STABLE_S = 5.0      # p2check: stable polling before the period is read
+P2_SETTLE_S = 1.0      # p2watch: the state must hold this long (2.7 D42)
+P2_WAKE_READY_S = 30.0  # p2watch: ready again within this after the controller is back
+P2_PERIOD_RANGE_US = (500, 20000)
+STATUS_PERIOD_S = 0.050  # docs/link-protocol.md: a STATUS every 50 ms
+EVT_USB_SUSPENDED = 0x05
+HID_PROFILE_P2 = 2
+
+
+def _ready(st):
+    return bool(st and st["flags"] & STATUS_CONSOLE_READY)
+
+
+def _p2_sequence(recs):
+    return ", ".join(p2_log_str(k, i) for k, i in recs) if recs else "(none)"
+
+
+def cmd_p2check(port, args):
+    """H.15: the console enumerates the controller and completes the P2
+    handshake; prints the console's real sequence and the measured period."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    if getattr(args, "hb_enabled", True):
+        port.hb_start(_hb_period(args))
+    link.out(">>> PLUG THE CONTROLLER INTO THE SWITCH TOP USB-C PORT (Pro Controller Wired Communication ON). "
+             "Waiting up to %.0f s." % args.wait_s)
+    t0 = port.now()
+    info = link.hello(timeout=args.wait_s)  # HELLO every 100 ms while the controller boots
+    if not c.check(info is not None, "INFO received (the controller is powered and the link answers)"):
+        return c.finish()
+    c.check(info["hid_profile"] == HID_PROFILE_P2, "INFO hid_profile %d (want 2, P2)" % info["hid_profile"])
+    left = max(0.5, args.wait_s - (port.now() - t0))
+    st = link.next_status(left, _ready)
+    if not c.check(st is not None, "console_ready 1 within %.0f s of the prompt%s" % (
+            args.wait_s, (" (%.1f s)" % (link.status_t - t0)) if st else "")):
+        c.note("P2 log so far: %s" % _p2_sequence(link.p2log.since(t0)))
+        return c.finish()
+    base = link.status
+    link.wait(P2_STABLE_S)
+    st = link.next_status(0.5)
+    c.check(st is not None and _ready(st) and st["abort_count"] == base["abort_count"],
+            "%.0f s of stable polling: console_ready stayed 1, abort_count unchanged (%s)" % (
+                P2_STABLE_S, _status_str(st)))
+    info = link.hello()
+    period = info["report_period_us"] if info else 0
+    lo, hi = P2_PERIOD_RANGE_US
+    c.check(info is not None and lo <= period <= hi, "INFO report_period_us %d (want %d..%d)" % (period, lo, hi))
+    seq = link.p2log.since(t0)
+    c.check(any(k == 0x06 for k, _ in seq), "the P2 log shows the handshake (HANDSHAKE record)")
+    c.note("console sequence (%d records%s): %s" % (len(seq), (", %d lost" % link.p2log.gaps)
+                                                    if link.p2log.gaps else "", _p2_sequence(seq)))
+    refused = [i for k, i in seq if k == 0x04]
+    if refused:
+        c.note("refused by the profile (C7): %s" % " ".join("%02x" % i for i in refused))
+    link.out("H.15 median IN interval: %d us (INFO.report_period_us)" % period)
+    c.check(link.nak_version == 0, "no NAK VERSION")
+    return c.finish()
+
+
+def cmd_p2watch(port, args):
+    """H.16: sleep, wake, Wired Communication off and on (optional undock and
+    dock); one prompt per action, each transition checked over the link."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    if getattr(args, "hb_enabled", True):
+        port.hb_start(_hb_period(args))
+    if not c.check(link.hello() is not None, "INFO received"):
+        return c.finish()
+    if not c.check(link.next_status(1.0, _ready) is not None,
+                   "console_ready 1 at the start (run p2check first: the controller in the console's top port)"):
+        return c.finish()
+    steps = [("down", "sleep", "PUT THE CONSOLE TO SLEEP (press its power button once)"),
+             ("up", "wake", "WAKE THE CONSOLE (power button; press A on a controller if it asks)"),
+             ("off", "wired off",
+              "SET 'Pro Controller Wired Communication' OFF (System Settings > Controllers and Accessories)"),
+             ("up", "wired on", "SET 'Pro Controller Wired Communication' back ON")]
+    if args.dock:
+        steps += [("down", "undock", "UNDOCK THE CONSOLE (lift it out of the dock)"),
+                  ("up", "dock", "DOCK THE CONSOLE AGAIN")]
+    for kind, label, prompt in steps:
+        base = link.status
+        aborts0 = base["abort_count"] if base else 0
+        link.out(">>> %s. Waiting up to %.0f s." % (prompt, args.step_s))
+        t0 = port.now()
+        n_ev = len(link.events)
+        if kind in ("down", "off"):
+            last_ready = [link.status_t]
+            silent = []
+
+            def dropped():
+                if _ready(link.status):
+                    last_ready[0] = link.status_t
+                    return False
+                return link.status_t is not None and link.status_t > t0
+
+            def gone():
+                return link.status_t is not None and port.now() - max(link.status_t, t0) > P2_SETTLE_S
+
+            got = link.wait(args.step_s, lambda: dropped() or (gone() and not silent.append(1)))
+            if not c.check(got, "%s: console_ready 0 or STATUS stopped" % label):
+                return c.finish()
+            if silent:
+                c.note("STATUS stopped: the port lost power (the controller is off until the console wakes)")
+            else:
+                st = link.status
+                ev = any(code == EVT_USB_SUSPENDED for _, code in link.events[n_ev:])
+                c.note("console_ready 0 (STATUS %.0f ms after the last one with ready 1), last_event %d%s, "
+                       "abort_count %d -> %d" % ((link.status_t - last_ready[0]) * 1000.0, st["last_event"],
+                                                 ", EVENT USB_SUSPENDED" if ev else "", aborts0, st["abort_count"]))
+                c.check(((st["abort_count"] - aborts0) & 0xFF) <= 1, "at most one abort for one USB-down event")
+                if kind == "off":
+                    c.check(link.status_t - last_ready[0] <= 0.150 + STATUS_PERIOD_S,
+                            "ready fell within one STATUS period of 150 ms (%.0f ms between STATUS frames)" % (
+                                (link.status_t - last_ready[0]) * 1000.0))
+        else:
+            silent_before = link.status_t is None or port.now() - link.status_t > P2_SETTLE_S
+
+            def ready_again():
+                return _ready(link.status) and link.status_t > t0
+
+            got = link.wait(args.step_s, ready_again)
+            if not c.check(got, "%s: console_ready 1 again within %.0f s" % (label, args.step_s)):
+                c.note("P2 log of this step: %s" % _p2_sequence(link.p2log.since(t0)))
+                return c.finish()
+            # From the console's first request of this step (the first P2 log
+            # record), else from the first STATUS after a power cut, else from
+            # the prompt: the human's reaction time is not counted when the
+            # controller tells us when the console came back.
+            recs = [rt for rt, _, _ in link.p2log.records if rt > t0]
+            ref, what = (recs[0], "the console's first request") if recs else (t0, "the prompt")
+            if silent_before and not recs:
+                what = "the prompt (STATUS had stopped)"
+            dt = link.status_t - ref
+            c.check(dt <= P2_WAKE_READY_S, "%s: ready %.1f s after %s (want <= %.0f s)" % (
+                label, dt, what, P2_WAKE_READY_S))
+            seq = link.p2log.since(t0)
+            kinds = [k for k, _ in seq]
+            if kind == "up" and any(k == 0x07 for k in kinds):
+                first = kinds.index(0x07)
+                c.check(0x06 in kinds[first:], "the P2 log shows a restart, then a new handshake")
+            c.note("P2 log of this step: %s" % _p2_sequence(seq))
+            link.hello()  # a rebooted controller needs the session again
+        link.wait(P2_SETTLE_S)
+    c.check(link.nak_version <= 1, "no unexpected NAK VERSION")
+    return c.finish()
+
+
+
 def cmd_hello(port, args):
     info = do_hello(port, timeout=args.seconds)
     if info is None:
@@ -1767,7 +1989,7 @@ def positive_int_arg(text):
 
 
 # Story 2.7 subcommands: the heartbeat is on by default.
-HEARTBEAT_COMMANDS = ("linkup", "silence", "direct", "playing", "breaks")
+HEARTBEAT_COMMANDS = ("linkup", "silence", "direct", "playing", "breaks", "p2check", "p2watch")
 
 
 def main(argv=None):
@@ -1819,21 +2041,29 @@ def main(argv=None):
     p.add_argument("--expect-fresh", action="store_true",
                    help="require abort_count 0 and last_event NONE before the first HELLO (just power-cycled)")
     p.add_argument("--expect-ready", choices=("auto", "no", "yes"), default="auto",
-                   help="console_ready of the build: no (fw-debug), yes (fw-debug-bench), auto (from STATUS)")
+                   help="console_ready: no (no USB host), yes (a host completed the handshake: the console or "
+                        "p2_probe.py handshake --hold), auto (from STATUS)")
     p = sub.add_parser("silence", help="H.9: stop the heartbeat, EVENT LINK_LOST in 80..120 ms, recovery")
     p.add_argument("--expect-ready", choices=("auto", "no", "yes"), default="auto")
-    p = sub.add_parser("direct", help="H.11 (bench build): DIRECT app timeout and DTR edge")
+    p = sub.add_parser("direct", help="H.11: DIRECT app timeout and DTR edge (needs console_ready 1)")
     p.add_argument("--keepalive-seconds", type=seconds_arg, default=5.0)
-    p = sub.add_parser("playing", help="H.11 (bench build): no app timeout or DTR rule in PLAYING; loss in PLAYING")
+    p = sub.add_parser("playing", help="H.11: no app timeout or DTR rule in PLAYING; loss in PLAYING "
+                                       "(needs console_ready 1)")
     p.add_argument("--seconds", type=seconds_arg, default=3.0, help="piece length (default %(default)s)")
     p = sub.add_parser("breaks", help="H.12: unplug / replug the bridge-TX wire, TX release, session continues")
     p.add_argument("--rounds", type=positive_int_arg, default=10)
     p.add_argument("--mode", choices=("idle", "playing"), default="idle",
-                   help="playing (bench build): a 60 s piece is playing at each unplug")
+                   help="playing (needs console_ready 1): a 60 s piece is playing at each unplug")
     p.add_argument("--no-heartbeat", action="store_true", help="the unarmed case: no heartbeat at all")
     p.add_argument("--meter-seconds", type=seconds_arg, default=15.0,
                    help="round 1: time to read the multimeter on GP0 (default %(default)s)")
     p.add_argument("--count", type=positive_int_arg, default=5, help="events sent after each replug")
+    p = sub.add_parser("p2check", help="H.15: console enumerates and handshakes; sequence and polling period")
+    p.add_argument("--wait-s", type=seconds_arg, default=P2_WAIT_S,
+                   help="time to plug the controller into the console (default %(default)s)")
+    p = sub.add_parser("p2watch", help="H.16: sleep, wake, Wired Communication off and on, re-enumeration")
+    p.add_argument("--step-s", type=seconds_arg, default=P2_STEP_S, help="time per action (default %(default)s)")
+    p.add_argument("--dock", action="store_true", help="also undock and dock")
     args = ap.parse_args(argv)
     if args.cmd in HEARTBEAT_COMMANDS:
         args.hb_enabled = not args.no_heartbeat_global
@@ -1847,7 +2077,7 @@ def main(argv=None):
     handler = {"hello": cmd_hello, "watch": cmd_watch, "fill": cmd_fill, "soak": cmd_soak,
                "noise": cmd_noise, "try": cmd_try, "loopback": cmd_loopback, "linkup": cmd_linkup,
                "silence": cmd_silence, "direct": cmd_direct, "playing": cmd_playing,
-               "breaks": cmd_breaks}[args.cmd]
+               "breaks": cmd_breaks, "p2check": cmd_p2check, "p2watch": cmd_p2watch}[args.cmd]
     rc = handler(port, args)
     if port.hb_running() and args.cmd not in HEARTBEAT_COMMANDS:
         print(port.hb_stats())

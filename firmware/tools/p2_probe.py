@@ -1,0 +1,536 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""p2_probe: the Mac-side bench checks of the P2 profile (story 2.3, D18).
+
+The controller Zero plugged into the Mac is a USB device; this tool is the
+host. It is the one independent implementation of the host side of the P2
+conversation, written from the public documents cited in
+docs/usb-controller-emulation.md ("P2 wire protocol": dekuNukem's
+Nintendo_Switch_Reverse_Engineering notes, Chromium's nintendo_controller,
+SDL's hidapi Switch driver, the mzyy94 and tmk hardware dumps), not from
+the firmware's C code. ctest checks it against the real ocb_p2 through a
+shared module (tests/test_p2_probe.py, F.32).
+
+Subcommands (each prints one line per check, then PASS or FAIL <reason>;
+exit 0 or 1, 2 for a usage error):
+
+  enum [--wait-s 90]      H.13: waits for 057E:2009 in system_profiler (then
+                          ioreg), absorbs plug bounces (3 consecutive 1 s
+                          polls), checks the identity, the strings,
+                          bcdDevice 2.10 and, when ioreg exposes it, the
+                          203-byte HID report descriptor (else one SKIP
+                          line). macOS tools only, standard library only.
+  handshake [--seconds 10] [--hold N]
+                          H.14: opens the HID device (hidapi:
+                          pip install hidapi), plays the host sequence of
+                          the docs (80 01, 80 02, 80 03, 80 02, 80 04, the
+                          subcommands, the SPI reads, a refused SPI write,
+                          an unlisted id), each request resent after 300 ms
+                          up to 3 times, checks every reply byte for byte,
+                          then reads the 0x30 stream for --seconds and
+                          prints the host-side median interval. --hold N
+                          keeps reading N more seconds, so the controller's
+                          console_ready stays 1 for another tool (H.11).
+
+No serial port and no device path is ever hard-coded: the HID device is
+found by VID:PID.
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import time
+
+# ----------------------------------------------------------------- constants
+# docs/usb-controller-emulation.md "P2 wire protocol" (S7, S8 dumps).
+VID = 0x057E
+PID = 0x2009
+BCD_DEVICE = 0x0210
+MANUFACTURER = "Nintendo Co., Ltd."
+PRODUCT = "Pro Controller"
+SERIAL = "000000000001"
+REPORT_LEN = 64
+
+# S7: usbhid-dump of the report descriptor of a real wired Pro Controller.
+REPORT_DESC = bytes.fromhex(
+    "05 01 15 00 09 04 A1 01 85 30 05 01 05 09 19 01 "
+    "29 0A 15 00 25 01 75 01 95 0A 55 00 65 00 81 02 "
+    "05 09 19 0B 29 0E 15 00 25 01 75 01 95 04 81 02 "
+    "75 01 95 02 81 03 0B 01 00 01 00 A1 00 0B 30 00 "
+    "01 00 0B 31 00 01 00 0B 32 00 01 00 0B 35 00 01 "
+    "00 15 00 27 FF FF 00 00 75 10 95 04 81 02 C0 0B "
+    "39 00 01 00 15 00 25 07 35 00 46 3B 01 65 14 75 "
+    "04 95 01 81 02 05 09 19 0F 29 12 15 00 25 01 75 "
+    "01 95 04 81 02 75 08 95 34 81 03 06 00 FF 85 21 "
+    "09 01 75 08 95 3F 81 03 85 81 09 02 75 08 95 3F "
+    "81 03 85 01 09 03 75 08 95 3F 91 83 85 10 09 04 "
+    "75 08 95 3F 91 83 85 80 09 05 75 08 95 3F 91 83 "
+    "85 82 09 06 75 08 95 3F 91 83 C0")
+
+# Header bytes [2..12] of a 0x21 or 0x30 report with nothing pressed (S2 for
+# the layout, S7's capture for 91 / charging-grip bit / 0A).
+NEUTRAL_HEADER = bytes([0x91, 0x00, 0x80, 0x00, 0x00, 0x08, 0x80, 0x00, 0x08, 0x80, 0x0A])
+NEUTRAL_RUMBLE = bytes([0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40])  # S2
+
+RESEND_S = 0.300
+RESENDS = 3
+OPEN_RETRY_S = 30.0
+
+# SPI regions read by the probe and their expected bytes (S4 layout; values
+# S4, S9; docs "SPI regions served").
+SPI_EXPECT = {
+    (0x6020, 24): bytes([0, 0, 0, 0, 0, 0, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40,
+                         0, 0, 0, 0, 0, 0, 0x3B, 0x34, 0x3B, 0x34, 0x3B, 0x34]),
+    (0x6080, 6): bytes([0x50, 0xFD, 0x00, 0x00, 0xC6, 0x0F]),
+    (0x603D, 18): bytes([0x00, 0x07, 0x70, 0x00, 0x08, 0x80, 0x00, 0x07, 0x70,
+                         0x00, 0x08, 0x80, 0x00, 0x07, 0x70, 0x00, 0x07, 0x70]),
+    (0x6086, 18): bytes([0x19, 0xD0, 0x4C, 0xAE, 0x40, 0xE1, 0xEE, 0xE2, 0x2E,
+                         0xEE, 0xE2, 0x2E, 0xB4, 0x4A, 0xAB, 0x96, 0x64, 0x49]),
+    (0x6000, 16): b"000000000001" + b"\xff" * 4,
+    (0x8010, 22): b"\xff" * 22,
+}
+
+
+def pad(b):
+    b = bytes(b)
+    return b + bytes(REPORT_LEN - len(b))
+
+
+# ------------------------------------------------------------------- enum
+def _hex_int(v):
+    """'0x057e', '0x057e  (Nintendo Co., Ltd.)', 1406, '1406' -> int or None."""
+    if isinstance(v, int):
+        return v
+    if not isinstance(v, str):
+        return None
+    m = re.match(r"\s*(0x[0-9a-fA-F]+|[0-9]+)", v)
+    if not m:
+        return None
+    return int(m.group(1), 0)
+
+
+def _bcd(v):
+    """'2.10', '0x0210', 528 -> 0x0210 (or None)."""
+    if isinstance(v, int):
+        return v
+    if not isinstance(v, str):
+        return None
+    m = re.match(r"\s*(\d+)\.(\d\d)\s*$", v)
+    if m:
+        return (int(m.group(1)) << 8) | int(m.group(2), 16)
+    return _hex_int(v)
+
+
+def _norm(key):
+    return re.sub(r"[^a-z]", "", key.lower())
+
+
+def profiler_devices(doc):
+    """Every USB device in a system_profiler JSON document (SPUSBHostDataType
+    or the older SPUSBDataType), found by a recursive walk over `_items`.
+    Keys are matched loosely (lower case, letters only), because their
+    spelling differs between macOS versions: vendor id, product id,
+    manufacturer / vendor name, product name or _name, serial, bcd / version."""
+    out = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            dev = {}
+            for k, v in node.items():
+                n = _norm(k)
+                if n.endswith("vendorid"):
+                    dev["vid"] = _hex_int(v)
+                elif n.endswith("productid"):
+                    dev["pid"] = _hex_int(v)
+                elif n in ("manufacturer", "usbdevicekeymanufacturername", "usbdevicekeyvendorname", "vendorname"):
+                    dev["manufacturer"] = v
+                elif n in ("usbdevicekeyproductname", "productname"):
+                    dev["product"] = v
+                elif n == "name" and "product" not in dev:
+                    dev["name"] = v
+                elif "serial" in n:
+                    dev["serial"] = v
+                elif n in ("bcddevice", "usbdevicekeybcddevice", "usbdevicekeyproductversion", "productversion"):
+                    dev["bcd"] = _bcd(v)
+            if dev.get("vid") is not None:
+                if "product" not in dev and "name" in dev:
+                    dev["product"] = dev["name"]
+                dev.pop("name", None)
+                out.append(dev)
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(doc)
+    return out
+
+
+IOREG_PROP = re.compile(r'"([^"]+)" = (.*?)\s*$')
+
+
+def ioreg_blocks(text):
+    """Property blocks of `ioreg -l -w0` output, as dicts of raw strings."""
+    blocks = []
+    cur = None
+    for line in text.splitlines():
+        if "+-o " in line:
+            cur = {}
+            blocks.append(cur)
+            continue
+        m = IOREG_PROP.search(line)
+        if m and cur is not None and not line.strip().startswith("+-o"):
+            cur[m.group(1)] = m.group(2)
+    return blocks
+
+
+def _ioreg_str(v):
+    if v is None:
+        return None
+    m = re.match(r'^"(.*)"$', v)
+    return m.group(1) if m else v
+
+
+def ioreg_devices(text):
+    """USB devices of `ioreg -p IOUSB -l -w0` (keys idVendor, idProduct,
+    "USB Vendor Name", "USB Product Name", "USB Serial Number", bcdDevice)."""
+    out = []
+    for b in ioreg_blocks(text):
+        if "idVendor" not in b:
+            continue
+        out.append({"vid": _hex_int(b.get("idVendor")), "pid": _hex_int(b.get("idProduct")),
+                    "manufacturer": _ioreg_str(b.get("USB Vendor Name")),
+                    "product": _ioreg_str(b.get("USB Product Name")),
+                    "serial": _ioreg_str(b.get("USB Serial Number") or b.get("kUSBSerialNumberString")),
+                    "bcd": _hex_int(b.get("bcdDevice"))})
+    return out
+
+
+def ioreg_report_descriptor(text):
+    """The ReportDescriptor of the HID node with our VendorID / ProductID in
+    `ioreg -r -c IOHIDDevice -l -w0`, or None if macOS does not expose it."""
+    for b in ioreg_blocks(text):
+        if _hex_int(b.get("VendorID")) == VID and _hex_int(b.get("ProductID")) == PID and "ReportDescriptor" in b:
+            m = re.match(r"^<([0-9a-fA-F]*)>$", b["ReportDescriptor"])
+            if m:
+                return bytes.fromhex(m.group(1))
+    return None
+
+
+class MacUsb:
+    """The macOS tools enum uses (replaced by fixtures in the self-test)."""
+
+    def run(self, argv):
+        try:
+            return subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30,
+                                  check=False).stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def profiler(self):
+        for dt in ("SPUSBHostDataType", "SPUSBDataType"):
+            text = self.run(["system_profiler", dt, "-json"])
+            try:
+                devs = profiler_devices(json.loads(text))
+            except ValueError:
+                continue
+            if devs:
+                return devs
+        return []
+
+    def ioreg_usb(self):
+        return ioreg_devices(self.run(["ioreg", "-p", "IOUSB", "-l", "-w0"]))
+
+    def ioreg_hid(self):
+        return self.run(["ioreg", "-r", "-c", "IOHIDDevice", "-l", "-w0"])
+
+
+def _ours(devs):
+    return [d for d in devs if d.get("vid") == VID and d.get("pid") == PID]
+
+
+def _present(usb):
+    return bool(_ours(usb.profiler()) or _ours(usb.ioreg_usb()))
+
+
+def cmd_enum(args, usb=None, out=print):
+    usb = usb or MacUsb()
+    fails = []
+
+    def check(ok, text):
+        out("%s %s" % ("ok  " if ok else "FAIL", text))
+        if not ok:
+            fails.append(text)
+        return ok
+
+    out(">>> PLUG THE CONTROLLER ZERO INTO THE MAC (Apple USB-C cable). Waiting up to %d s." % args.wait_s)
+    t0 = time.monotonic()
+    restarts = 0
+    stable = 0
+    while True:
+        if time.monotonic() - t0 > args.wait_s:
+            check(False, "057E:2009 seen stable for 3 s within %d s" % args.wait_s)
+            out("FAIL %s" % fails[0])
+            return 1
+        stable = stable + 1 if _present(usb) else 0
+        if stable >= 3:
+            out("ok   057E:2009 present in 3 consecutive 1 s polls (%.0f s after the prompt)" % (
+                time.monotonic() - t0))
+            # A disappearance during the checks restarts the stable window once.
+            devs = _ours(usb.ioreg_usb()) or _ours(usb.profiler())
+            if not devs:
+                if restarts == 0:
+                    restarts += 1
+                    stable = 0
+                    out("     the device vanished during the checks (bounce): waiting again")
+                    continue
+            break
+        time.sleep(1.0)
+
+    ioreg = _ours(usb.ioreg_usb())
+    prof = _ours(usb.profiler())
+    src = "ioreg" if ioreg else "system_profiler"
+    dev = (ioreg or prof)[0] if (ioreg or prof) else {}
+    out("     fields from %s: %s" % (src, dev))
+    check(dev.get("vid") == VID and dev.get("pid") == PID, "VID:PID %04X:%04X" % (dev.get("vid") or 0,
+                                                                                  dev.get("pid") or 0))
+    check(dev.get("manufacturer") == MANUFACTURER, "manufacturer %r (want %r)" % (dev.get("manufacturer"),
+                                                                                  MANUFACTURER))
+    check(dev.get("product") == PRODUCT, "product %r (want %r)" % (dev.get("product"), PRODUCT))
+    check(dev.get("serial") == SERIAL, "serial %r (want %r)" % (dev.get("serial"), SERIAL))
+    check(dev.get("bcd") == BCD_DEVICE, "bcdDevice %s (want 2.10)" % (
+        ("%x.%02x" % (dev["bcd"] >> 8, dev["bcd"] & 0xFF)) if dev.get("bcd") is not None else None))
+    rd = ioreg_report_descriptor(usb.ioreg_hid())
+    if rd is None:
+        out("SKIP HID report descriptor: ioreg does not expose it on this Mac")
+    else:
+        check(rd == REPORT_DESC, "HID report descriptor %d bytes, equal to the 203 expected" % len(rd))
+    if fails:
+        out("FAIL %s" % fails[0])
+        return 1
+    out("PASS")
+    return 0
+
+
+# -------------------------------------------------------------- handshake
+class HidTransport:
+    """hidapi (pip install hidapi, module `hid`), imported only here."""
+
+    def __init__(self):
+        import hid  # noqa: PLC0415 (bench-machine dependency, as pyserial)
+        self.dev = hid.device()
+        self.dev.open(VID, PID)
+        self.dev.set_nonblocking(False)
+
+    def write(self, data):
+        self.dev.write(list(pad(data)))
+
+    def read(self, timeout_ms):
+        r = self.dev.read(REPORT_LEN, int(timeout_ms))
+        return bytes(r) if r else None
+
+
+def open_hid(out):
+    """Retries for up to 30 s; the Input Monitoring hint once on failure."""
+    t0 = time.monotonic()
+    hinted = False
+    while True:
+        try:
+            return HidTransport()
+        except ImportError:
+            out("FAIL hidapi is not installed: pip install hidapi")
+            return None
+        except (IOError, OSError, ValueError) as e:
+            if not hinted:
+                out("     cannot open 057E:2009 (%s); if macOS asks, allow Input Monitoring for the Terminal "
+                    "(System Settings > Privacy & Security > Input Monitoring) and rerun. Retrying for %d s."
+                    % (e, OPEN_RETRY_S))
+                hinted = True
+            if time.monotonic() - t0 > OPEN_RETRY_S:
+                out("FAIL cannot open the HID device 057E:2009")
+                return None
+            time.sleep(1.0)
+
+
+def usb_cmd(cmd):
+    return bytes([0x80, cmd])
+
+
+class Host:
+    """The host side of the documents' sequence on one transport."""
+
+    def __init__(self, dev, out):
+        self.dev = dev
+        self.out = out
+        self.counter = 0
+        self.unexpected = []
+        self.reports = []  # (time, bytes) of 0x30 reports seen
+        self.fails = []
+
+    def check(self, ok, text):
+        self.out("%s %s" % ("ok  " if ok else "FAIL", text))
+        if not ok:
+            self.fails.append(text)
+        return ok
+
+    def subcmd(self, sc, args=b""):
+        b = bytes([0x01, self.counter & 0x0F]) + NEUTRAL_RUMBLE + bytes([sc]) + bytes(args)
+        self.counter += 1
+        return b
+
+    def _take(self, r, match):
+        if r[0] == 0x30:
+            self.reports.append((time.monotonic(), r))
+            return False
+        if match(r):
+            return True
+        self.unexpected.append(r[:16].hex())
+        return False
+
+    def request(self, data, match):
+        """Sends `data`, waits 300 ms for a reply that `match`es, resends up
+        to 3 times. Returns the reply or None."""
+        for _ in range(1 + RESENDS):
+            self.dev.write(data)
+            end = time.monotonic() + RESEND_S
+            while time.monotonic() < end:
+                r = self.dev.read(max(1, int((end - time.monotonic()) * 1000)))
+                if r and self._take(r, match):
+                    return r
+        return None
+
+    def usb(self, cmd, want):
+        r = self.request(usb_cmd(cmd), lambda r: r[0] == 0x81 and r[1] == cmd)
+        self.check(r is not None and r == pad(want), "80 %02x -> %s" % (
+            cmd, r[:len(want) + 2].hex(" ") if r else "no reply"))
+        return r
+
+    def sub(self, sc, args, ack, data, what):
+        r = self.request(self.subcmd(sc, args), lambda r: r[0] == 0x21 and r[14] == sc)
+        if r is None:
+            return self.check(False, "%s: no reply" % what)
+        want = bytes([0x21, r[1]]) + NEUTRAL_HEADER + bytes([ack, sc]) + bytes(data)
+        return self.check(r == pad(want), "%s -> %s" % (what, r[13:15 + len(data)].hex(" ")))
+
+
+def spi_args(addr, n):
+    return bytes([addr & 0xFF, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF, (addr >> 24) & 0xFF, n])
+
+
+def median(xs):
+    s = sorted(xs)
+    return s[(len(s) - 1) // 2] if s else 0
+
+
+def run_handshake(dev, args, out=print):
+    h = Host(dev, out)
+    # 1-4: the USB commands (S1, S5, S6).
+    r = h.request(usb_cmd(0x01), lambda r: r[0] == 0x81 and r[1] == 0x01)
+    h.check(r is not None and r[2] == 0x00 and r[3] == 0x03 and r[10:] == bytes(REPORT_LEN - 10),
+            "80 01 -> 81 01 00 03 + MAC %s" % (r[4:10][::-1].hex(":") if r else "no reply"))
+    if r is not None:
+        mac = r[4:10][::-1]
+        h.check(mac[0] & 0x03 == 0x02, "MAC locally administered, unicast (%s)" % mac.hex(":"))
+    else:
+        mac = bytes(6)
+    h.usb(0x02, [0x81, 0x02])
+    h.usb(0x03, [0x81, 0x03])
+    h.usb(0x02, [0x81, 0x02])
+    # 5: 80 04, no reply, then the 0x30 stream within 1 s.
+    n0 = len(h.reports)
+    dev.write(usb_cmd(0x04))
+    end = time.monotonic() + 1.0
+    while time.monotonic() < end and len(h.reports) == n0:
+        rr = dev.read(50)
+        if rr:
+            h._take(rr, lambda _r: False)
+    h.check(len(h.reports) > n0, "80 04 -> 0x30 reports begin within 1 s")
+    # 6: device info (S3): fw 04 00, type 03, 02, MAC, 01, colour 00.
+    h.sub(0x02, b"", 0x82, bytes([0x04, 0x00, 0x03, 0x02]) + mac + bytes([0x01, 0x00]), "02 device info")
+    # 7: SPI reads (S5, S6 addresses).
+    for (addr, n), data in SPI_EXPECT.items():
+        h.sub(0x10, spi_args(addr, n), 0x90, spi_args(addr, n) + data, "10 SPI read 0x%04x (%d)" % (addr, n))
+    # 8: settings.
+    for sc, a in ((0x30, b"\x01"), (0x40, b"\x00"), (0x41, b"\x03\x00\x00\x01"), (0x48, b"\x01"), (0x03, b"\x30")):
+        h.sub(sc, a, 0x80, b"", "%02x ack" % sc)
+    # 9: refusal probe (C7): an SPI write is write-protected and changes nothing.
+    h.sub(0x10, spi_args(0x8000, 1), 0x90, spi_args(0x8000, 1) + b"\xff", "10 SPI read 0x8000 before the write")
+    h.sub(0x11, spi_args(0x8000, 1) + b"\xaa", 0x80, b"\x01", "11 SPI write 0x8000: write protected")
+    h.sub(0x10, spi_args(0x8000, 1), 0x90, spi_args(0x8000, 1) + b"\xff", "10 SPI read 0x8000 unchanged")
+    # 10: an unlisted id (S3: 80 <id> 03).
+    h.sub(0x7F, b"", 0x80, b"\x03", "7f unlisted -> generic ack")
+    # 11: the stream.
+    start = len(h.reports)
+    end = time.monotonic() + args.seconds + args.hold
+    while time.monotonic() < end:
+        rr = dev.read(100)
+        if rr:
+            h._take(rr, lambda _r: False)
+    reps = h.reports[start:]
+    timer_gaps = sum(1 for a, b in zip(reps, reps[1:]) if (b[1][1] - a[1][1]) & 0xFF != 1)
+    bad = [r for _, r in reps if r[2:13] != NEUTRAL_HEADER or r[13:] != bytes(REPORT_LEN - 13)]
+    iv = [(b[0] - a[0]) * 1e6 for a, b in zip(reps, reps[1:])]
+    h.check(len(reps) > 0 and not bad, "%d 0x30 reports, every one 30 .. 91 00 80 00 neutral sticks 0A, IMU zero"
+            % len(reps))
+    h.check(len(reps) > 1 and timer_gaps <= len(reps) // 100,
+            "timer +1 per report (%d discontinuities in %d)" % (timer_gaps, len(reps)))
+    out("     host-side median interval %.0f us over %d reports (hidapi timing, not the console's)" % (
+        median(iv), len(reps)))
+    if h.unexpected:
+        out("     note: %d replies the probe did not ask for (macOS talking to the controller?): %s" % (
+            len(h.unexpected), ", ".join(h.unexpected[:5])))
+    if h.fails:
+        out("FAIL %s" % h.fails[0])
+        return 1
+    out("PASS")
+    return 0
+
+
+def cmd_handshake(args, out=print):
+    dev = open_hid(out)
+    if dev is None:
+        return 1
+    return run_handshake(dev, args, out)
+
+
+# -------------------------------------------------------------------- cli
+def wait_arg(text):
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not a number: %r" % text) from None
+    if not 1.0 <= v <= 600.0:
+        raise argparse.ArgumentTypeError("must be in 1..600 s, got %s" % text)
+    return v
+
+
+def seconds_arg(text):
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not a number: %r" % text) from None
+    if not 0.0 <= v <= 3600.0:
+        raise argparse.ArgumentTypeError("must be in 0..3600 s, got %s" % text)
+    return v
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("enum", help="H.13: the Mac sees 057E:2009 with the right descriptors")
+    p.add_argument("--wait-s", type=wait_arg, default=90.0, help="time to plug the board (default %(default)s)")
+    p = sub.add_parser("handshake", help="H.14: the host-driven handshake and the 0x30 stream")
+    p.add_argument("--seconds", type=seconds_arg, default=10.0, help="0x30 stream to read (default %(default)s)")
+    p.add_argument("--hold", type=seconds_arg, default=0.0,
+                   help="keep reading N more seconds so console_ready stays 1 (H.11)")
+    args = ap.parse_args(argv)
+    if args.cmd == "enum":
+        return cmd_enum(args)
+    return cmd_handshake(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

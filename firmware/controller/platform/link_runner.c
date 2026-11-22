@@ -2,7 +2,9 @@
  * SPDX-License-Identifier: MIT
  *
  * Controller link runner on core 1 (story 2.6 D3, D14, D15; story 2.7: the
- * link watchdog's timeout and TX release). Glue only:
+ * link watchdog's timeout and TX release; story 2.3: the P2 debug log
+ * drain, the published-state read the USB profile uses, the HID profile
+ * from OCB_PROFILE). Glue only:
  * every protocol rule lives in ocb_link / ocb_core, every register access
  * in ocb_hw/uart_link. Hot functions are placed in RAM with the SDK macro
  * (the pure libraries use OCB_CORE_RAMFUNC, empty for now: Story 2.5).
@@ -16,6 +18,7 @@
 #include "ocb_hw/uart_link.h"
 #include "ocb_link/ocb_link.h"
 #include "ocb_proto/consts.h"
+#include "ocb_proto/state.h"
 #include "ocb_version.h"
 #include "pico/stdlib.h"
 
@@ -25,18 +28,33 @@
 #define OCB_LINK_DEBUG_COUNTERS false
 #endif
 
+/* INFO.hid_profile from the build's profile (story 2.3 D21). */
+#if defined(OCB_PROFILE_P2)
+#define OCB_CTRL_HID_PROFILE OCB_HID_PROFILE_P2
+#else
+#error "OCB_PROFILE: only P2 is built (story 2.3 D21)"
+#endif
+
 /* Static storage (no heap): the queue is 512 x 12 bytes = 6 KB. */
 static ocb_core_event s_queue[OCB_QUEUE_CAP_DEFAULT];
 static ocb_core s_core;
 static ocb_link s_link;
 static ocb_usb_mailbox s_mailbox;
 static bool s_tx_enabled;
+#ifdef OCB_DEBUG_BUILD
+/* Story 2.3 D14: the P2 debug log, core 0 pushes, core 1 drains. Debug
+ * builds only (AC5a: a release ELF has none of it). */
+static ocb_dbglog_ring s_dbglog;
+#endif
 
 typedef char ocb_queue_cap_fits_u16[(OCB_QUEUE_CAP_DEFAULT <= 0xFFFF) ? 1 : -1];
 
 void ocb_ctrl_usb_mailbox_init(void)
 {
     ocb_usb_mailbox_init(&s_mailbox);
+#ifdef OCB_DEBUG_BUILD
+    ocb_dbglog_ring_init(&s_dbglog);
+#endif
 }
 
 void ocb_ctrl_link_init(void)
@@ -46,7 +64,7 @@ void ocb_ctrl_link_init(void)
     cfg.fw_ver[0] = (uint8_t)OCB_VERSION_MAJOR;
     cfg.fw_ver[1] = (uint8_t)OCB_VERSION_MINOR;
     cfg.fw_ver[2] = (uint8_t)OCB_VERSION_PATCH;
-    cfg.hid_profile = (uint8_t)OCB_HID_PROFILE_P2;
+    cfg.hid_profile = (uint8_t)OCB_CTRL_HID_PROFILE;
     cfg.app_timeout_ms = (uint16_t)OCB_APP_TIMEOUT_MS_DEFAULT;
     cfg.link_timeout_ms = (uint16_t)OCB_LINK_TIMEOUT_MS; /* story 2.7: AD-5 default, clamped to 100 */
     cfg.debug_counters = OCB_LINK_DEBUG_COUNTERS;
@@ -54,7 +72,7 @@ void ocb_ctrl_link_init(void)
     ocb_link_init(&s_link, &s_core, &s_mailbox, &cfg, t);
     /* D28: the mailbox was zeroed by main() before core 1 started, so count
      * from zero: anything core 0 posted in between is seen, not lost. */
-    static const ocb_usb_mailbox k_zero_mailbox = {0u, 0u, 0u, 0u, 0u};
+    static const ocb_usb_mailbox k_zero_mailbox = {0u, 0u, 0u, 0u, 0u, 0u};
     ocb_link_ready_rebase(&s_link, &k_zero_mailbox, t);
 
     const uint32_t baud = ocb_uart_link_init();
@@ -95,6 +113,10 @@ void __not_in_flash_func(ocb_ctrl_link_step)(void)
      * SET_STATE drained in this pass sees a fresh `ready` (D28). */
     ocb_link_poll(&s_link, now);
     (void)ocb_link_rx_drain(&s_link, now, (uint32_t)OCB_LINK_RX_RING_CAP);
+#ifdef OCB_DEBUG_BUILD
+    /* Story 2.3 D14: the P2 debug log into the debug STATUS window. */
+    (void)ocb_dbglog_drain(ocb_link_dbglog_window(&s_link), &s_dbglog);
+#endif
 
 #ifdef OCB_DEBUG_BUILD
     hard_assert(get_core_num() == 1u); /* AC1, AD-11: core 1 is the only TX writer */
@@ -124,4 +146,18 @@ const ocb_core *ocb_ctrl_core(void)
 ocb_usb_mailbox *ocb_ctrl_usb_mailbox(void)
 {
     return &s_mailbox;
+}
+
+#ifdef OCB_DEBUG_BUILD
+ocb_dbglog_ring *ocb_ctrl_dbglog(void)
+{
+    return &s_dbglog;
+}
+#endif
+
+/* Story 2.3 D12: NEUTRAL until Story 2.5 replaces this body with the
+ * seqlock reader of core->published (retries 3, then NEUTRAL). */
+void ocb_ctrl_published_read(ocb_state *out)
+{
+    *out = OCB_NEUTRAL;
 }

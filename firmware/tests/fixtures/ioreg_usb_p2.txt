@@ -1,0 +1,26 @@
++-o Root  <class IORegistryEntry, id 0x100000100, retain 32>
+  +-o AppleT8142USBXHCI@00000000  <class AppleT8142USBXHCI, id 0x100000abc, registered, matched, active, busy 0 (0 ms), retain 30>
+    +-o Pro Controller@00100000  <class IOUSBHostDevice, id 0x100000def, registered, matched, active, busy 0 (2 ms), retain 26>
+        {
+          "sessionID" = 1234567890
+          "USBSpeed" = 1
+          "idProduct" = 8201
+          "iManufacturer" = 1
+          "bDeviceClass" = 0
+          "IOPowerManagement" = {"PowerOverrideOn"=Yes,"DevicePowerState"=2,"CurrentPowerState"=2,"CapabilityFlags"=32768,"MaxPowerState"=2,"DriverPowerState"=0}
+          "bcdDevice" = 528
+          "bMaxPacketSize0" = 64
+          "iProduct" = 2
+          "iSerialNumber" = 3
+          "bNumConfigurations" = 1
+          "UsbDeviceSignature" = <7e050920100230303030303030303030303100000003000000>
+          "USB Product Name" = "Pro Controller"
+          "locationID" = 1048576
+          "bDeviceSubClass" = 0
+          "bcdUSB" = 512
+          "USB Serial Number" = "000000000001"
+          "kUSBSerialNumberString" = "000000000001"
+          "USB Vendor Name" = "Nintendo Co., Ltd."
+          "bDeviceProtocol" = 0
+          "idVendor" = 1406
+        }

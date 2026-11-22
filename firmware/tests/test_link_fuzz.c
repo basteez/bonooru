@@ -7,7 +7,9 @@
  * Part 1, fuzz (3 fixed seeds x 200 000 steps): random bytes, valid frames
  * with bit flips, truncations, junk insertions and later duplicates, 0x00
  * runs, 300-byte non-zero runs, error flags, ring overflows, clock jumps,
- * core aborts, USB mailbox events, TX-gate releases, then valid HELLO and
+ * core aborts, USB mailbox events (story 2.3: the measured report period,
+ * and P2 debug log records that lengthen the debug STATUS to its 67-byte
+ * maximum), TX-gate releases, then valid HELLO and
  * traffic again. Invariants after every step: core fields in range (mode,
  * latch implies IDLE and an empty queue, IDLE implies NEUTRAL, queue count
  * <= cap); `expected` changes only when a frame was delivered, and then to
@@ -418,7 +420,21 @@ static void fuzz_run(uint32_t seed)
             }
             ocb_link_queue_event(&h.link, out.event);
         } else if (a < 80u) {
-            switch (rnd_n(6u)) {
+            switch (rnd_n(8u)) {
+            case 6:
+                /* Story 2.3 D13: a measured report period, 0 or any value
+                 * (saturated by the link above 65535). */
+                ocb_usb_mailbox_set_report_period(&h.mb, chance(5000u) ? 0u : (uint32_t)rnd_n(100000u));
+                break;
+            case 7: {
+                /* Story 2.3 D14: P2 debug log records in the STATUS window
+                 * (debug seeds only carry them; the longest STATUS). */
+                const uint32_t k = rnd_n(20u);
+                for (uint32_t r = 0; r < k; r++) {
+                    ocb_dbglog_window_add(ocb_link_dbglog_window(&h.link), (uint16_t)rnd_n(0x10000u));
+                }
+                break;
+            }
             case 0:
                 ocb_usb_mailbox_handshake_done(&h.mb);
                 break;

@@ -1,0 +1,24 @@
+{
+  "SPUSBHostDataType" : [
+    {
+      "_name" : "USB 3.1 Bus",
+      "Driver" : "AppleT8142USBXHCI",
+      "USBKeyHardwareType" : "Built-in",
+      "USBKeyLocationID" : "0x00000000",
+      "_items" : [
+        {
+          "_name" : "Pro Controller",
+          "USBDeviceKeyLinkSpeed" : "12 Mb/s",
+          "USBDeviceKeyLocationID" : "0x00100000",
+          "USBDeviceKeyManufacturerName" : "Nintendo Co., Ltd.",
+          "USBDeviceKeyProductID" : "0x2009",
+          "USBDeviceKeyProductName" : "Pro Controller",
+          "USBDeviceKeyProductVersion" : "2.10",
+          "USBDeviceKeySerialNumber" : "000000000001",
+          "USBDeviceKeyVendorID" : "0x057e",
+          "USBDeviceKeyVendorName" : "Nintendo Co., Ltd."
+        }
+      ]
+    }
+  ]
+}

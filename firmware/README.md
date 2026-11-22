@@ -47,9 +47,13 @@ Presets (`CMakePresets.json`):
 - `fw-release`: release UF2s, `build/fw-release/bridge/bridge.uf2` and
   `build/fw-release/controller/controller.uf2`.
 - `fw-debug`: debug build, defines `OCB_DEBUG_BUILD=1` (debug-only pins and aids).
-- `fw-debug-bench`: the debug build plus `OCB_BENCH_FAKE_READY` (Story 2.7 D17): the controller
-  fakes a ready console for bench tests (test plan H.11). Own build directory; bench only,
-  never shipped, never uploaded by CI.
+- The Story 2.7 bench-only preset `fw-debug-bench` (a faked `console_ready`) was removed by
+  Story 2.3 D15: `console_ready` now comes from the real P2 handshake (the console, or
+  `tools/p2_probe.py handshake --hold N` on the bench Mac).
+- Controller options (cache variables, any firmware preset): `OCB_PROFILE` (the HID profile,
+  `P2` only in v1; `P1` / `P3` stop the configuration, R6) and `OCB_P2_BINTERVAL` (the P2
+  endpoint interval in ms, 1..16, default 1; the real controller's 8 is the comparison build,
+  `cmake --preset fw-debug -DOCB_P2_BINTERVAL=8`).
 - `host-tests`: native compiler, ctest, no pico-sdk (`ctest --preset host-tests` fails
   if no test is found). Built with AddressSanitizer and UBSan (`OCB_SANITIZE=ON`); if a
   sanitizer runtime is missing on a machine, configure with `-DOCB_SANITIZE=OFF`.
@@ -89,6 +93,14 @@ pin number anywhere else in the firmware sources; use the `OCB_PIN_*` names.
 - `tools/check-link-pure.sh`: the same rules for `controller/link/` (`ocb_link`), which may also
   include `ocb_link/*`; its banned identifier list must equal the core gate's (CI step; ctest
   `link_pure_check` with a self-test and the drift check).
+- `tools/check-p2-pure.sh` (Story 2.3): the same rules for `controller/profile_p2/` (`ocb_p2`),
+  with a narrower allow-list (`ocb_proto/*` and `ocb_p2/*`, never `ocb_core` or `ocb_link`) and
+  no TinyUSB (`tusb`, `class/hid`, `tinyusb*`); banned list in step with the core gate (CI step;
+  ctest `p2_pure_check`).
+- `tools/check-release-nolog.sh ELF` (Story 2.3 AC5a): the release controller ELF has no symbol
+  of the P2 debug log (`ocb_dbglog_*`, `ocb_ctrl_dbglog`); `--expect-present` on the debug ELF
+  proves the gate is not vacuous (both run in CI; needs `arm-none-eabi-nm` from
+  `$OCB_ARM_TOOLCHAIN`).
 
 ## Host test names
 
@@ -97,7 +109,9 @@ ctest (`host-tests` preset): `test_pins`, `test_pins_debug`, `test_version`, `pi
 `test_core_mask`, `test_core_edge`, `proto_version_check`, `proto_pure_check`, `core_pure_check`,
 `test_link_rx`, `test_link_session`, `test_link_gbn`, `test_link_nak`, `test_link_tx`,
 `test_link_ready`, `test_link_fuzz`, `test_link_watchdog` (Story 2.7, F.21), `link_pure_check`,
-`link_probe_selftest`, `docs_constants_check` (Story 2.7, F.22).
+`link_probe_selftest`, `docs_constants_check` (Story 2.7, F.22); Story 2.3: `test_p2_desc`,
+`test_p2_handshake`, `test_p2_subcmd`, `test_p2_report`, `test_p2_interval`, `test_p2_fuzz`,
+`p2_pure_check`, `test_link_dbglog`, `p2_probe_selftest` (F.24 to F.32).
 
 ## Bench sender (Story 2.6)
 
@@ -109,15 +123,22 @@ codec is written from `docs/link-protocol.md` and checked against the shared vec
 
 Story 2.7 adds the emulated bridge heartbeat (`--heartbeat`, `--no-heartbeat`,
 `--hb-period-ms`) and one subcommand per bench step, each one process and one session ending
-in `PASS` / `FAIL`: `linkup` (H.8), `silence` (H.9), `direct` and `playing` (H.11, bench
-build), `breaks` (H.12); `--heartbeat soak` is H.10 (global options go before the subcommand). ctest runs them against the real link on a
+in `PASS` / `FAIL`: `linkup` (H.8), `silence` (H.9), `direct` and `playing` (H.11; since
+Story 2.3 they need `console_ready` 1 from a real host), `breaks` (H.12); `--heartbeat soak` is H.10 (global options go before the subcommand). ctest runs them against the real link on a
 fake clock (F.23).
+
+Story 2.3 adds `p2check` (H.15: the console enumerates and handshakes, its sequence and polling
+period) and `p2watch` (H.16: sleep, wake, Wired Communication off and on, `--dock`) to
+`link_probe.py`, and `tools/p2_probe.py`, the Mac-side host of the P2 profile: `enum` (H.13,
+`system_profiler` / `ioreg`, standard library only) and `handshake` (H.14, needs
+`pip install hidapi`; `--hold N` keeps `console_ready` 1 for another tool). ctest: F.32.
 
 ## CI
 
 `.github/workflows/firmware.yml` runs on every push and pull request: it checks the
-submodule pins, installs the pinned tools, builds `fw-release`, `fw-debug` and `fw-debug-bench` (a compile gate), runs the
-host tests and the pin check, and uploads `bridge.uf2` and `controller.uf2` as the
+submodule pins, installs the pinned tools, builds `fw-release` and `fw-debug`, runs the
+host tests, the pin check, the purity gates (proto, core, link, P2) and the release-has-no-debug-log
+gate, and uploads `bridge.uf2` and `controller.uf2` as the
 `firmware-uf2` artifact. UF2s are never committed.
 
 Third-party notices: `THIRD_PARTY_NOTICES.md`.

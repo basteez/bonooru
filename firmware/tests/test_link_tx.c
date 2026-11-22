@@ -6,7 +6,8 @@
  * cadence (first at once, every 50 ms with no drift, after an ACK but
  * never closer than 10 ms, at most one per 10 ms in a prefill burst);
  * STATUS fields in every mode and after every abort cause; reserved flag
- * bits; the 21 debug bytes (v1 prefix and the split of dropped_bytes); slot overflow; a too-small `cap`; the TX gate;
+ * bits; the 21 debug bytes (v1 prefix and the split of dropped_bytes) and,
+ * story 2.3, the empty v3 P2 log window after them (24 bytes); slot overflow; a too-small `cap`; the TX gate;
  * two independent links. Every output is decoded as a controller frame.
  * Story 2.7: STATUS link_ok follows a loss and the recovery, debug byte 2 is
  * watchdog_trips, and a gate closed by the watchdog's release discards
@@ -308,12 +309,13 @@ static void test_debug_counters(void)
     if (!found) {
         return;
     }
-    OCB_CHECK(m.extra_len == 21u, "debug: %zu extra bytes", m.extra_len);
-    if (m.extra_len == 21u) {
+    OCB_CHECK(m.extra_len == 24u, "debug: %zu extra bytes", m.extra_len);
+    if (m.extra_len == 24u) {
         /* By hand: gap 1234 ms, trips 0, dropped 4 + 8 + 300 = 312, tx_dropped
-         * 2, then rx_err 4, overflow 8, overlong 300, FE 2, PE 1, BE 1, OE 1. */
-        const uint8_t want[21] = {0xD2u, 0x04u, 0u,  0x38u, 0x01u, 2u,  0u, 4u, 0u, 8u, 0u,
-                                  0x2Cu, 0x01u, 2u, 0u,    1u,    0u, 1u, 0u, 1u, 0u};
+         * 2, then rx_err 4, overflow 8, overlong 300, FE 2, PE 1, BE 1, OE 1;
+         * story 2.3: an empty P2 log window (total 0, n 0). */
+        const uint8_t want[24] = {0xD2u, 0x04u, 0u,  0x38u, 0x01u, 2u,  0u, 4u, 0u, 8u, 0u,
+                                  0x2Cu, 0x01u, 2u, 0u,    1u,    0u, 1u, 0u, 1u, 0u, 0u, 0u, 0u};
         OCB_CHECK_MEM(m.extra, m.extra_len, want, sizeof want, "debug counters");
     }
     /* Saturation at 65535. */
@@ -321,10 +323,10 @@ static void test_debug_counters(void)
     h.link.cnt.tx_dropped = 70000u;
     h.link.cnt.rx_err_bytes = 80000u;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && m.extra_len == 21u, "debug: second STATUS");
-    if (m.extra_len == 21u) {
-        const uint8_t sat[21] = {0xFFu, 0xFFu, 0u,    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 8u, 0u,
-                                 0x2Cu, 0x01u, 2u,    0u,    1u,    0u,    1u,    0u,    1u,    0u};
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 24u, "debug: second STATUS");
+    if (m.extra_len == 24u) {
+        const uint8_t sat[24] = {0xFFu, 0xFFu, 0u,    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 8u, 0u,
+                                 0x2Cu, 0x01u, 2u,    0u,    1u,    0u,    1u,    0u,    1u,    0u, 0u, 0u, 0u};
         OCB_CHECK_MEM(m.extra, m.extra_len, sat, sizeof sat, "saturated counters");
     }
     /* A HELLO restarts max_app_gap_ms. */
@@ -463,7 +465,7 @@ static void test_watchdog_status(void)
     lh_link_up(&h);
     ocb_msg_status m;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra_len == 21u && m.extra[2] == 0u,
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra_len == 24u && m.extra[2] == 0u,
               "link up: STATUS link_ok 1, watchdog_trips 0");
     /* Loss by silence. */
     h.auto_hb = false;
@@ -482,7 +484,7 @@ static void test_watchdog_status(void)
               ocb_link_counters_get(&h.link)->tx_dropped - dropped);
     lh_open_gate(&h);
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) == 0u && m.extra_len == 21u && m.extra[2] == 1u &&
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) == 0u && m.extra_len == 24u && m.extra[2] == 1u &&
                   m.abort_count == 1u && m.last_event == OCB_EVT_LINK_LOST,
               "after the loss: STATUS link_ok 0, watchdog_trips 1");
     /* Recovery. */

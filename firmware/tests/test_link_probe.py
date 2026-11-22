@@ -16,10 +16,19 @@ F.23 (story 2.7 D16): the one-command bench steps (linkup, silence, direct,
 playing, breaks, --heartbeat soak) run unmodified against the real link
 through the same bridge model, extended with the probe's heartbeat path,
 the TX gate (the controller's bytes stop while it is released; the RX level
-follows the model's "wire plugged" flag), a ready console when the bench
-build is modelled, and a scripted user who unplugs and replugs the wire
-when the probe prints its prompt. Negative controls prove each command can
-fail. The probe's watchdog constants are compared with constants.txt.
+follows the model's "wire plugged" flag), a USB host that completed the P2
+handshake when one is modelled (story 2.3: the console or
+`p2_probe.py handshake --hold`), and a scripted user who unplugs and
+replugs the wire when the probe prints its prompt. Negative controls prove
+each command can fail. The probe's watchdog constants are compared with
+constants.txt.
+F.32, link_probe.py part (story 2.3 D18, D19): the STATUS v3 decoder, and
+`p2check` and `p2watch` unmodified against the real link through the same
+bridge model plus a scripted console (plug, sleep, wake, Wired
+Communication off and on) that posts to the USB mailbox, the measured
+report period and the P2 debug log exactly as the controller's core 0
+does; negative controls (no console_ready within the budget, a 100 us
+interval, a missing handshake record).
 """
 
 import argparse
@@ -166,6 +175,27 @@ class Vectors(unittest.TestCase):
         self.assertEqual((v2["rx_fe"], v2["rx_pe"], v2["rx_be"], v2["rx_oe"]), (2, 1, 1, 1))
         self.assertEqual(v2["rx_err_bytes"] + v2["rx_overflow_bytes"] + v2["overlong_bytes"], v2["dropped_bytes"])
         self.assertIn("rx_overflow_bytes=8", probe.drop_split(v2))
+        # Story 2.3 D14: v3, the P2 log window after the 21 bytes.
+        v3 = probe.debug_counters(bytes([0xD2, 0x04, 0x00, 0x38, 0x01, 0x02, 0x00, 4, 0, 8, 0, 0x2C, 0x01,
+                                         2, 0, 1, 0, 1, 0, 1, 0, 0x2A, 0x01, 3, 0x07, 0x01, 0x01, 0x04,
+                                         0x06, 0x00]))
+        self.assertEqual(v3["p2_log_total"], 298)
+        self.assertEqual(v3["p2_log"], [(0x07, 0x01), (0x01, 0x04), (0x06, 0x00)])
+        self.assertEqual([probe.p2_log_str(k, i) for k, i in v3["p2_log"]],
+                         ["restart mount", "usb 80 04", "HANDSHAKE"])
+        empty = probe.debug_counters(bytes(21) + bytes([0, 0, 0]))
+        self.assertEqual((empty["p2_log_total"], empty["p2_log"]), (0, []))
+
+    def test_p2log_tracker(self):
+        """Every record once, in order; a jump beyond the window is a gap."""
+        log = probe.P2Log()
+        log.feed({"p2_log_total": 2, "p2_log": [(1, 1), (1, 2)]}, 0.0)
+        log.feed({"p2_log_total": 2, "p2_log": [(1, 1), (1, 2)]}, 0.05)
+        log.feed({"p2_log_total": 4, "p2_log": [(1, 1), (1, 2), (1, 3), (1, 4)]}, 0.10)
+        log.feed({"p2_log_total": 24, "p2_log": [(2, i) for i in range(4, 20)]}, 0.15)
+        self.assertEqual([i for _, _, i in log.records][:4], [1, 2, 3, 4])
+        self.assertEqual(len(log.records), 4 + 16)
+        self.assertEqual(log.gaps, 4)
 
     def test_splitter_resync(self):
         sp = probe.Splitter("APP")
@@ -411,7 +441,7 @@ class Bridge2wiCCPort:
 
     def __init__(self, lib, drain_share=1.0, usb_ready=False, boot_break=False):
         self.lib = lib
-        self.usb_ready = usb_ready  # the bench build of story 2.7 D17
+        self.usb_ready = usb_ready  # a host that completed the P2 handshake (story 2.3; was the 2.7 bench build)
         self.plugged = True         # the bridge-TX -> controller-GP1 wire
         self.replug_garbage = b""   # bytes a bouncing contact leaves at the replug (no error flags)
         self.flip_after_replug = False  # corrupt the first byte forwarded after a replug
@@ -533,6 +563,9 @@ class Bridge2wiCCPort:
                 fn()
         if self.usb_ready:
             lib.sim_usb_ready(now)
+        console = getattr(self, "console", None)
+        if console is not None:
+            console.tick(self.clock.t)
         # Host -> bridge ring (drops when full).
         take = self.host_out[:self.USB_BYTES_PER_TICK]
         del self.host_out[:len(take)]
@@ -593,6 +626,10 @@ def load_sim():
     lib.sim_rx_level.argtypes = [ctypes.c_int, ctypes.c_uint64]
     lib.sim_tx_settled.argtypes = [ctypes.c_uint64, ctypes.c_int]
     lib.sim_usb_ready.argtypes = [ctypes.c_uint64]
+    lib.sim_usb_event.argtypes = [ctypes.c_int]
+    lib.sim_report_period.argtypes = [ctypes.c_uint32]
+    lib.sim_dbglog.argtypes = [ctypes.c_uint8, ctypes.c_uint8]
+    lib.sim_dbglog.restype = ctypes.c_int
     return lib
 
 
@@ -722,7 +759,7 @@ def cmd_args(**kw):
     a = dict(port="sim", baud=probe.DEFAULT_BAUD, seed=1, no_pace=False, pace_share=probe.PACE_SHARE,
              max_inflight=probe.MAX_INFLIGHT, hb_enabled=True, hb_period_ms=probe.HEARTBEAT_PERIOD_MS,
              seconds=2.0, expect_fresh=False, expect_ready="auto", keepalive_seconds=2.0, rounds=3, mode="idle",
-             no_heartbeat=False, meter_seconds=1.0, count=5, trace=None)
+             no_heartbeat=False, meter_seconds=1.0, count=5, trace=None, wait_s=10.0, step_s=10.0, dock=False)
     a.update(kw)
     return argparse.Namespace(**a)
 
@@ -961,10 +998,13 @@ class BenchSteps(unittest.TestCase):
             port = Bridge2wiCCPort(self.lib, usb_ready=True)
             rc, text = run_cmd(port, fn, seconds=3.0, keepalive_seconds=2.0)
             self.assertEqual((rc, last_line(text)), (0, "PASS"), "%s: %s" % (fn.__name__, text))
+            # Story 2.3 D15: no host, no console_ready: FAIL with the hint
+            # (the bench-only fake and its SKIP are gone).
             port = Bridge2wiCCPort(self.lib)
             rc, text = run_cmd(port, fn)
-            self.assertEqual(rc, 2, text)
-            self.assertIn("SKIP: console_ready is 0", text)
+            self.assertEqual(rc, 1, text)
+            self.assertIn("console_ready is 0", text)
+            self.assertIn("p2_probe.py handshake --hold", text)
 
     def test_breaks(self):
         for kw in (dict(), dict(no_heartbeat=True), dict(mode="playing")):
@@ -1089,6 +1129,165 @@ class BenchSteps(unittest.TestCase):
         self.assertIn("watchdog_trips 0 -> 0", text)
         self.assertEqual(self.lib.sim_counter(6), 0)
         self.assertEqual(port.bridge_drops, 0)
+
+
+class ConsoleModel:
+    """A scripted Switch 2 at the controller's USB port (story 2.3 F.32): it
+    posts to the USB mailbox, the measured period and the P2 debug log the
+    way platform/usb_p2.c does for the real console. `sequence` is the
+    handshake it logs at each connect; `period_us` what core 0 measures."""
+
+    def __init__(self, lib, sequence=None, period_us=1000, in_every_s=0.001):
+        self.lib = lib
+        self.plugged = False
+        self.awake = True
+        self.wired = True
+        self.connected = False
+        self.sequence = sequence if sequence is not None else [
+            (0x01, 0x05), (0x01, 0x01), (0x01, 0x02), (0x02, 0x03), (0x01, 0x04), (0x06, 0x00),
+            (0x02, 0x48), (0x02, 0x02), (0x02, 0x10), (0x02, 0x01), (0x04, 0x01), (0x02, 0x30)]
+        self.period_us = period_us
+        self.in_every_s = in_every_s
+        self.next_in = 0.0
+        self.n_in = 0
+        self.handshake_post = True
+
+    def tick(self, t):
+        lib = self.lib
+        up = self.plugged and self.awake
+        if up and not self.connected:
+            self.connected = True
+            lib.sim_dbglog(0x07, 0x01)  # restart: mount
+            for k, i in self.sequence:
+                lib.sim_dbglog(k, i)
+            if self.handshake_post and any(k == 0x06 for k, _ in self.sequence):
+                lib.sim_usb_event(0)
+            self.n_in = 0
+            self.next_in = t
+        elif not up and self.connected:
+            self.connected = False
+            lib.sim_usb_event(2)       # suspend
+            lib.sim_dbglog(0x07, 0x03)
+            lib.sim_report_period(0)
+        if self.connected and self.wired and t >= self.next_in:
+            self.next_in = t + self.in_every_s
+            lib.sim_usb_event(1)
+            self.n_in += 1
+            if self.n_in == 64:
+                lib.sim_report_period(self.period_us)
+
+
+class ConsoleUser(io.StringIO):
+    """The owner at the console: acts 0.5 s after each prompt."""
+
+    def __init__(self, port, console, delay=0.5):
+        super().__init__()
+        self.port = port
+        self.console = console
+        self.delay = delay
+
+    def _later(self, fn):
+        self.port.at(self.port.now() + self.delay, fn)
+
+    def write(self, text):
+        c = self.console
+        if "PLUG THE CONTROLLER INTO THE SWITCH" in text:
+            self._later(lambda: setattr(c, "plugged", True))
+        elif "PUT THE CONSOLE TO SLEEP" in text or "UNDOCK" in text:
+            self._later(lambda: setattr(c, "awake", False))
+        elif "WAKE THE CONSOLE" in text or "DOCK THE CONSOLE AGAIN" in text:
+            self._later(lambda: setattr(c, "awake", True))
+        elif "Wired Communication' OFF" in text:
+            self._later(lambda: setattr(c, "wired", False))
+        elif "Wired Communication' back ON" in text:
+            self._later(lambda: setattr(c, "wired", True))
+        return super().write(text)
+
+
+class P2BenchSteps(unittest.TestCase):
+    """F.32 (link_probe.py part): p2check and p2watch against the real link."""
+
+    def setUp(self):
+        if SIM_LIB is None:
+            self.skipTest("no link simulation library")
+        self.lib = load_sim()
+
+    def port_with_console(self, **kw):
+        port = Bridge2wiCCPort(self.lib)
+        port.console = ConsoleModel(self.lib, **kw)
+        return port, port.console
+
+    def test_p2check(self):
+        port, console = self.port_with_console()
+        rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=10.0)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("H.15 median IN interval: 1000 us", text)
+        self.assertIn("usb 80 05, usb 80 01, usb 80 02, sub 03, usb 80 04, HANDSHAKE", text)
+        self.assertIn("refused by the profile (C7): 01", text)
+
+    def test_p2check_negative_controls(self):
+        # The console never answers (setting OFF before the plug): no ready.
+        port, console = self.port_with_console()
+        console.wired = False
+        console.handshake_post = False
+        rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=3.0)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("FAIL console_ready 1 within", last_line(text))
+        # A 100 us interval is outside 500..20000.
+        port, console = self.port_with_console(period_us=100)
+        rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=10.0)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("report_period_us 100", last_line(text))
+        # No HANDSHAKE record in the log (ready from another path).
+        port, console = self.port_with_console(sequence=[(0x01, 0x01), (0x01, 0x02)])
+        console.handshake_post = True
+        console.sequence_post = True
+        orig = console.tick
+
+        def tick(t):
+            was = console.connected
+            orig(t)
+            if console.connected and not was:
+                self.lib.sim_usb_event(0)  # ready without the profile logging it
+
+        console.tick = tick
+        rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=10.0)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("HANDSHAKE record", last_line(text))
+
+    def test_p2watch(self):
+        port, console = self.port_with_console()
+        console.plugged = True
+        rc, text = run_cmd(port, probe.cmd_p2watch, user=ConsoleUser(port, console), step_s=10.0)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("EVENT USB_SUSPENDED", text)
+        self.assertIn("a restart, then a new handshake", text)
+        port, console = self.port_with_console()
+        console.plugged = True
+        rc, text = run_cmd(port, probe.cmd_p2watch, user=ConsoleUser(port, console), step_s=10.0, dock=True)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+
+    def test_p2watch_negative_control(self):
+        # The console never comes back after the sleep.
+        port, console = self.port_with_console()
+        console.plugged = True
+        user = ConsoleUser(port, console)
+        orig = user.write
+
+        def write(text):
+            if "WAKE THE CONSOLE" in text:
+                return io.StringIO.write(user, text)
+            return orig(text)
+
+        user.write = write
+        rc, text = run_cmd(port, probe.cmd_p2watch, user=user, step_s=3.0)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("console_ready 1 again", last_line(text))
+        # Not ready at the start: p2watch refuses to run the cycle.
+        port, console = self.port_with_console()
+        rc, text = run_cmd(port, probe.cmd_p2watch, user=ConsoleUser(port, console), step_s=3.0)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("run p2check first", last_line(text))
 
 
 if __name__ == "__main__":

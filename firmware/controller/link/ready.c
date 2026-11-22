@@ -18,6 +18,7 @@ void ocb_usb_mailbox_init(ocb_usb_mailbox *m)
     m->suspends = 0u;
     m->unmounts = 0u;
     m->bus_resets = 0u;
+    m->report_period_us = 0u;
 }
 
 /* Single writer per counter: a plain load, add and store (no RMW atomics
@@ -45,6 +46,11 @@ void ocb_usb_mailbox_unmount(ocb_usb_mailbox *m)
 void ocb_usb_mailbox_bus_reset(ocb_usb_mailbox *m)
 {
     m->bus_resets = m->bus_resets + 1u;
+}
+
+void ocb_usb_mailbox_set_report_period(ocb_usb_mailbox *m, uint32_t report_period_us)
+{
+    m->report_period_us = report_period_us;
 }
 
 void ocb_ready_init(ocb_ready *r, const ocb_usb_mailbox *m, uint64_t now_us)
