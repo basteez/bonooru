@@ -49,8 +49,19 @@ target_link_libraries(test_proto_api PRIVATE ocb_proto)
 ocb_strict_warnings(test_proto_api.c)
 add_test(NAME test_proto_api COMMAND test_proto_api)
 
+# Controller core (story 2.4, D10): one executable per test-plan block, so a
+# failure names the rule. F.3 modes and latch, F.4 END/underrun/LATE/order,
+# F.5 sync points, F.6 safety mask, F.12 edge cases and property test.
+set(OCB_CORE_TESTS test_core_modes test_core_end_late test_core_sync test_core_mask test_core_edge)
+foreach(_t IN LISTS OCB_CORE_TESTS)
+    add_executable(${_t} ${_t}.c)
+    target_link_libraries(${_t} PRIVATE ocb_core)
+    ocb_strict_warnings(${_t}.c)
+    add_test(NAME ${_t} COMMAND ${_t})
+endforeach()
+
 if(OCB_TEST_ENV)
-    set_tests_properties(test_vectors test_proto_api PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
+    set_tests_properties(test_vectors test_proto_api ${OCB_CORE_TESTS} PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
 endif()
 
 # PROTO_VERSION in consts.h equals every vector header; the script's self-test
@@ -64,3 +75,10 @@ add_test(NAME proto_version_check
 add_test(NAME proto_pure_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/proto_pure_selftest.sh"
             "${OCB_FW_DIR}/tools/check-proto-pure.sh" "${OCB_FW_DIR}")
+
+# F.13: ocb_core includes only the allowed headers and uses no heap, I/O or
+# clock identifiers (AD-2, story 2.4 D9); bad fixtures flagged, good fixture
+# and the real controller/core tree pass.
+add_test(NAME core_pure_check
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/core_pure_selftest.sh"
+            "${OCB_FW_DIR}/tools/check-core-pure.sh" "${OCB_FW_DIR}")
