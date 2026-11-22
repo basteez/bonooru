@@ -829,6 +829,60 @@ class WatchdogConstants(unittest.TestCase):
         self.assertEqual(p.hb_stop(), p.out[-1][0])
 
 
+class ReliableRequest(unittest.TestCase):
+    """Story 2.7 D40 review: request_reliable resends at most once per
+    OCB_ACK_TIMEOUT_MS, whatever the controller answers, and a NAK CRC
+    (got = 0) never names seq 0."""
+
+    class OneNakPort:
+        """Answers the first write with one NAK, then stays silent."""
+
+        def __init__(self, reason, got):
+            self.t = 0.0
+            self.writes = []
+            self.pending = []
+            self.reason = reason
+            self.got = got
+
+        def now(self):
+            return self.t
+
+        def sleep(self, dt):
+            self.t += dt
+
+        def write(self, data):
+            self.writes.append(self.t)
+            if len(self.writes) == 1:
+                body = bytes([self.reason, 0, self.got])
+                self.pending.append(probe.frame_encode(probe.NAK, 0, body))
+
+        def poll(self):
+            self.t += 1e-5  # a poll costs time
+            out = []
+            for w in self.pending:
+                out.extend(probe.Splitter("APP").feed(w))
+            self.pending = []
+            return out
+
+    def run_one(self, reason, seq, got):
+        port = self.OneNakPort(reason, got)
+        link = probe.Link(port, out=lambda *a: None)
+        link.seq = seq
+        r = link.request_reliable(probe.STOP, timeout=1.0)
+        return r, port.writes
+
+    def test_paced_after_a_nak(self):
+        limit = int(1.0 / probe.ACK_TIMEOUT_S) + 2
+        for reason, seq, got, name in ((0x02, 5, 5, "NAK SEQ got=seq"), (0x01, 0, 0, "NAK CRC got=0, seq 0"),
+                                       (0x03, 9, 9, "NAK FULL got=seq")):
+            r, writes = self.run_one(reason, seq, got)
+            self.assertIsNotNone(writes)
+            self.assertLessEqual(len(writes), limit, "%s: %d writes in 1 s (limit %d)" % (name, len(writes), limit))
+            gaps = [b - a for a, b in zip(writes, writes[1:])]
+            self.assertTrue(all(g >= probe.ACK_TIMEOUT_S - 1e-6 for g in gaps), "%s: a resend closer than 50 ms" % name)
+            self.assertNotEqual(r, "CRC", "%s: a NAK CRC was taken as the reply to seq %d" % (name, seq))
+
+
 class BenchSteps(unittest.TestCase):
     """F.23: every story 2.7 bench command against the real link."""
 

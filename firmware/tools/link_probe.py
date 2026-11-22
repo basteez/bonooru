@@ -37,6 +37,11 @@ one open session, prints one line per check and ends with `PASS` or
 `FAIL <reason>` (exit 0 or 1; 2 for a step skipped because the board is not
 the bench build). Where the owner must act it prints one prominent line and
 waits for the evidence (an EVENT, a counter, STATUS stopping or resuming).
+Their requests are resent with the same seq every 50 ms until answered (a
+stop-and-wait AD-6 sender); `breaks` writes one 0x00 after each replug.
+--trace FILE (those five subcommands only; the 2.6 ones ignore it) writes
+every frame sent and received with a timestamp; `breaks` prints the tail of
+the trace when it fails.
 """
 
 import argparse
@@ -1116,7 +1121,9 @@ class Link:
                 if kind == "ACK" and ((f - seq) & 0xFF) < ACK_WINDOW:
                     result.append("ACK")
                     return True
-                if kind == "NAK" and f["got"] == seq:
+                # A NAK CRC carries got = 0 for any frame (the seq of a
+                # damaged frame is unknown): it names no frame, not seq 0.
+                if kind == "NAK" and f["reason"] != 0x01 and f["got"] == seq:
                     result.append(NAK_NAMES.get(f["reason"], hex(f["reason"])))
                     return True
             return False
@@ -1136,14 +1143,20 @@ class Link:
         `expected`), so the resend is what recovers, exactly as the app's
         go-back-N does. Returns 'ACK', a semantic NAK name, or None."""
         ticket = self.send(ftype, body)
+        seq = ticket[0]
         end = self.port.now() + timeout
         while True:
-            r = self.reply(ticket, min(ACK_TIMEOUT_S, max(0.0, end - self.port.now())))
-            if r is not None and r not in ("CRC", "SEQ", "FULL"):
+            slot_end = min(self.port.now() + ACK_TIMEOUT_S, end)
+            r = self.reply(ticket, max(0.0, slot_end - self.port.now()))
+            if r is not None and r not in ("SEQ", "FULL"):
                 return r
+            # A transport NAK came early: still wait out the 50 ms slot, so
+            # resends are paced (at most one per OCB_ACK_TIMEOUT_MS).
+            self.wait(max(0.0, slot_end - self.port.now()))
             if self.port.now() >= end:
                 return r
-            self.send(ftype, body, seq=ticket[0])
+            # A fresh ticket: only replies received after this resend count.
+            ticket = self.send(ftype, body, seq=seq)
 
     def next_status(self, timeout=0.5, pred=None):
         """The next STATUS received after now (satisfying pred), or None."""
@@ -1290,10 +1303,16 @@ def cmd_linkup(port, args):
 
 
 def _fill(link, count, t_start=1000, step=1000):
+    """Sends `count` QUEUE_EVENTs one at a time; stops at the first one that
+    gets no ACK (the later seqs would only hit the transport NAK budget and
+    blur the trace). Returns how many were ACKed."""
     ok = 0
     for i in range(count):
-        if link.request_reliable(QUEUE_EVENT, queue_event_body(t_start + i * step)) == "ACK":
-            ok += 1
+        r = link.request_reliable(QUEUE_EVENT, queue_event_body(t_start + i * step))
+        if r != "ACK":
+            link.log("     event %d of %d: %s, the remaining events are not sent" % (i + 1, count, r or "no reply"))
+            break
+        ok += 1
     return ok
 
 
@@ -1701,7 +1720,8 @@ def main(argv=None):
                     help="never send the emulated HEARTBEAT")
     ap.add_argument("--trace", metavar="FILE",
                     help="linkup, silence, direct, playing, breaks: write every frame sent and received, with "
-                         "a timestamp, to FILE (breaks also prints the tail of it when it fails)")
+                         "a timestamp, to FILE (breaks also prints the tail of it when it fails); the 2.6 "
+                         "subcommands ignore it")
     ap.add_argument("--hb-period-ms", type=hb_period_arg, default=HEARTBEAT_PERIOD_MS,
                     help="heartbeat period, 5..40 ms (default %(default)s)")
     sub = ap.add_subparsers(dest="cmd", required=True)
