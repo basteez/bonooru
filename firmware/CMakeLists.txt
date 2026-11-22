@@ -46,6 +46,9 @@ include(ocb_version)
 
 add_subdirectory(common/proto)
 add_subdirectory(common/hw)
+# Controller playback core (story 2.4): pure C99, built in both modes so the
+# host tests and the ARM toolchain both compile it.
+add_subdirectory(controller/core)
 
 if(NOT OCB_HOST_TESTS)
     add_subdirectory(bridge)

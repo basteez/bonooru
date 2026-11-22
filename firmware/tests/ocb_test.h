@@ -13,7 +13,7 @@
 
 static int ocb_test_fail_count;
 
-static void ocb_test_hexdump(const char *label, const void *p, size_t n)
+static inline void ocb_test_hexdump(const char *label, const void *p, size_t n)
 {
     const unsigned char *b = (const unsigned char *)p;
     fprintf(stderr, "    %s (%zu):", label, n);
@@ -43,7 +43,7 @@ static void ocb_test_hexdump(const char *label, const void *p, size_t n)
         }                                                                                          \
     } while (0)
 
-static int ocb_test_failures(void)
+static inline int ocb_test_failures(void)
 {
     return ocb_test_fail_count;
 }

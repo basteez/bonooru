@@ -234,6 +234,33 @@ Core 1 owns the modes IDLE, DIRECT and PLAYING.
 - **Not ready.** `START` and `SET_STATE` get `NAK NOT_READY` while the HID profile's `ready()` is false (console handshake not complete). The same predicate drives `STATUS.flags.console_ready`.
 - **Safety mask (AD-9).** In PLAYING every applied state is masked by a compile-time allow-list: L, R, A, X, Y, hat, left stick. Other buttons are cleared, the right stick is centred. DIRECT mode is not masked.
 
+### Rules the controller core applies (Story 2.4)
+
+The firmware's `controller/core` (`ocb_core`) implements the table above. The rules below are not visible in the conformance vectors; the app's link layer (Story 3.3) follows this text. No wire value is added.
+
+- **NAK precedence** for `SET_STATE`, `QUEUE_EVENT` and `START`, first match wins: `ABORTED` → `BUSY` (`SET_STATE` / `START` in PLAYING) → `NOT_READY` (`SET_STATE` / `START` only; `QUEUE_EVENT` is accepted while not ready) → `BAD_STATE` → `ORDER` (`QUEUE_EVENT` only) → `FULL` (`QUEUE_EVENT` only). Content errors come before `FULL`, so a malformed frame never turns into a retry loop. `NO_LINK` (link watchdog, Story 2.7) slots in between `ABORTED` and `BUSY`. Only `FULL` is a transport NAK (does not advance `expected`); every other reason is semantic.
+- **Validation (`NAK BAD_STATE`):**
+  - a body of the wrong length for its type (`SET_STATE` 8, `QUEUE_EVENT` 12, `START` 4, `PING` 0 bytes);
+  - `SET_STATE` and `QUEUE_EVENT`: `hat` above 8, or a reserved `flags` bit (1–7) set; button bits 14 and 15 are not refused (masked in PLAYING, ignored by the profile in DIRECT);
+  - `SET_STATE` with any flag set (END is a queue concept);
+  - `QUEUE_EVENT` with END on a state that is not the neutral pose;
+  - `QUEUE_EVENT` while an END is already queued (nothing may follow END; reset on entering IDLE);
+  - `START` with an empty queue (nothing would ever end PLAYING; prefill first).
+- **Never refused:** `STOP` and `HELLO` act whatever their body length (`HELLO`'s `proto_ver` is checked by the link layer, AD-7). `PING` is ACKed in every mode, also while `aborted`, and changes nothing. An unassigned app type (`0x07`–`0x3F`) gets `NAK UNKNOWN_TYPE`.
+- **Abort causes**, every one in any mode; each enters IDLE (NEUTRAL, queue cleared, ordering reset) and sets `aborted`:
+
+  | Cause | EVENT |
+  |---|---|
+  | END applied | `PLAYBACK_DONE` |
+  | underrun | `UNDERRUN` |
+  | head overdue (LATE) | `LATE` |
+  | link loss | `LINK_LOST` |
+  | USB suspend, unmount, bus reset | `USB_SUSPENDED` |
+  | app timeout, core stall | none (the app learns it from STATUS `mode` / `abort_count`) |
+
+  `abort_count` (u8, wraps, never reset) increments when the latch goes from clear to set, so a normal piece end counts too: `PLAYBACK_DONE` / `last_event` tell a normal end from a failure. A cause arriving while `aborted` is already set changes nothing and sends no EVENT. `last_event` is the last EVENT sent; STOP and HELLO do not clear it.
+- **Scheduler:** nothing runs before `t0 = now + lead_us`. The head event is due at `t0 + t_us`; at most one event is applied per scheduler pass, so the published states follow the queue order. Before applying, if the head is overdue by **more than** one report period (`INFO.report_period_us`; 8000 µs while unknown), the controller aborts with `LATE` and fires nothing (exactly one period late is still applied). After applying: an END aborts with `PLAYBACK_DONE`; otherwise, if the queue is now empty, NEUTRAL is published in the same pass and `UNDERRUN` sent, so the last non-END note before an underrun lasts zero time.
+
 ## Controller → app reporting (AD-19)
 
 - **STATUS body:** `free u16, now_us u32` (µs since t0; 0 when IDLE or during the lead), `last_seq` (= `expected−1`), `mode`, `abort_count`, `last_event`, `flags u8`. Debug builds add counters: max gap between app frames (W.1), watchdog trips, dropped bytes.

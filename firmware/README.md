@@ -79,6 +79,9 @@ pin number anywhere else in the firmware sources; use the `OCB_PIN_*` names.
 - `tools/check-proto-pure.sh`: `common/proto/` includes only `<stdint.h> <stddef.h>
   <stdbool.h> <string.h> <limits.h>` and `ocb_proto/*` headers (CI step; ctest
   `proto_pure_check` with a self-test).
+- `tools/check-core-pure.sh`: `controller/core/` includes only the same standard headers,
+  `ocb_proto/*` and `ocb_core/*`, and names no heap, I/O, clock, sleep or multicore identifier
+  (CI step; ctest `core_pure_check` with a self-test).
 
 ## CI
 
