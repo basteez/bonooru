@@ -504,6 +504,35 @@ def fake_time(port):
         probe.time = saved
 
 
+class CliGuard(unittest.TestCase):
+    """--pace-share and --max-inflight are refused by argparse (exit 2, no
+    port opened) when they would make every soak cycle stall (D36)."""
+
+    def bad(self, *argv):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            probe.main(["--port", "none"] + list(argv) + ["soak"])
+        self.assertEqual(cm.exception.code, 2, err.getvalue())
+        return err.getvalue()
+
+    def test_refused(self):
+        for v in ("0", "-0.5", "1.01", "nan", "x"):
+            self.assertIn("--pace-share", self.bad("--pace-share", v))
+        low = probe.min_inflight() - 1
+        for v in ("-1", "1", str(low), "x"):
+            self.assertIn("--max-inflight", self.bad("--max-inflight", v))
+
+    def test_accepted(self):
+        self.assertEqual(probe.pace_share_arg("1"), 1.0)
+        self.assertEqual(probe.pace_share_arg("0.85"), 0.85)
+        self.assertEqual(probe.max_inflight_arg("0"), 0)
+        self.assertEqual(probe.max_inflight_arg(str(probe.min_inflight())), probe.min_inflight())
+        self.assertEqual(probe.max_inflight_arg("960"), 960)
+        # The minimum is one QUEUE_EVENT frame (19 bytes) plus the largest
+        # --garbage prefix (7 junk bytes and a 0x00), by hand.
+        self.assertEqual(probe.min_inflight(), 19 + 7 + 1)
+
+
 class Soak(unittest.TestCase):
     def test_long_soak_keeps_sending(self):
         """F.20a: 150 short cycles take more than 30 s of (fake) time; every

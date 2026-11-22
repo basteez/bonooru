@@ -21,8 +21,9 @@
 #include "ocb_proto/frame.h"
 #include "ocb_proto/msgs.h"
 
-/* Controller -> app bodies are small (STATUS with the debug counters is
- * the largest, 18 bytes): keep the stack use of the TX path low. */
+/* Controller -> app bodies are small (STATUS with the v2 debug counters is
+ * the largest: 11 + 21 = 32 bytes, checked below): keep the stack use of
+ * the TX path low. */
 #define TX_BODY_MAX 32u
 #define TX_WIRE_MAX 48u /* header 3 + body 32 + crc 2, COBS overhead 1, delimiter 1 */
 #define STATUS_PERIOD_US ((uint64_t)OCB_STATUS_PERIOD_MS * 1000u)

@@ -379,8 +379,11 @@ class GbnSender:
         """A rewind or resend abandons the copies still on the wire. Nothing
         confirms them any more, so they are retired by time: no new
         QUEUE_EVENT is written until they have drained even from the slowest
-        bridge assumed (MIN_DRAIN_SHARE of the line rate). After a 50 ms
-        timeout that wait is already over (story 2.6 D33)."""
+        bridge assumed (MIN_DRAIN_SHARE of the line rate): at most
+        max_inflight / (0.8 x 46 080) s, about 26 ms with the default cap.
+        The hold also applies after a 50 ms resend timeout, because the
+        frames written after the oldest unconfirmed one may be recent
+        (story 2.6 D33, D36)."""
         if self.max_inflight is not None and self.inflight > 0:
             self.hold_until = max(self.hold_until, self.now() + self.inflight / self.min_drain)
         self.writes = []
@@ -480,6 +483,7 @@ class GbnSender:
 PACE_SHARE = 0.95
 MAX_INFLIGHT = 960  # bytes: 50 QUEUE_EVENT frames, under the 1023-byte ring of 2wiCC_Comms
 MIN_DRAIN_SHARE = 0.80  # slowest bridge drain assumed after a rewind (2wiCC_Comms: about 0.85)
+GARBAGE_MAX = 7  # soak --garbage: at most this many junk bytes, then a 0x00, before a frame
 
 
 class Pacer:
@@ -682,7 +686,8 @@ def make_impair(rng, corrupt, drop, garbage):
             p = rng.randrange(len(b) - 1)
             b[p] ^= 1 << rng.randrange(8)
         if garbage and rng.random() < 0.05:
-            b = bytearray(rng.randrange(1, 256) for _ in range(rng.randrange(1, 8))) + b"\x00" + b
+            n = rng.randrange(1, GARBAGE_MAX + 1)
+            b = bytearray(rng.randrange(1, 256) for _ in range(n)) + b"\x00" + b
         return bytes(b)
     return impair
 
@@ -805,6 +810,33 @@ def cmd_hello(port, args):
     return 0
 
 
+def min_inflight():
+    """The largest single QUEUE_EVENT write: the frame plus the largest
+    --garbage prefix (junk and its 0x00). A smaller cap could never send."""
+    return len(frame_encode(QUEUE_EVENT, 0, queue_event_body(0xFFFFFFFF))) + GARBAGE_MAX + 1
+
+
+def pace_share_arg(text):
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not a number: %r" % text) from None
+    if not 0.0 < v <= 1.0:
+        raise argparse.ArgumentTypeError("must be in (0, 1], got %s" % text)
+    return v
+
+
+def max_inflight_arg(text):
+    try:
+        v = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not an integer: %r" % text) from None
+    if v != 0 and v < min_inflight():
+        raise argparse.ArgumentTypeError("must be 0 (no cap) or at least %d bytes (one QUEUE_EVENT plus the "
+                                         "largest --garbage prefix), got %d" % (min_inflight(), v))
+    return v
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", required=True)
@@ -812,10 +844,11 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--no-pace", action="store_true",
                     help="write QUEUE_EVENTs as fast as the window allows (default: paced to the UART rate)")
-    ap.add_argument("--pace-share", type=float, default=PACE_SHARE,
-                    help="pacing rate as a fraction of baud/10 bytes/s (default %(default)s)")
-    ap.add_argument("--max-inflight", type=int, default=MAX_INFLIGHT,
-                    help="max bytes of unconfirmed QUEUE_EVENTs on the wire, 0 = no cap (default %(default)s)")
+    ap.add_argument("--pace-share", type=pace_share_arg, default=PACE_SHARE,
+                    help="pacing rate as a fraction of baud/10 bytes/s, in (0, 1] (default %(default)s)")
+    ap.add_argument("--max-inflight", type=max_inflight_arg, default=MAX_INFLIGHT,
+                    help="max bytes of unconfirmed QUEUE_EVENTs on the wire, 0 = no cap, else at least "
+                         "%d (default %%(default)s)" % min_inflight())
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("hello", help="HELLO until INFO, print INFO")
     p.add_argument("--seconds", type=float, default=3.0)
