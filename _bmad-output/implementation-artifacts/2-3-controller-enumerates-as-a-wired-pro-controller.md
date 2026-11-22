@@ -585,7 +585,7 @@ Claude (Opus), gds-dev-story workflow, run autonomously on 2026-11-22.
 - **Status: done (2026-11-22).** All tasks complete, Task 11 included. Every AC has host evidence and bench evidence; see "Acceptance criteria: evidence" below.
 - **Tests:** `ctest --preset host-tests` reports 100% passed out of 35 (25 before the story, plus F.24 to F.33), under ASan and UBSan.
 - **Builds and gates:** fw-release and fw-debug build with 0 warnings. All gates are green: `check-pins`, `check-proto-version`, `check-proto-pure` (14), `check-core-pure` (11), `check-link-pure` (20), `check-p2-pure` (9), `check-release-nolog` (release ELF, and `--expect-present` on the debug ELF).
-- **CI:** the last green run on the branch is on `573630f`: https://github.com/basteez/bonooru/actions/runs/45043965394. The final run, on the commit that records the bench, is added by the story lead. Earlier green runs: `f8900f1` (45039970542) and 45039390009.
+- **CI:** green on `a4900b0`, the commit that records the bench: https://github.com/basteez/bonooru/actions/runs/45045132603 (`firmware-uf2` artifact present). Earlier green runs: `573630f` (45043965394), `f8900f1` (45039970542) and 45039390009.
 - **Bench on the owner's Switch 2** (system 23.5.0, top USB-C port, Wired Communication ON; bridge 2wiCC_Comms v1.1 on `/dev/cu.usbmodem1101`), all recorded in `docs/test-plan.md`:
 
 | Check | Result |
