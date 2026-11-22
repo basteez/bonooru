@@ -200,6 +200,9 @@ static void test_error_flags(void)
         OCB_CHECK(c->rx_err_bytes == 1u && c->rx_err_runs == 1u, "flags 0x%x: err bytes %u runs %u", flags,
                   c->rx_err_bytes, c->rx_err_runs);
         OCB_CHECK(c->breaks == (brk ? 1u : 0u), "flags 0x%x: breaks %u", flags, c->breaks);
+        OCB_CHECK(c->rx_fe == ((flags & 1u) ? 1u : 0u) && c->rx_pe == ((flags & 2u) ? 1u : 0u) &&
+                      c->rx_oe == ((flags & 8u) ? 1u : 0u),
+                  "flags 0x%x: FE %u PE %u OE %u", flags, c->rx_fe, c->rx_pe, c->rx_oe);
         OCB_CHECK(c->rx_bytes == (uint32_t)(na / 2u + nb), "flags 0x%x: rx_bytes %u", flags, c->rx_bytes);
 
         /* (2) Before a frame, with a non-zero data byte: if it were data it

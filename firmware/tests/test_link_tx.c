@@ -6,7 +6,7 @@
  * cadence (first at once, every 50 ms with no drift, after an ACK but
  * never closer than 10 ms, at most one per 10 ms in a prefill burst);
  * STATUS fields in every mode and after every abort cause; reserved flag
- * bits; the 7 debug bytes; slot overflow; a too-small `cap`; the TX gate;
+ * bits; the 21 debug bytes (v1 prefix and the split of dropped_bytes); slot overflow; a too-small `cap`; the TX gate;
  * two independent links. Every output is decoded as a controller frame.
  */
 #include <stdint.h>
@@ -270,14 +270,20 @@ static void test_debug_counters(void)
     lh_ping(&h);
     h.now += 5000u;
     lh_ping(&h);
-    /* 3 error bytes, a 300-byte overlong run. */
+    /* 4 error bytes (FE, PE, BE, FE|OE), a 300-byte overlong run, and 8
+     * bytes lost to a full RX ring (520 idle bytes pushed, then drained). */
     ocb_link_rx_entry(&h.link, OCB_LINK_RX_FE, h.now);
     ocb_link_rx_entry(&h.link, OCB_LINK_RX_PE, h.now);
     ocb_link_rx_entry(&h.link, OCB_LINK_RX_BE, h.now);
+    ocb_link_rx_entry(&h.link, (uint16_t)(OCB_LINK_RX_FE | OCB_LINK_RX_OE | 0x42u), h.now);
     for (int i = 0; i < 300; i++) {
         ocb_link_rx_entry(&h.link, 0x11u, h.now);
     }
     ocb_link_rx_entry(&h.link, 0x00u, h.now);
+    for (int i = 0; i < 520; i++) {
+        (void)ocb_rxring_push(ocb_link_rx_ring(&h.link), 0x00u);
+    }
+    (void)ocb_link_rx_drain(&h.link, h.now, 1000u);
     /* 10 EVENTs: 2 dropped. */
     for (int i = 0; i < 10; i++) {
         ocb_link_queue_event(&h.link, OCB_EVT_LATE);
@@ -297,9 +303,12 @@ static void test_debug_counters(void)
     if (!found) {
         return;
     }
-    OCB_CHECK(m.extra_len == 7u, "debug: %zu extra bytes", m.extra_len);
-    if (m.extra_len == 7u) {
-        const uint8_t want[7] = {0xD2u, 0x04u, 0u, (uint8_t)(303u & 0xFFu), (uint8_t)(303u >> 8), 2u, 0u};
+    OCB_CHECK(m.extra_len == 21u, "debug: %zu extra bytes", m.extra_len);
+    if (m.extra_len == 21u) {
+        /* By hand: gap 1234 ms, trips 0, dropped 4 + 8 + 300 = 312, tx_dropped
+         * 2, then rx_err 4, overflow 8, overlong 300, FE 2, PE 1, BE 1, OE 1. */
+        const uint8_t want[21] = {0xD2u, 0x04u, 0u,  0x38u, 0x01u, 2u,  0u, 4u, 0u, 8u, 0u,
+                                  0x2Cu, 0x01u, 2u, 0u,    1u,    0u, 1u, 0u, 1u, 0u};
         OCB_CHECK_MEM(m.extra, m.extra_len, want, sizeof want, "debug counters");
     }
     /* Saturation at 65535. */
@@ -307,9 +316,10 @@ static void test_debug_counters(void)
     h.link.cnt.tx_dropped = 70000u;
     h.link.cnt.rx_err_bytes = 80000u;
     h.now += 50000u;
-    OCB_CHECK(get_status(&h, &m) && m.extra_len == 7u, "debug: second STATUS");
-    if (m.extra_len == 7u) {
-        const uint8_t sat[7] = {0xFFu, 0xFFu, 0u, 0xFFu, 0xFFu, 0xFFu, 0xFFu};
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 21u, "debug: second STATUS");
+    if (m.extra_len == 21u) {
+        const uint8_t sat[21] = {0xFFu, 0xFFu, 0u,    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 8u, 0u,
+                                 0x2Cu, 0x01u, 2u,    0u,    1u,    0u,    1u,    0u,    1u,    0u};
         OCB_CHECK_MEM(m.extra, m.extra_len, sat, sizeof sat, "saturated counters");
     }
     /* A HELLO restarts max_app_gap_ms. */

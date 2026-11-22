@@ -15,6 +15,7 @@ drops on overflow, UART at 460800 baud both ways).
 """
 
 import argparse
+import ast
 import contextlib
 import ctypes
 import importlib.util
@@ -141,6 +142,21 @@ class Vectors(unittest.TestCase):
             else:
                 self.assertEqual(enc + trailing, body, name)
             self.assertEqual(probe.frame_encode(ftype, int(c["seq"], 16), body), hexb(c["wire"]) + b"\x00", name)
+
+    def test_debug_counters(self):
+        """STATUS debug counters: v1 prefix (7 bytes) and the v2 split of
+        dropped_bytes (21 bytes, story 2.6 D35), little-endian, by hand."""
+        self.assertIsNone(probe.debug_counters(bytes([0x10, 0x20, 0x30])))
+        v1 = probe.debug_counters(bytes([0xD2, 0x04, 0x00, 0x38, 0x01, 0x02, 0x00]))
+        self.assertEqual(v1, {"max_app_gap_ms": 1234, "watchdog_trips": 0, "dropped_bytes": 312, "tx_dropped": 2})
+        v2 = probe.debug_counters(bytes([0xD2, 0x04, 0x00, 0x38, 0x01, 0x02, 0x00, 4, 0, 8, 0, 0x2C, 0x01,
+                                         2, 0, 1, 0, 1, 0, 1, 0]))
+        self.assertEqual(v2["rx_err_bytes"], 4)
+        self.assertEqual(v2["rx_overflow_bytes"], 8)
+        self.assertEqual(v2["overlong_bytes"], 300)
+        self.assertEqual((v2["rx_fe"], v2["rx_pe"], v2["rx_be"], v2["rx_oe"]), (2, 1, 1, 1))
+        self.assertEqual(v2["rx_err_bytes"] + v2["rx_overflow_bytes"] + v2["overlong_bytes"], v2["dropped_bytes"])
+        self.assertIn("rx_overflow_bytes=8", probe.drop_split(v2))
 
     def test_splitter_resync(self):
         sp = probe.Splitter("APP")
@@ -319,7 +335,7 @@ class FakeClock:
 
 def soak_args(**kw):
     a = dict(cycles=1, events=10, seed=1, corrupt=0.0, drop=0.0, garbage=False, no_pace=False,
-             baud=probe.DEFAULT_BAUD, port="sim")
+             baud=probe.DEFAULT_BAUD, port="sim", pace_share=probe.PACE_SHARE, max_inflight=probe.MAX_INFLIGHT)
     a.update(kw)
     return argparse.Namespace(**a)
 
@@ -331,7 +347,7 @@ def run_soak(port, **kw):
         rc = probe.cmd_soak(port, soak_args(**kw))
     text = buf.getvalue()
     m = re.search(r"totals (\{.*\})", text)
-    totals = eval(m.group(1), {}) if m else {}  # pylint: disable=eval-used
+    totals = ast.literal_eval(m.group(1)) if m else {}
     return rc, text, totals
 
 
@@ -384,8 +400,11 @@ class Bridge2wiCCPort:
     UART_BYTES_PER_TICK = 46080 * 100e-6
     CTRL_TX_RING = 128
 
-    def __init__(self, lib):
+    def __init__(self, lib, drain_share=1.0):
         self.lib = lib
+        # The bridge's UART TX can be slower than the line rate (2wiCC_Comms
+        # polls uart_putc_raw with the FIFO off between tud_task calls).
+        self.fwd_bytes_per_tick = self.UART_BYTES_PER_TICK * drain_share
         self.clock = FakeClock(self._advance)
         self.host_out = bytearray()  # written by the probe, not yet read by the bridge
         self.ring = bytearray()      # the bridge's USB -> UART ring
@@ -435,7 +454,7 @@ class Bridge2wiCCPort:
         self.ring += take[:room]
         self.bridge_drops += max(0, len(take) - room)
         # Bridge ring -> controller UART RX.
-        self.credit_fwd += self.UART_BYTES_PER_TICK
+        self.credit_fwd += self.fwd_bytes_per_tick
         n = min(int(self.credit_fwd), len(self.ring))
         if n > 0:
             chunk = bytes(self.ring[:n])
@@ -523,9 +542,34 @@ class Soak(unittest.TestCase):
 
         port = Bridge2wiCCPort(lib)
         with fake_time(port):
-            rc, text, totals = run_soak(port, cycles=2, events=500, no_pace=True)
+            rc, text, totals = run_soak(port, cycles=2, events=500, no_pace=True, max_inflight=0)
         self.assertGreater(port.bridge_drops, 0, "unpaced: the bridge model never overflowed")
         self.assertGreater(totals.get("naks", 0), 0, "unpaced: no NAK")
+
+    def test_soak_through_slow_bridge(self):
+        """F.20c (D33): a bridge that drains at 85 % of the line rate. The
+        pacer alone (95 %) lets the backlog grow past the 1 KB ring; the
+        ACK-clocked in-flight cap keeps it under, whatever the drain rate:
+        clean PASS with 0 NAK and 0 bridge drop, impaired seed 1 PASS with 0
+        bridge drop. Positive control: without the cap the bridge drops."""
+        if SIM_LIB is None:
+            self.skipTest("no link simulation library")
+        lib = load_sim()
+        port = Bridge2wiCCPort(lib, drain_share=0.85)
+        with fake_time(port):
+            rc, text, totals = run_soak(port, cycles=4, events=500)
+        self.assertEqual(rc, 0, text[-800:])
+        self.assertEqual(port.bridge_drops, 0, "85 %% drain: %d bytes dropped by the bridge" % port.bridge_drops)
+        self.assertEqual(totals.get("naks"), 0, text[-800:])
+        port = Bridge2wiCCPort(lib, drain_share=0.85)
+        with fake_time(port):
+            rc, text, totals = run_soak(port, cycles=3, events=500, seed=1, corrupt=0.02, drop=0.02, garbage=True)
+        self.assertEqual(rc, 0, text[-800:])
+        self.assertEqual(port.bridge_drops, 0, "85 %% drain, impaired: %d bytes dropped" % port.bridge_drops)
+        port = Bridge2wiCCPort(lib, drain_share=0.85)
+        with fake_time(port):
+            run_soak(port, cycles=3, events=500, max_inflight=0)
+        self.assertGreater(port.bridge_drops, 0, "85 %% drain without the cap: the bridge never overflowed")
 
 
 if __name__ == "__main__":

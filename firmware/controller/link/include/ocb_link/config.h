@@ -24,10 +24,14 @@
  * hypothesis to tune at the bench (test plan H.7). */
 #define OCB_LINK_TX_IDLE_HIGH_US 1000
 
-/* STATUS debug counters v1 (D12): max_app_gap_ms u16, watchdog_trips u8,
- * dropped_bytes u16, tx_dropped u16, little-endian, after the 11 base
- * bytes. */
-#define OCB_LINK_DEBUG_COUNTERS_LEN 7
+/* STATUS debug counters (D12, D35), little-endian, after the 11 base bytes.
+ * v1 prefix (7 bytes): max_app_gap_ms u16, watchdog_trips u8,
+ * dropped_bytes u16, tx_dropped u16. v2 adds the causes of dropped_bytes
+ * (14 bytes): rx_err_bytes u16, rx_overflow_bytes u16, overlong_bytes u16,
+ * and the error bits seen, rx_fe u16, rx_pe u16, rx_be u16, rx_oe u16.
+ * Every u16 saturates at 65535. */
+#define OCB_LINK_DEBUG_COUNTERS_V1_LEN 7
+#define OCB_LINK_DEBUG_COUNTERS_LEN 21
 
 /* RX ring entry layout: the PL011 data register value (dr & 0x0FFF). */
 #define OCB_LINK_RX_DATA_MASK 0x00FFu

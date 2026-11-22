@@ -110,6 +110,14 @@ static OCB_CORE_RAMFUNC int build_status(const ocb_link *link, uint64_t now_us, 
     extra[2] = 0u; /* watchdog_trips: Story 2.7 */
     put_u16(&extra[3], ocb_link_dropped_bytes(link));
     put_u16(&extra[5], link->cnt.tx_dropped);
+    /* v2 (D35): the three causes of dropped_bytes, then the error bits. */
+    put_u16(&extra[7], link->cnt.rx_err_bytes);
+    put_u16(&extra[9], link->ring.dropped);
+    put_u16(&extra[11], link->cnt.overlong_bytes);
+    put_u16(&extra[13], link->cnt.rx_fe);
+    put_u16(&extra[15], link->cnt.rx_pe);
+    put_u16(&extra[17], link->cnt.breaks);
+    put_u16(&extra[19], link->cnt.rx_oe);
 
     ocb_msg_status m;
     m.free = v.free;

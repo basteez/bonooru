@@ -274,6 +274,15 @@ OCB_CORE_RAMFUNC void ocb_link_rx_entry(ocb_link *link, uint16_t entry, uint64_t
         if ((entry & OCB_LINK_RX_BE) != 0u) {
             link->cnt.breaks++;
         }
+        if ((entry & OCB_LINK_RX_FE) != 0u) {
+            link->cnt.rx_fe++;
+        }
+        if ((entry & OCB_LINK_RX_PE) != 0u) {
+            link->cnt.rx_pe++;
+        }
+        if ((entry & OCB_LINK_RX_OE) != 0u) {
+            link->cnt.rx_oe++;
+        }
         abandon_run(link);
         return;
     }

@@ -272,6 +272,16 @@ AD-20 as written ("each board keeps TX high-Z until RX sees idle-high", both RX 
 **D32. Rig check R0 done by source inspection for the 2026-11-22 session.**
 The boards stayed wired, so R0 (2wiCC_Comms loopback of all 256 byte values) was not run. From its source (read-only, no code copied): `tud_cdc_read` → ring → `uart_putc_raw` and the RX interrupt → ring → `tud_cdc_write_char`, no character translation, UART0 fixed at 460800 8N1, no line-coding or DTR handling, hardware FIFO off: byte-transparent, **but** with no flow control and silent drops when a 1 KB ring is full (D30). So R0 is accepted on the condition that the sender paces to the UART rate; recorded in `docs/test-plan.md` (rig block and environment row). A physical R0 remains available (`link_probe.py loopback`).
 
+**Decisions added in the review round on `bb3bacd` (dev agent, 2026-11-22)**
+
+**D33. The probe also caps the bytes in flight, ACK-clocked, so a slow bridge cannot overflow.**
+The pacer of D30 assumes the bridge drains at the full line rate; 2wiCC_Comms polls `uart_putc_raw` with the FIFO off between `tud_task` calls and may drain at about 85 %, so a 95 % pacer still lets the backlog grow until the 64-frame window (1216 bytes) is outstanding, more than the 1023-byte ring (reproduced: 1012 bytes dropped by the model at 85 %). The sender now keeps a log of its QUEUE_EVENT writes and stops writing when the unconfirmed ones reach `--max-inflight` bytes (default 960, 50 frames); a write is retired when the controller confirms its event (ACK, STATUS `last_seq` or a NAK's `expected`), so in steady flow the bridge backlog stays under the cap whatever its drain rate. After a rewind or a resend the abandoned copies can no longer be confirmed: the log is cleared and no new QUEUE_EVENT is written until they have drained even at 80 % of the line rate (`MIN_DRAIN_SHARE`), at most 960 / 36 864 s ≈ 26 ms; after the 50 ms resend timeout that wait is already over. The token bucket stays, its share is now `--pace-share` (default 0.95). *Alternative rejected:* only lowering the pace share (it depends on a drain rate that is not known exactly).
+
+**D34. The self-test parses the soak's printed totals with `ast.literal_eval`, not `eval`.** The totals line holds only literals; nothing printed is ever executed.
+
+**D35. STATUS debug counters v2: `dropped_bytes` stays the sum, its three causes and the four error bits follow it.**
+The 7-byte v1 block is kept as the prefix (so any reader of v1, and the H.4/H.5 records already taken, stay valid) and 14 bytes are appended: `rx_err_bytes`, `rx_overflow_bytes`, `overlong_bytes` (their sum is `dropped_bytes`), then `rx_fe`, `rx_pe`, `rx_be` (= the break counter), `rx_oe`, all u16 LE saturating; 21 bytes in all (`OCB_LINK_DEBUG_COUNTERS_LEN`, STATUS body 32 bytes, still inside the TX path's 32-byte body buffer, checked at compile time). The link gains `rx_fe`, `rx_pe`, `rx_oe` counters (each error bit counted separately, so their sum can exceed `rx_err_bytes`). Debug builds only; trailing STATUS bytes are ignored by every decoder (D10 of Story 2.2), so this is not a wire change (D12, D17: no `PROTO_VERSION`, type or vector change). The probe decodes v1 and v2, prints all eleven counters, and names the cause on its `cycle N: dropped_bytes a -> b (...)` line, so a rise at the bench is classified. *Alternative rejected:* replacing `dropped_bytes` with the split (would break the v1 prefix for no gain).
+
 ### Behaviour reference (the tables the tests encode)
 
 **Admission (D5), per decoded frame** (after COBS, length, CRC and type range in `ocb_rx`):
@@ -458,6 +468,12 @@ Code review of commit `91cfad3` (CI green): one important design finding and min
 - [x] **M-6 (recorded, hand-off to Story 2.5)** Stack, review-measured with `-fstack-usage` (ARM release): `ocb_ctrl_link_step` 304 B, `handle_hello` 296 B, `ocb_frame_decode` 296 B, `ocb_link_tx_next` 144 B; worst chain about 750 to 800 B plus the UART ISR frame, against the 2 KB core 1 stack (`PICO_CORE1_STACK_SIZE` default). Story 2.5 re-measures with its super-loop and timer ISR and raises the core 1 stack if its chain approaches 1.5 KB.
 - [x] **M-7 (fixed)** A transport NAK discarded by the closed gate kept the budget spent; now re-armed, and a NAK lost to a full ring no longer spends it (D27); F.16 and F.2 tests; both proven red.
 
+Review of `bb3bacd` (pushed, CI green), three items, all fixed (uncommitted at the time of writing), verified locally:
+
+- [x] **R2-1 (fixed)** The pacer assumed the bridge drains at the full line rate; at about 85 % the backlog could still pass the 1 KB ring. ACK-clocked in-flight cap in the probe (`--max-inflight`, default 960 B) plus `--pace-share` (D33); F.20c at 85 % drain passes with the cap and the bridge drops without it; proven red (`MAX_INFLIGHT = 0`: `AssertionError: 1012 != 0 : 85 % drain: 1012 bytes dropped by the bridge`).
+- [x] **R2-2 (fixed)** `run_soak` used `eval()` on printed text; now `ast.literal_eval` (D34).
+- [x] **R2-3 (fixed)** `dropped_bytes` merged three causes. STATUS debug counters v2 report them separately plus FE/PE/BE/OE (D35); `tx.c`, `config.h`, `link.h/.c`, `docs/link-protocol.md`, the probe's decoder and per-cycle line, `docs/test-plan.md` H.5; F.16 and F.14 extended, probe decoder test added; each proven red.
+
 ## Dev Agent Record
 
 ### Agent Model Used
@@ -502,6 +518,12 @@ Bench session 2026-11-22 (owner and coordinator; controller Zero with the local 
 - **H.5: FAILED (first run).** Seed 1 impaired: cycles 0–7 PASS; cycle 8 `done=False`, STATUS free 154 / last_seq 22 vs wanted 12 / 164, stats sent 5953, resends 54, rewinds 37, NAKs 37 (SEQ 7, CRC 30); every later cycle `sent: 0`, free 512, `last_seq` 10 lower each cycle; 35.9 s in all; 4000 events counted. Clean run: about 30 cycles (15 000 events) PASS, then the same pattern; totals resends 224, rewinds 432, NAKs 432 with no impairment; 31.5 s. Diagnosis (D30): the cascade is the probe's soak-wide 30 s deadline (cycle 8 of the slower impaired run and cycle 30 of the clean run are where 30 s elapse); the NAKs without impairment are bytes dropped by 2wiCC_Comms's USB-to-UART ring when the probe wrote a full 64-frame window at USB speed. Both reproduced on the host by F.20 against the old probe and fixed in the probe; the firmware is unchanged.
 - `dropped_bytes` went from 1 to 4617 during the first (impaired) run and did not move in the clean run that followed. It counts UART error characters, controller RX-ring overflows and overlong bytes, none of which a host-side impairment (bit flips, dropped frames, junk between frames) can produce, and the bridge model does not produce it (0 in every simulated run, including unpaced overflow, whose surviving bytes still contain a delimiter about every 19 bytes). The logs do not say which component it was. It is not the cause of the H.5 failure. The re-run prints `cycle N: dropped_bytes a -> b` when it moves; if it does, check GND continuity and the wiring (Story 1.2 saw corrupted bytes from unbridged breadboard rails) and record which cycle.
 - Red proofs (F.20, against `link_probe.py` of `c68e664` copied back temporarily): `test_long_soak_keeps_sending` FAIL, `... want free=492 last_seq=204 stats={'sent': 0, ...}`, `FAIL: 2500 events enqueued exactly once and in order` (of 3000); `test_soak_through_2wicc_bridge` FAIL, `AssertionError: 64 != 0 : soak: 4 cycles x 500 events, 2.6 s, totals {'events': 2000, 'resends': 4, 'rewinds': 64, 'naks': 64, ...}`. With D30: both pass; the unpaced positive control in the same test shows 36 872 bytes dropped by the bridge model and 64 NAKs, all repaired (soak still PASS).
+
+Review round on `bb3bacd`, red proofs (each reverted):
+
+- D33: `MAX_INFLIGHT = 0` in `link_probe.py`: `link_probe_selftest` failed, `FAIL: test_soak_through_slow_bridge`, `AssertionError: 1012 != 0 : 85 % drain: 1012 bytes dropped by the bridge`.
+- D35 (firmware): `rx_overflow_bytes` written as 0 in `tx.c`: `test_link_tx` failed, `test_link_tx.c:312: FAIL: debug counters differs`, `test_link_tx.c:323: FAIL: saturated counters differs`. `rx_oe` increment removed in `link.c`: `test_link_rx` failed, `test_link_rx.c:205: FAIL: flags 0x8: FE 0 PE 0 OE 0`.
+- D35 (probe decoder): the first two v2 names swapped: `link_probe_selftest` failed, `FAIL: test_debug_counters`, `AssertionError: 8 != 4`.
 
 ### Completion Notes List
 
@@ -590,3 +612,4 @@ Modified:
 - 2026-11-22: Review fix round on `91cfad3`: I-1 decided (D25, bridge leads with probe pulses; AD-20 amendment noted; H.1 / H.7 and link-protocol updated), M-1, M-2, M-3, M-4, M-7 fixed with tests and red proofs (D26 to D29), M-6 stack figures recorded, M-5 deferred.
 - 2026-11-22: Completion notes updated at `a29e76e`: CI run `45011452475` green, local verification, review outcome (re-review clean, M-5 deferred), AC status host vs hardware. Status stays `review` until H.4 to H.7 are recorded.
 - 2026-11-22: First bench session: H.4 PASS, H.5 FAILED (bench sender: soak-wide deadline and unpaced writes into a bridge without flow control, D30); fixed in `link_probe.py`, reproduced on the host by F.20 (D31); R0 by source inspection (D32); firmware unchanged.
+- 2026-11-22: Review round on `bb3bacd`: ACK-clocked in-flight cap and `--pace-share` in the probe (D33), `ast.literal_eval` in the self-test (D34), STATUS debug counters v2 splitting `dropped_bytes` (D35, firmware change); H.5 must be re-run with a fw-debug build that includes D35.

@@ -288,17 +288,32 @@ def describe(ftype, seq, body):
                 f["last_event"], f["flags"]))
         d = debug_counters(f["extra"])
         if d:
-            s += " | max_app_gap_ms=%d watchdog_trips=%d dropped_bytes=%d tx_dropped=%d" % d
+            s += " | " + " ".join("%s=%d" % kv for kv in d.items())
         return s
     return "%s %s (tx seq %d)" % (name, " ".join("%s=%s" % kv for kv in f.items()), seq)
 
 
+DEBUG_V1 = ("max_app_gap_ms", "watchdog_trips", "dropped_bytes", "tx_dropped")
+DEBUG_V2 = ("rx_err_bytes", "rx_overflow_bytes", "overlong_bytes", "rx_fe", "rx_pe", "rx_be", "rx_oe")
+# dropped_bytes = rx_err_bytes + rx_overflow_bytes + overlong_bytes (story 2.6 D35);
+# rx_fe .. rx_oe count the error bits (one character may set several).
+DROP_SPLIT = ("rx_err_bytes", "rx_overflow_bytes", "overlong_bytes", "rx_fe", "rx_pe", "rx_be", "rx_oe")
+
+
 def debug_counters(extra):
-    """STATUS debug counters v1 (7 bytes), or None."""
+    """STATUS debug counters (docs/link-protocol.md) as a dict: the v1 prefix
+    (7 bytes) and, when present, the v2 split of dropped_bytes (14 more
+    bytes); None without debug counters."""
     if len(extra) < 7:
         return None
-    gap, trips, dropped, txd = struct.unpack("<HBHH", extra[:7])
-    return gap, trips, dropped, txd
+    d = dict(zip(DEBUG_V1, struct.unpack("<HBHH", extra[:7])))
+    if len(extra) >= 21:
+        d.update(zip(DEBUG_V2, struct.unpack("<7H", extra[7:21])))
+    return d
+
+
+def drop_split(d):
+    return " ".join("%s=%d" % (k, d[k]) for k in DROP_SPLIT if k in d)
 
 
 # ------------------------------------------------------------------ sender
@@ -314,12 +329,21 @@ class GbnSender:
 
     `write(bytes)` sends; `now()` is the clock; `impair(bytes)` may drop,
     corrupt or pad a frame (returns the bytes to write); `pacer`, if given,
-    limits the bytes written to the UART's rate (see Pacer)."""
+    limits the bytes written to the UART's rate (see Pacer); `max_inflight`,
+    if given, caps the bytes written for QUEUE_EVENTs the controller has not
+    yet confirmed (ACK-clocked, independent of the bridge's drain rate,
+    story 2.6 D33)."""
 
-    def __init__(self, write, now, t_list, hello_seq=0, impair=None, pacer=None):
+    def __init__(self, write, now, t_list, hello_seq=0, impair=None, pacer=None, max_inflight=None,
+                 baud=DEFAULT_BAUD):
         self.write = write
         self.now = now
         self.pacer = pacer
+        self.max_inflight = max_inflight
+        self.writes = []  # [event index, bytes written], oldest first, not yet confirmed
+        self.inflight = 0
+        self.min_drain = baud / 10.0 * MIN_DRAIN_SHARE  # bytes/s, the slowest bridge assumed
+        self.hold_until = 0.0
         self.t_list = list(t_list)
         self.hello_seq = hello_seq & 0xFF
         self.impair = impair or (lambda b: b)
@@ -349,6 +373,24 @@ class GbnSender:
             self.base = count
             self.base_timer = self.now()
             self.next = max(self.next, self.base)
+        self._retire(self.base)
+
+    def _go_back(self):
+        """A rewind or resend abandons the copies still on the wire. Nothing
+        confirms them any more, so they are retired by time: no new
+        QUEUE_EVENT is written until they have drained even from the slowest
+        bridge assumed (MIN_DRAIN_SHARE of the line rate). After a 50 ms
+        timeout that wait is already over (story 2.6 D33)."""
+        if self.max_inflight is not None and self.inflight > 0:
+            self.hold_until = max(self.hold_until, self.now() + self.inflight / self.min_drain)
+        self.writes = []
+        self.inflight = 0
+
+    def _retire(self, count):
+        """Writes of events below `count` have left the wire, in FIFO order:
+        the controller has handled a copy of each of them."""
+        while self.writes and self.writes[0][0] < count:
+            self.inflight -= self.writes.pop(0)[1]
 
     def _send(self, ftype, seq, body):
         self.write(self.impair(frame_encode(ftype, seq, body)))
@@ -379,6 +421,7 @@ class GbnSender:
             self._ack_upto(count)
             if count is not None and (self.rewind_at is None or count > self.rewind_at):
                 self.rewind_at = count
+                self._go_back()
                 self.next = count
                 self.stats["rewinds"] += 1
                 self.base_timer = self.now()
@@ -401,10 +444,13 @@ class GbnSender:
                 self.last_hello = t
             return
         if self.base < self.high and t - self.base_timer >= ACK_TIMEOUT_S:
+            self._go_back()
             self.next = self.base
             self.base_timer = t
             self.rewind_at = None
             self.stats["resends"] += 1
+        if t < self.hold_until:
+            return
         sent = 0
         while self.next < len(self.t_list) and sent < budget:
             if self.next - self.base >= ACK_WINDOW:
@@ -415,15 +461,25 @@ class GbnSender:
                 if self.free <= self.high - self.accepted_by_status:
                     break
             frame = frame_encode(QUEUE_EVENT, self.seq_of(self.next), queue_event_body(self.t_list[self.next]))
+            if self.max_inflight is not None and self.inflight + len(frame) > self.max_inflight:
+                break
             if self.pacer is not None and not self.pacer.take(len(frame)):
                 break
             if self.next == self.base:
                 self.base_timer = t
-            self.write(self.impair(frame))
+            data = self.impair(frame)
+            self.write(data)
+            self.writes.append([self.next, len(data)])
+            self.inflight += len(data)
             self.stats["sent"] += 1
             self.next += 1
             self.high = max(self.high, self.next)
             sent += 1
+
+
+PACE_SHARE = 0.95
+MAX_INFLIGHT = 960  # bytes: 50 QUEUE_EVENT frames, under the 1023-byte ring of 2wiCC_Comms
+MIN_DRAIN_SHARE = 0.80  # slowest bridge drain assumed after a rewind (2wiCC_Comms: about 0.85)
 
 
 class Pacer:
@@ -435,7 +491,7 @@ class Pacer:
     at most `burst` bytes ahead of the line, refilled at 95 % of the line
     rate."""
 
-    def __init__(self, now, baud=DEFAULT_BAUD, burst=256, share=0.95):
+    def __init__(self, now, baud=DEFAULT_BAUD, burst=256, share=PACE_SHARE):
         self.now = now
         self.rate = baud / 10.0 * share
         self.burst = float(burst)
@@ -573,7 +629,14 @@ def _stop(port, seq, timeout=1.0):
 
 
 def make_pacer(port, args):
-    return None if getattr(args, "no_pace", False) else Pacer(port.now, args.baud)
+    if getattr(args, "no_pace", False):
+        return None
+    return Pacer(port.now, args.baud, share=getattr(args, "pace_share", PACE_SHARE))
+
+
+def max_inflight_of(args):
+    v = getattr(args, "max_inflight", MAX_INFLIGHT)
+    return v if v and v > 0 else None
 
 
 def cmd_fill(port, args):
@@ -594,7 +657,7 @@ def cmd_fill(port, args):
         print("no INFO")
         return 1
     sender = GbnSender(port.write, port.now, [(i + 1) * 1000 for i in range(args.count)],
-                       pacer=make_pacer(port, args))
+                       pacer=make_pacer(port, args), max_inflight=max_inflight_of(args), baud=args.baud)
     sender.on_frame(INFO, 0, msg_encode(INFO, info))
     ok = _run_sender(port, sender, 10.0)
     st = _wait_status(port, sender)
@@ -625,12 +688,12 @@ def make_impair(rng, corrupt, drop, garbage):
 
 
 def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pace=True,
-         baud=DEFAULT_BAUD, cycle_timeout=30.0, out=print):
+         baud=DEFAULT_BAUD, cycle_timeout=30.0, out=print, pace_share=PACE_SHARE, max_inflight=MAX_INFLIGHT):
     """H.5: `cycles` x (HELLO, `events` QUEUE_EVENTs through the AD-6 sender,
     check STATUS free / last_seq, STOP). Returns (passed, totals)."""
     rng = random.Random(seed)
     impair = make_impair(rng, corrupt, drop, garbage)
-    pacer = Pacer(port.now, baud) if pace else None
+    pacer = Pacer(port.now, baud, share=pace_share) if pace else None
     t0 = port.now()
     totals = {"events": 0, "resends": 0, "rewinds": 0, "naks": 0, "semantic_naks": 0}
     first_dbg = last_dbg = None
@@ -643,7 +706,8 @@ def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pac
             failures += 1
             continue
         t_list = [(i + 1) * 1000 for i in range(events)]
-        sender = GbnSender(port.write, port.now, t_list, hello_seq=hello_seq, impair=impair, pacer=pacer)
+        sender = GbnSender(port.write, port.now, t_list, hello_seq=hello_seq, impair=impair, pacer=pacer,
+                           max_inflight=max_inflight if max_inflight and max_inflight > 0 else None, baud=baud)
         sender.on_frame(INFO, 0, msg_encode(INFO, info))
         ok = _run_sender(port, sender, cycle_timeout, log_naks=False)
         st = _wait_status(port, sender, 0.15)
@@ -653,9 +717,10 @@ def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pac
             and sender.stats["semantic_naks"] == 0
         if st is not None:
             d = debug_counters(st["extra"])
-            if d and last_dbg and d[2] != last_dbg[2]:
-                # dropped_bytes moved during this cycle: worth a line at the bench.
-                out("cycle %d: dropped_bytes %d -> %d" % (cycle, last_dbg[2], d[2]))
+            if d and last_dbg and d["dropped_bytes"] != last_dbg["dropped_bytes"]:
+                # dropped_bytes moved during this cycle: worth a line at the bench, with its causes.
+                out("cycle %d: dropped_bytes %d -> %d (%s)" % (cycle, last_dbg["dropped_bytes"],
+                                                              d["dropped_bytes"], drop_split(d)))
             first_dbg = first_dbg or d
             last_dbg = d or last_dbg
         if not good:
@@ -670,11 +735,12 @@ def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pac
             _stop(port, stop_seq)
         hello_seq = (stop_seq + 1) & 0xFF
     elapsed = port.now() - t0
-    out("soak: %d cycles x %d events, %.1f s, pacing %s, totals %s" % (
-        cycles, events, elapsed, "on" if pace else "off", totals))
+    out("soak: %d cycles x %d events, %.1f s, pacing %s, max in flight %s, totals %s" % (
+        cycles, events, elapsed, ("%.2f" % pace_share) if pace else "off",
+        ("%d B" % max_inflight) if max_inflight and max_inflight > 0 else "off", totals))
     if first_dbg or last_dbg:
-        out("debug counters first %s last %s (max_app_gap_ms, watchdog_trips, dropped_bytes, tx_dropped)"
-            % (first_dbg, last_dbg))
+        out("debug counters first: %s" % " ".join("%s=%d" % kv for kv in (first_dbg or {}).items()))
+        out("debug counters last:  %s" % " ".join("%s=%d" % kv for kv in (last_dbg or {}).items()))
     out("%s: %d events enqueued exactly once and in order" % ("PASS" if failures == 0 else "FAIL",
                                                               totals["events"]))
     return failures == 0, totals
@@ -682,7 +748,9 @@ def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pac
 
 def cmd_soak(port, args):
     passed, _ = soak(port, args.cycles, args.events, seed=args.seed, corrupt=args.corrupt, drop=args.drop,
-                     garbage=args.garbage, pace=not args.no_pace, baud=args.baud)
+                     garbage=args.garbage, pace=not args.no_pace, baud=args.baud,
+                     pace_share=getattr(args, "pace_share", PACE_SHARE),
+                     max_inflight=getattr(args, "max_inflight", MAX_INFLIGHT))
     return 0 if passed else 1
 
 
@@ -744,6 +812,10 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--no-pace", action="store_true",
                     help="write QUEUE_EVENTs as fast as the window allows (default: paced to the UART rate)")
+    ap.add_argument("--pace-share", type=float, default=PACE_SHARE,
+                    help="pacing rate as a fraction of baud/10 bytes/s (default %(default)s)")
+    ap.add_argument("--max-inflight", type=int, default=MAX_INFLIGHT,
+                    help="max bytes of unconfirmed QUEUE_EVENTs on the wire, 0 = no cap (default %(default)s)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("hello", help="HELLO until INFO, print INFO")
     p.add_argument("--seconds", type=float, default=3.0)

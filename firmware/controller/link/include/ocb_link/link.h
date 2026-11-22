@@ -73,6 +73,9 @@ typedef struct {
     uint32_t rx_overflow;     /* ring overflow markers seen (gaps, not bytes) */
     uint32_t rx_err_runs;     /* runs in progress abandoned by an error or a gap */
     uint32_t breaks;          /* entries with BE (sticky for Story 2.7) */
+    uint32_t rx_fe;           /* entries with FE (framing error) */
+    uint32_t rx_pe;           /* entries with PE (parity error) */
+    uint32_t rx_oe;           /* entries with OE (overrun); an entry may set several bits */
     uint32_t overlong_bytes;  /* bytes of overlong runs discarded by the splitter */
     uint32_t app_frames;      /* valid app frames (0x01..0x3F) */
     uint32_t heartbeats;      /* valid HEARTBEATs */
