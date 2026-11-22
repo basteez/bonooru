@@ -354,6 +354,7 @@ class HangBoard:
         self.never_neutral = never_neutral
         self.back_pressed = back_pressed
         self.spawned = []
+        self.children = []
         self.ran = []
         self.run_rc = 0
 
@@ -391,7 +392,8 @@ class HangBoard:
 
     def spawn(self, argv):
         self.spawned.append(argv)
-        return FakeChild()
+        self.children.append(FakeChild())
+        return self.children[-1]
 
     def run(self, argv):
         self.ran.append(argv)
@@ -399,8 +401,11 @@ class HangBoard:
 
 
 class FakeChild:
+    def __init__(self):
+        self.terminated = 0
+
     def terminate(self):
-        pass
+        self.terminated += 1
 
     def communicate(self):
         return ("selfplay output", None)
@@ -475,6 +480,7 @@ class Stall(unittest.TestCase):
         self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
         self.assertEqual(board.spawned[0][2:5], ["--port", "/dev/cu.test", "selfplay"])
         self.assertEqual(board.ran[0][2:], ["--port", "/dev/cu.test", "hangcheck", "--expect", "core1"])
+        self.assertEqual([c.terminated for c in board.children], [1])
         rc, text, board = self.stall("core0", args=stall_args(drive=True, port=None))
         self.assertEqual(rc, 1, text)
         self.assertIn("--drive needs --port", last_line(text))
@@ -483,6 +489,10 @@ class Stall(unittest.TestCase):
         rc, text, _ = self.stall("core0", never_gone=True)
         self.assertEqual(rc, 1, text)
         self.assertIn("vanished within", last_line(text))
+        # Review fix: the --drive child is ended on every path, also this one.
+        rc, text, board = self.stall("core0", never_gone=True, args=stall_args(drive=True, port="/dev/cu.test"))
+        self.assertEqual(rc, 1, text)
+        self.assertEqual([c.terminated for c in board.children], [1])
         rc, text, _ = self.stall("core0", gone_after_s=0.160)
         self.assertEqual(rc, 1, text)
         self.assertIn("stall to gone", last_line(text))

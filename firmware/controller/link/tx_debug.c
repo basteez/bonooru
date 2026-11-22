@@ -29,7 +29,8 @@
 /* The UART driver's TX ring (ocb_hw/uart_link.h, OCB_UART_LINK_TX_RING): a
  * pure library cannot include it, so the size is restated here and pinned
  * by F.16 (story 2.5 D13: the largest STATUS must fit an empty ring, never
- * split). */
+ * split); platform/link_runner.c asserts the real ring against the same
+ * frame size where both are visible. */
 #define TX_DBG_UART_RING 128
 
 typedef char ocb_link_tx_dbg_fits[(OCB_LINK_DEBUG_COUNTERS_LEN + OCB_LINK_DEBUG_V3_HEADER_LEN +

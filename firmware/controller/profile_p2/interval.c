@@ -45,7 +45,18 @@ void ocb_p2_interval_note(ocb_p2 *p, uint64_t now_us)
     const uint32_t dt = now - iv->last_us;
     iv->last_us = now;
     if (dt > OCB_P2_IV_MAX_US) {
-        return; /* the host stopped polling, or the clock went back */
+        /* Not in the window (the median must not move), but a stall while
+         * a median is published is a result: slow, and the true maximum
+         * (review fix). A backwards step (dt >= 2^31) is no interval. */
+        if (iv->median_us != 0u && dt < 0x80000000u) {
+            if (iv->slow != UINT32_MAX) {
+                iv->slow++;
+            }
+            if (dt > iv->long_max_us) {
+                iv->long_max_us = dt;
+            }
+        }
+        return;
     }
     const uint16_t bin = (uint16_t)((dt + OCB_P2_IV_BIN_US / 2u) / OCB_P2_IV_BIN_US);
     if (iv->count >= OCB_P2_IV_WINDOW) {
@@ -135,7 +146,7 @@ uint32_t ocb_p2_interval_p95_us(const ocb_p2 *p)
 
 uint32_t ocb_p2_interval_max_us(const ocb_p2 *p)
 {
-    return p->iv.max_us;
+    return p->iv.long_max_us > p->iv.max_us ? p->iv.long_max_us : p->iv.max_us;
 }
 
 uint32_t ocb_p2_interval_slow(const ocb_p2 *p)

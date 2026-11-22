@@ -100,9 +100,29 @@ static void test_spread(ocb_p2 *p)
     OCB_CHECK(ocb_p2_interval_slow(p) == 1u, "slow is since the restart, not the window: %u",
               ocb_p2_interval_slow(p));
 
+    /* Review fix: a 30 ms stall (above the 20 ms window limit) while a
+     * median is published is slow and is the reported maximum, without
+     * entering the window (the median and p95 do not move); a backwards
+     * clock step is no stall. */
+    {
+        const uint32_t slow0 = ocb_p2_interval_slow(p);
+        const uint16_t count0 = p->iv.count;
+        train(p, 30000, 1);
+        OCB_CHECK(ocb_p2_interval_slow(p) == slow0 + 1u, "30 ms stall not slow: %u", ocb_p2_interval_slow(p));
+        OCB_CHECK(ocb_p2_interval_max_us(p) == 30000u, "30 ms stall not the max: %u", ocb_p2_interval_max_us(p));
+        OCB_CHECK(p->iv.count == count0 && ocb_p2_interval_p95_us(p) == 8000u && ocb_p2_report_period_us(p) == 8000u,
+                  "the stall entered the window");
+        train(p, 8000, 300);
+        OCB_CHECK(ocb_p2_interval_max_us(p) == 30000u, "the stall max is kept since the restart");
+        g_t -= 5000u;
+        ocb_p2_interval_note(p, g_t);
+        OCB_CHECK(ocb_p2_interval_slow(p) == slow0 + 1u, "a backwards step counted as a stall");
+    }
+
     /* Restart zeroes all. */
     ocb_p2_restart(p);
     spread_is(p, 0u, 0u, 0u, "after restart");
+    OCB_CHECK(p->iv.long_max_us == 0u, "restart: the stall max not cleared");
     OCB_CHECK(ocb_p2_interval_slow(p) == 0u, "restart: slow %u", ocb_p2_interval_slow(p));
 
     /* slow saturates. */

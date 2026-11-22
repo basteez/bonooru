@@ -639,10 +639,34 @@ def _stream_on(dev, out):
     return h
 
 
+class _Child:
+    """The --drive selfplay process: ended exactly once, on every path."""
+
+    def __init__(self):
+        self.proc = None
+
+    def end(self):
+        """Terminates it (if any, once) and returns the last lines it printed."""
+        if self.proc is None:
+            return []
+        proc, self.proc = self.proc, None
+        proc.terminate()
+        return (proc.communicate()[0] or "").splitlines()[-5:]
+
+
 def run_stall(backend, args, out=print):
     """H.2a/H.2b: times a hang from the first note to the device vanishing,
     checks the board comes back with nothing pressed, and (with --drive)
-    runs link_probe.py selfplay and hangcheck itself."""
+    runs link_probe.py selfplay and hangcheck itself. The selfplay child is
+    ended on every path (review fix)."""
+    child = _Child()
+    try:
+        return _run_stall(backend, args, out, child)
+    finally:
+        child.end()
+
+
+def _run_stall(backend, args, out, child):
     fails = []
 
     def check(ok, text):
@@ -667,11 +691,10 @@ def run_stall(backend, args, out=print):
                  ("0" if args.expect == "core0" else "1")):
         return finish()
     _stream_on(dev, out)
-    child = None
     if args.drive:
         if not check(bool(args.port), "--drive needs --port \"$P\" (the bridge's serial port)"):
             return finish()
-        child = backend.spawn(_link_probe_argv(args, "selfplay", "--wait-s", "%d" % args.wait_s))
+        child.proc = backend.spawn(_link_probe_argv(args, "selfplay", "--wait-s", "%d" % args.wait_s))
         out(">>> STREAM ON. link_probe.py selfplay started on %s; waiting up to %.0f s for the first note." % (
             args.port, args.wait_s))
     else:
@@ -704,10 +727,8 @@ def run_stall(backend, args, out=print):
             continue
         if t_press is not None and not backend.present():
             t_gone = time.monotonic()
-    if child is not None and t_press is None:
-        child.terminate()
-        tail = (child.communicate()[0] or "").splitlines()[-5:]
-        for line in tail:
+    if t_press is None:
+        for line in child.end():
             out("     selfplay: %s" % line)
     if not check(t_press is not None, "a note button pressed in the 0x30 stream within %.0f s (%d reports)" % (
             args.wait_s, n)):
@@ -739,9 +760,7 @@ def run_stall(backend, args, out=print):
     while not backend.present() and time.monotonic() < end:
         time.sleep(0.05)
     back = backend.present()
-    if child is not None:
-        child.terminate()
-        child.communicate()
+    child.end()
     if not check(back, "the controller came back (re-enumerated) within %.0f s" % args.wait_s):
         return finish()
     out("     back %.0f ms after it vanished" % ((time.monotonic() - t_gone) * 1000.0))

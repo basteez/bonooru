@@ -74,6 +74,14 @@ static bool s_tl_tried; /* a load failed since the core last left the loadable s
 #endif
 
 typedef char ocb_queue_cap_fits_u16[(OCB_QUEUE_CAP_DEFAULT <= 0xFFFF) ? 1 : -1];
+/* Story 2.5 D13 (review fix): the largest debug STATUS (header, 11-byte base
+ * body, the full debug tail, CRC, one COBS byte, the delimiter) fits the UART
+ * driver's TX ring in one frame; tx_debug.c restates the ring size because a
+ * pure library cannot include ocb_hw, this is where both are visible. */
+#define OCB_CTRL_STATUS_WIRE_MAX                                                                                     \
+    (OCB_FRAME_HEADER_SIZE + OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_TAIL_MAX_LEN + OCB_FRAME_CRC_SIZE + 2)
+_Static_assert(OCB_UART_LINK_TX_RING >= OCB_CTRL_STATUS_WIRE_MAX,
+               "the UART TX ring must hold the largest debug STATUS frame (story 2.5 D13)");
 
 void ocb_ctrl_usb_mailbox_init(void)
 {
@@ -101,7 +109,7 @@ void ocb_ctrl_link_init(void)
     ocb_link_init(&s_link, &s_core, &s_mailbox, &cfg, t);
     /* D28: the mailbox was zeroed by main() before core 1 started, so count
      * from zero: anything core 0 posted in between is seen, not lost. */
-    static const ocb_usb_mailbox k_zero_mailbox = {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    static const ocb_usb_mailbox k_zero_mailbox = {0};
     ocb_link_ready_rebase(&s_link, &k_zero_mailbox, t);
 
     const uint32_t baud = ocb_uart_link_init();

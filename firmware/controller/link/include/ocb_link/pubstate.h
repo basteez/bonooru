@@ -19,8 +19,11 @@
  * Reader, one try: g0 = gen, barrier, copy slot (g0 >> 1) & 1, barrier,
  * g1 = gen; the copy is accepted when g1 - (g0 & ~1) <= 2 (at most one
  * complete publish and no start of the next one during the copy). At most
- * OCB_PUBSTATE_TRIES tries, then NEUTRAL (AD-11: "retry <= 3, then
- * NEUTRAL"), which replaces Story 2.3 D35's "keep the last good copy".
+ * OCB_PUBSTATE_TRIES = 3 tries in total (the first one and 2 retries),
+ * then NEUTRAL. AD-11 says "the reader retries at most 3 times, then uses
+ * NEUTRAL": 2 retries is within that bound and falls back sooner (story 2.5
+ * review: the reading is explicit). This replaces Story 2.3 D35's "keep the
+ * last good copy".
  *
  * Why the generation counts half publishes (D22): with a counter advanced
  * once per publish after the slot is written, a reader that copies slot

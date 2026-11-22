@@ -28,6 +28,11 @@ This test makes the copies in docs/link-protocol.md fail loudly when they drift:
      "Rules the controller applies (Story 2.5)" (20 ms, 60 ms, 5 ms, 85 ms)
      equal ocb_core/live.h; the LATE fallback written in the docs (8000 us)
      equals ocb_core/core.h.
+  6. story 2.5 review: the core 1 stack limit (1536 bytes) is the same in
+     tools/check-stack.sh, tools/link_probe.py (STACK_LIMIT_B) and the H.18
+     row of docs/test-plan.md, and the loop bound (5000 us) is the same in
+     ocb_core/live.h (OCB_LIVE_LOOP_BOUND_US), tools/link_probe.py
+     (LOOP_LIMIT_US) and the H.18 row.
 Stdlib only.
 """
 
@@ -246,6 +251,36 @@ def check_story_2_5(link_doc, cfg, live, late_fallback):
     return errors
 
 
+def check_limits(live):
+    """Story 2.5 review: one stack limit and one loop bound everywhere."""
+    errors = []
+
+    def grab(text, rx, what):
+        m = re.search(rx, text, re.M)
+        if m is None:
+            errors.append("%s not found" % what)
+            return None
+        return int(m.group(1))
+
+    stack_sh = grab(read("firmware", "tools", "check-stack.sh"), r"^limit=(\d+)$", "check-stack.sh limit=")
+    probe = read("firmware", "tools", "link_probe.py")
+    stack_py = grab(probe, r"^STACK_LIMIT_B = (\d+)\b", "link_probe.py STACK_LIMIT_B")
+    loop_py = grab(probe, r"^LOOP_LIMIT_US = (\d+)\b", "link_probe.py LOOP_LIMIT_US")
+    plan = read("docs", "test-plan.md")
+    m = re.search(r"^\| H\.18 \|.*$", plan, re.M)
+    row = m.group(0) if m else ""
+    stack_doc = grab(row, r"stack mark ≤ (\d+) bytes", "test-plan H.18 stack mark limit")
+    loop_doc = grab(row, r"loop maximum and `core0_pass_max_us` ≤ (\d+) µs", "test-plan H.18 loop limit")
+    stacks = {"check-stack.sh": stack_sh, "link_probe.py": stack_py, "test-plan H.18": stack_doc}
+    if len(set(stacks.values())) != 1 or None in stacks.values():
+        errors.append("the core 1 stack limit differs: %s" % stacks)
+    loops = {"live.h OCB_LIVE_LOOP_BOUND_US": live.get("LIVE_LOOP_BOUND_US"), "link_probe.py": loop_py,
+             "test-plan H.18": loop_doc}
+    if len(set(loops.values())) != 1 or None in loops.values():
+        errors.append("the loop bound differs: %s" % loops)
+    return errors
+
+
 def main():
     global REPO
     if len(sys.argv) != 2:
@@ -255,6 +290,7 @@ def main():
     errors += check_p2(read("docs", "usb-controller-emulation.md"), read("docs", "link-protocol.md"), p2_config(),
                        config_values())
     errors += check_story_2_5(read("docs", "link-protocol.md"), config_values(), live_values(), core_late_fallback())
+    errors += check_limits(live_values())
     for e in errors:
         print("docs_constants_check: FAIL %s" % e)
     if errors:

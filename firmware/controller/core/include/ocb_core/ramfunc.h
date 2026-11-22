@@ -13,9 +13,12 @@
  * SDK's copy_to_ram binary type, so the whole program (every library, the
  * SDK, TinyUSB, the ocb_proto decoders, OCB_NEUTRAL and the compiler's
  * switch tables) runs from SRAM and this macro stays empty;
- * tools/check-ram-hot-path.sh proves the hot functions are in RAM. The
- * macro keeps its role for the XIP comparison variant
- * (OCB_CONTROLLER_RUN_FROM_RAM=OFF, H.20), where a build may define it.
+ * tools/check-ram-hot-path.sh proves the hot functions are in RAM. No
+ * build defines the macro: the XIP comparison variant
+ * (OCB_CONTROLLER_RUN_FROM_RAM=OFF, bench H.20) compares the whole image in
+ * RAM with the whole image in flash, where only the functions the
+ * platform glue marks with the SDK's RAM attribute stay in RAM. The macro
+ * stays as the hook a later build could define.
  */
 #ifndef OCB_CORE_RAMFUNC_H
 #define OCB_CORE_RAMFUNC_H
