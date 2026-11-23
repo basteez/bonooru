@@ -590,6 +590,7 @@ STALL_HANG_DELAY_MS = 50   # OCB_DEBUG_HANG_DELAY_US of the hang presets
 STALL_REPORT_LATENCY_MS = 4  # a report reaches hidapi within one Mac poll (2 ms) plus one more
 STALL_LIMIT_MS = 100       # AC4: stall to reset, the board's own interval (hangcheck, D31)
 STALL_CONSISTENCY_MS = 5   # host last report to gone may undercut the board's interval by this much (2 ms polls)
+STALL_CORE1_AGREE_MS = 15  # core 1: host hang-to-last-report vs the board's interval (polls, arming, D34)
 STALL_GONE_BUDGET_S = 2.0  # after the press: the device must vanish by then
 STALL_POLL_S = 0.005       # presence poll while the reports are silent
 STALL_STOP_GAP_MS = 10     # core 0 hang: the reports stop at least this long before the device vanishes
@@ -840,6 +841,20 @@ def _run_stall(backend, args, out, child):
                     % (removal, (t_gone - t_last) * 1000.0, device_ms))
                 check(removal >= -STALL_CONSISTENCY_MS, "host and board agree: the host saw at least the board's "
                       "interval (within %d ms)" % STALL_CONSISTENCY_MS)
+            elif t_last is not None:
+                # D34: core 0 keeps reporting (NEUTRAL) until the watchdog
+                # resets the board, so the host's last report marks the reset
+                # (within one 2 ms poll) and press + hang delay marks the hang
+                # (the note is seen within one poll of its publication): an
+                # independent estimate of the board's interval.
+                host_ms = (t_last - t_press) * 1000.0 - delay
+                check(abs(host_ms - device_ms) <= STALL_CORE1_AGREE_MS,
+                      "host and board agree: hang to the last report %.1f ms vs the board's %.1f ms (within %d ms)"
+                      % (host_ms, device_ms, STALL_CORE1_AGREE_MS))
+                removal = (t_gone - t_last) * 1000.0
+                info["removal_ms"] = removal
+                out("     macOS removal latency this run: %.1f ms (last report to gone; core 0 reported until the "
+                    "reset)" % removal)
     else:
         out("     run `python3 firmware/tools/link_probe.py --port \"$P\" hangcheck --expect %s` now for the AC4 "
             "number (the board's own stall-to-reset)" % args.expect)

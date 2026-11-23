@@ -100,6 +100,17 @@ uint32_t ocb_live_span_decode(uint32_t word);
  * init), us; 0 when the clock went back. */
 uint64_t ocb_live_peer_since_us(const ocb_live_peer *p, uint64_t now_us);
 
+/* Story 2.5 D34: the stall-to-reset interval when core 1 stalled and core 0
+ * stopped feeding the hardware watchdog: the watchdog fires
+ * OCB_WDT_TIMEOUT_MS after the last feed (the SDK doubles the load for
+ * RP2040-E1, so the programmed time is the real one), so the interval from
+ * core 1's last pass (as core 0 saw it) to the reset is
+ * last_feed + OCB_WDT_TIMEOUT_MS * 1000 - peer_last_change, us, 0 if
+ * negative, saturating at UINT32_MAX. Both times on core 0's clock. The
+ * watchdog's own TIME field is not used: on the RP2040 it does not hold the
+ * remaining time (pico-sdk watchdog.h, watchdog_get_time_remaining_us). */
+uint32_t ocb_live_watchdog_stall_to_reset_us(uint64_t peer_last_change_us, uint64_t last_feed_us);
+
 /* Cause helpers: decode refuses values above OCB_LIVE_CAUSE_MAX (NONE). */
 uint32_t ocb_live_cause_encode(uint8_t cause);
 uint8_t ocb_live_cause_decode(uint32_t word);

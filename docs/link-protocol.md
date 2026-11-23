@@ -315,7 +315,7 @@ The firmware's `controller/link` (`ocb_link`) sits between the UART and the core
     | 35 | `stack_used_max u16` | the core 1 stack high-water mark, bytes (painted stack, scanned 8 words per pass) |
     | 37 | `boot_cause u8` | why the board last rebooted: `0` none (power-on), `1` core 0 stalled, `2` core 1 stalled, `3` core 1 never came alive |
     | 38 | `reboot_count u8` | liveness reboots since power-on |
-    | 39 | `stall_reset_10us u16` | the last liveness reboot's interval from the stalled core's last loop pass to the reset, measured by the board itself (10 µs units; 0 after a power-on): core 0 stalled, the time until core 1 reboots; core 1 stalled, the time until core 0 saw it plus the hardware watchdog's remaining time |
+    | 39 | `stall_reset_10us u16` | the last liveness reboot's interval from the stalled core's last loop pass to the reset, measured by the board itself (10 µs units; 0 after a power-on): core 0 stalled, the time until core 1 reboots; core 1 stalled, the time until the hardware watchdog fires, i.e. core 0's last feed plus the 60 ms timeout (Story 2.5 D34; the watchdog's own count register does not hold the remaining time on the RP2040) |
 
     With v4 the debug tail is 65 bytes with an empty window, at most 97; the largest debug STATUS body is 108 bytes (115 bytes on the wire), which fits the controller's 128-byte UART TX ring in one frame.
   - These are debug aids, not wire values: no `PROTO_VERSION` change, and a later debug layout may append more.

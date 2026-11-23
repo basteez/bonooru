@@ -131,9 +131,34 @@ static void test_span(void)
     OCB_CHECK(ocb_live_peer_since_us(&p, 100u) == 0u, "clock back: 0");
 }
 
+/* Story 2.5 D34: the core-1-stall interval from the last feed, not from the
+ * watchdog's TIME field. The bench H.2b attempt 1 timeline: core 1's last
+ * pass at 1 000 000 us, core 0 feeding every pass until it saw core 1 stale
+ * 20 001 us later (last feed at 1 020 000 us). */
+static void test_watchdog_span(void)
+{
+    const uint64_t last_pass = 1000000u;
+    const uint64_t last_feed = 1020000u;
+    OCB_CHECK(ocb_live_watchdog_stall_to_reset_us(last_pass, last_feed) == 80000u, "20 ms + 60 ms: %u",
+              ocb_live_watchdog_stall_to_reset_us(last_pass, last_feed));
+    /* The D31 formula of 526d073, time since the last pass plus the SDK's
+     * "remaining" read, which on the RP2040 is not the remaining time: with
+     * the 250 000 us the bench implies it reported 270 000 us. */
+    const uint32_t buggy = (uint32_t)(20001u - 1u) + 250000u;
+    OCB_CHECK(buggy == 270000u && ocb_live_watchdog_stall_to_reset_us(last_pass, last_feed) != buggy,
+              "the new formula does not depend on the TIME field");
+    /* The watchdog-only bound: a feed right at core 1's last pass. */
+    OCB_CHECK(ocb_live_watchdog_stall_to_reset_us(last_pass, last_pass) == 60000u, "feed at the last pass: 60 ms");
+    OCB_CHECK(ocb_live_watchdog_stall_to_reset_us(2000000u, 1000000u) == 0u, "reset before the last pass: 0");
+    OCB_CHECK(ocb_live_watchdog_stall_to_reset_us(0u, 0xFFFFFFFFFFull) == UINT32_MAX, "saturates");
+    OCB_CHECK(ocb_live_span_decode(ocb_live_span_encode(ocb_live_watchdog_stall_to_reset_us(last_pass, last_feed)))
+                  == 80000u, "through the scratch word: 80000 us");
+}
+
 int main(void)
 {
     test_span();
+    test_watchdog_span();
     test_boundary();
     test_steady();
     test_wrap();

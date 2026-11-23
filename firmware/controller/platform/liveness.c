@@ -32,6 +32,7 @@ static bool s_cause_written;
 static uint8_t s_boot_cause;
 static uint8_t s_reboot_count;
 static uint32_t s_stall_reset_us;
+static uint64_t s_last_feed_us; /* core 0: when it last loaded the watchdog (D34) */
 
 /* Core 1 only. */
 static ocb_live_peer s_core0_peer;
@@ -66,6 +67,7 @@ void liveness_boot(void)
     s_core1_stale = false;
     s_cause_written = false;
     watchdog_enable(OCB_WDT_TIMEOUT_MS, true);
+    s_last_feed_us = time_us_64(); /* the enable loads the counter: a feed */
 }
 
 uint8_t liveness_boot_cause(void)
@@ -96,19 +98,21 @@ void __not_in_flash_func(liveness_core0_step)(void)
     const bool stale = ocb_live_peer_stale(&s_core1_peer, c1, now);
     if (ocb_live_core0_may_feed(stale) && !s_core1_stale) {
         watchdog_update();
+        s_last_feed_us = now; /* D34: the reset comes OCB_WDT_TIMEOUT_MS after the last of these */
         return;
     }
     /* Latched until the reset: NEUTRAL reports, no feeding. */
     s_core1_stale = true;
     if (!s_cause_written) {
         s_cause_written = true;
-        /* D31: the reset comes when the watchdog runs out, which it does
-         * now that nobody feeds it: stall to reset = time since core 1's
-         * last pass + the watchdog's remaining time (us; the SDK divides
-         * the RP2040's double-decrementing count by 2, E1). */
-        const uint64_t since = ocb_live_peer_since_us(&s_core1_peer, now);
-        const uint64_t span = since + (uint64_t)watchdog_get_time_remaining_us();
-        record_cause(ocb_live_core1_cause(&s_core1_peer), span > UINT32_MAX ? UINT32_MAX : (uint32_t)span);
+        /* D31, D34: the reset comes OCB_WDT_TIMEOUT_MS after the last
+         * feed (nobody feeds the watchdog any more), so stall to reset =
+         * last feed + timeout - core 1's last pass, all on core 0's clock.
+         * Not the watchdog's TIME field: on the RP2040 it does not hold the
+         * remaining time (pico-sdk watchdog.h), which gave 270 ms at bench
+         * H.2b attempt 1 for a reset about 79 ms after the hang. */
+        record_cause(ocb_live_core1_cause(&s_core1_peer),
+                     ocb_live_watchdog_stall_to_reset_us(s_core1_peer.last_change_us, s_last_feed_us));
     }
 }
 

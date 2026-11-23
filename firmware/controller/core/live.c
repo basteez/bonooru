@@ -93,3 +93,13 @@ uint64_t ocb_live_peer_since_us(const ocb_live_peer *p, uint64_t now_us)
 {
     return now_us > p->last_change_us ? now_us - p->last_change_us : 0u;
 }
+
+uint32_t ocb_live_watchdog_stall_to_reset_us(uint64_t peer_last_change_us, uint64_t last_feed_us)
+{
+    const uint64_t reset_us = last_feed_us + (uint64_t)OCB_WDT_TIMEOUT_MS * 1000u;
+    if (reset_us <= peer_last_change_us) {
+        return 0u;
+    }
+    const uint64_t span = reset_us - peer_last_change_us;
+    return span > (uint64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)span;
+}

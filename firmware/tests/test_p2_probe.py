@@ -21,8 +21,10 @@ Run by ctest as `python3 -I test_p2_probe.py FIRMWARE_DIR P2_SIM_LIB`.
    the board comes back neutral; --drive ends selfplay when the device
    vanishes and takes the AC4 number from hangcheck's board-side
    stall-to-reset (D31, D32); --runs N gives the macOS removal latency
-   (median, max). Negative controls: the device never vanishing, a board
-   interval above 100 ms, host and board disagreeing, coming back with a
+   (median, max); for core 1 the host's hang-to-last-report must agree with
+   the board's interval within 15 ms (D34). Negative controls: the device never vanishing, a board
+   interval above 100 ms, host and board disagreeing (core 0, and the
+   270 ms of bench H.2b attempt 1 for core 1), coming back with a
    note pressed, core 1's reports never turning NEUTRAL, hangcheck failing,
    --runs without --drive.
 """
@@ -401,9 +403,12 @@ class HangBoard:
     def reporting(self):
         if self.gone():
             return False
-        if self.expect == "core0" and not self.rebooted() and self.clock.t >= self.t_hang:
-            return False
-        return True
+        if self.rebooted():
+            return True
+        if self.expect == "core0" and self.clock.t >= self.t_hang:
+            return False  # core 0 hung: no more reports
+        # The board reset: nothing reports, macOS has not noticed yet.
+        return self.clock.t < self.t_hang + self.reset_after_s
 
     # The backend interface of p2_probe.run_stall.
     def open(self):
@@ -528,7 +533,15 @@ class Stall(unittest.TestCase):
         rc, text, board = self.stall("core1", args=drive(expect="core1"))
         self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
         self.assertIn("AC4: the board's own stall-to-reset 80.0 ms <= 100 ms", text)
-        self.assertNotIn("removal latency this run", text)
+        self.assertRegex(text, r"ok   host and board agree: hang to the last report 7[89]\.[0-9] ms vs the board's 80\.0 ms")
+        self.assertRegex(text, r"macOS removal latency this run: 11[0-2]\.[0-9] ms \(last report to gone")
+        # D34, bench H.2b attempt 1: the board reported 270 ms for a reset the
+        # host saw about 79 ms after the hang. The cross-check catches it even
+        # under a loose board limit.
+        rc, text, board = self.stall("core1", args=drive(expect="core1"), device_us=270000)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("AC4: the board's own stall-to-reset 270.0 ms", text)
+        self.assertIn("FAIL host and board agree: hang to the last report", text)
         rc, text, board = self.stall("core0", args=stall_args(drive=True, port=None))
         self.assertEqual(rc, 1, text)
         self.assertIn("--drive needs --port", last_line(text))
