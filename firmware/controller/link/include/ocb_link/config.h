@@ -41,9 +41,21 @@
 #define OCB_LINK_DEBUG_COUNTERS_LEN 21
 /* v3 (story 2.3 D14) appends the P2 debug log window: p2_log_total u16,
  * p2_log_n u8 (0..16), then p2_log_n records of 2 bytes (kind, id), oldest
- * first. Debug tail: 24 bytes with an empty window, at most 56. */
+ * first. v1 to v3: 24 bytes with an empty window, at most 56. */
 #define OCB_LINK_DEBUG_V3_HEADER_LEN 3
-#define OCB_LINK_DEBUG_TAIL_MAX_LEN 56
+#define OCB_LINK_DEBUG_V3_MAX_LEN 56
+/* v4 (story 2.5 D13): one fixed block after the v3 window, at offset
+ * 24 + 2 * p2_log_n of the tail, every u16 saturating:
+ *   0 late_n u16, 2 late_max_us u16, 4 late_sum_us u32, 8 late_hist u16 x 6,
+ *  20 loop_max_us u16, 22 core0_pass_max_us u16, 24 in_min_us u16,
+ *  26 in_p95_us u16, 28 in_max_us u16, 30 in_slow u16, 32 seq_retries u16,
+ *  34 seq_fallbacks u8, 35 stack_used_max u16, 37 boot_cause u8,
+ *  38 reboot_count u8, 39 stall_reset_10us u16 (D31: the board's own
+ *  stall-to-reset interval of the last liveness reboot, 10 us units).
+ * Debug tail: 65 bytes with an empty window, at most 97; the largest
+ * debug STATUS body is 11 + 97 = 108 bytes. */
+#define OCB_LINK_DEBUG_V4_LEN 41
+#define OCB_LINK_DEBUG_TAIL_MAX_LEN 97
 
 /* RX ring entry layout: the PL011 data register value (dr & 0x0FFF). */
 #define OCB_LINK_RX_DATA_MASK 0x00FFu
@@ -56,10 +68,13 @@
  * entries (D19). */
 #define OCB_LINK_RX_OVERFLOW_MARK 0x1000u
 
-/* Compiler barrier between the slot write and the index publication of the
- * RX ring. The ring's storage and indices are volatile, which already keeps
- * the two stores in order on one core; a build may still define a stronger
- * barrier through a compile definition. Empty on the host. */
+/* Memory barrier between a slot write and the index (or generation)
+ * publication of the RX ring, the debug log ring and the published-state
+ * double buffer. Their storage and indices are volatile, which keeps the
+ * stores in order for one core; across the two cores the firmware builds
+ * force-include controller/platform/ocb_link_barrier.h, which defines it as
+ * a real DMB (story 2.5 D5, D24; tools/check-barrier.sh checks the ELF).
+ * Empty on the host (single-threaded tests). */
 #ifndef OCB_LINK_BARRIER
 #define OCB_LINK_BARRIER() ((void)0)
 #endif

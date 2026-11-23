@@ -307,7 +307,7 @@ static void test_rebase(void)
     ocb_ready_init(&h.link.ready, &h.mb, h.now); /* what ocb_link_init does */
     ocb_link_poll(&h.link, h.now);
     OCB_CHECK(!ocb_link_console_ready(&h.link, h.now), "snapshot baseline: pre-init handshake counted");
-    static const ocb_usb_mailbox zero = {0u, 0u, 0u, 0u, 0u, 0u};
+    static const ocb_usb_mailbox zero = {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
     ocb_link_ready_rebase(&h.link, &zero, h.now);
     ocb_link_poll(&h.link, h.now);
     OCB_CHECK(ocb_link_console_ready(&h.link, h.now), "zero baseline: pre-init handshake lost");
@@ -331,10 +331,40 @@ static void test_report_period_field(void)
     expect_ready(&h, true, "a period of 0 is not a USB-down event");
 }
 
+/* Story 2.5 D12, D13: the self-timing fields start at 0, are stored as
+ * given, and never touch `ready`. */
+static void test_self_timing_fields(void)
+{
+    static lh h;
+    fake_profile p;
+    setup(&h, &p);
+    const ocb_usb_mailbox *m = &h.mb;
+    OCB_CHECK(m->in_min_us == 0u && m->in_p95_us == 0u && m->in_max_us == 0u && m->in_slow == 0u &&
+                  m->core0_pass_max_us == 0u && m->seq_retries == 0u && m->seq_fallbacks == 0u,
+              "mailbox init: self-timing fields not zero");
+    ocb_usb_mailbox_set_in_spread(&h.mb, 7950u, 8050u, 16000u, 3u);
+    ocb_usb_mailbox_set_core0(&h.mb, 412u, 9u, 1u);
+    OCB_CHECK(m->in_min_us == 7950u && m->in_p95_us == 8050u && m->in_max_us == 16000u && m->in_slow == 3u,
+              "in spread stored: %u %u %u %u", m->in_min_us, m->in_p95_us, m->in_max_us, m->in_slow);
+    OCB_CHECK(m->core0_pass_max_us == 412u && m->seq_retries == 9u && m->seq_fallbacks == 1u,
+              "core 0 fields stored: %u %u %u", m->core0_pass_max_us, m->seq_retries, m->seq_fallbacks);
+    poll(&h);
+    expect_ready(&h, false, "self-timing fields are not a handshake");
+    fp_handshake(&p);
+    poll(&h);
+    ocb_usb_mailbox_set_in_spread(&h.mb, 0u, 0u, 0u, 0u);
+    ocb_usb_mailbox_set_core0(&h.mb, 0u, 0u, 0u);
+    poll(&h);
+    expect_ready(&h, true, "zeroed self-timing fields are not a USB-down event");
+    ocb_usb_mailbox_init(&h.mb);
+    OCB_CHECK(m->in_max_us == 0u && m->seq_fallbacks == 0u, "init zeroes the self-timing fields");
+}
+
 int main(void)
 {
     test_handshake_and_down();
     test_report_period_field();
+    test_self_timing_fields();
     test_stall();
     test_flags_and_wrap();
     test_rebase();

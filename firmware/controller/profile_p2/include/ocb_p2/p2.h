@@ -83,6 +83,24 @@ typedef struct {
     bool have_last;
     bool dirty;
     uint32_t median_us;      /* 0 until OCB_P2_IV_MIN_SAMPLES */
+    /* Story 2.5 D12: the 95th percentile over the same window (bin
+     * centres, 0 until OCB_P2_IV_MIN_SAMPLES), recomputed with the median;
+     * min_us and max_us are the window's, kept for the tests. */
+    uint32_t min_us;
+    uint32_t p95_us;         /* the k-th smallest, k = ceil(0.95 * count) */
+    uint32_t max_us;
+    /* Intervals longer than 1.5 x the published median since the last
+     * restart (a missed poll is one interval near two periods), those
+     * above OCB_P2_IV_MAX_US included; counted only while a median is
+     * published; saturates. */
+    uint32_t slow;
+    /* Story 2.5 D35: the shortest and longest interval (raw us, any length,
+     * stalls above OCB_P2_IV_MAX_US included) since the last restart; `slow`
+     * counts within the same span (once a median is published), so a slow
+     * interval is always within [run_min_us, run_max_us]. 0 until the first
+     * interval. */
+    uint32_t run_min_us;
+    uint32_t run_max_us;
     uint32_t ops_note;       /* work of the last note (test: bounded cost) */
     uint32_t ops_median;     /* work of the last median computation */
 } ocb_p2_interval;
@@ -157,5 +175,17 @@ bool ocb_p2_reply_pending(const ocb_p2 *p);
  * 64 are in (after ocb_p2_tick), else 0; saturated to 65535 by the caller. */
 void ocb_p2_interval_note(ocb_p2 *p, uint64_t now_us);
 uint32_t ocb_p2_report_period_us(const ocb_p2 *p);
+
+/* Story 2.5 D12, D35: the IN interval spread. p95: the 95th percentile of
+ * the window of the median (the last 256 intervals up to 20 ms, bin
+ * centres, 0 until 64 samples, after ocb_p2_tick). min and max: every interval
+ * since the last restart (raw us, stalls above 20 ms included, 0 before the
+ * first); slow: those above 1.5 x the median, counted once a median is
+ * published, so max >= any slow interval. All reset by
+ * ocb_p2_restart. */
+uint32_t ocb_p2_interval_min_us(const ocb_p2 *p);
+uint32_t ocb_p2_interval_p95_us(const ocb_p2 *p);
+uint32_t ocb_p2_interval_max_us(const ocb_p2 *p);
+uint32_t ocb_p2_interval_slow(const ocb_p2 *p);
 
 #endif /* OCB_P2_P2_H */

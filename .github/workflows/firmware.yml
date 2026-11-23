@@ -98,6 +98,22 @@ jobs:
           cmake --preset fw-debug
           cmake --build --preset fw-debug
 
+      # Story 2.5 D9: the bench flavours (one UF2 per hardware check) and the
+      # XIP variant of the RAM gate's self-test (D2); compile only, 0 warnings
+      # (our sources build with -Werror).
+      - name: Build the Story 2.5 flavours (debug -O3, timeline, hang core 0, hang core 1, XIP)
+        working-directory: firmware
+        run: |
+          set -o pipefail
+          for p in fw-debug-o3 fw-debug-timeline fw-debug-hang0 fw-debug-hang1 fw-release-xip; do
+            cmake --preset "$p"
+            cmake --build --preset "$p" 2>&1 | tee "${RUNNER_TEMP}/build-$p.log"
+            if grep -qi 'warning' "${RUNNER_TEMP}/build-$p.log"; then
+              echo "::error::$p built with warnings"
+              exit 1
+            fi
+          done
+
       - name: Host tests
         working-directory: firmware
         run: |
@@ -125,10 +141,42 @@ jobs:
 
       # Story 2.3 AC5a: the P2 debug log exists in debug builds only. The
       # debug ELF must contain it, so a rename cannot make the gate vacuous.
-      - name: Release has no debug log (AC5a)
+      # Story 2.5 Task 8.3: nor the test melody or the hang injectors; the
+      # flavours that must carry them prove each family is found.
+      - name: Release has no debug log, test melody or hang injector (AC5a, story 2.5)
         run: |
           firmware/tools/check-release-nolog.sh firmware/build/fw-release/controller/controller.elf
+          firmware/tools/check-release-nolog.sh firmware/build/fw-release-xip/controller/controller.elf
           firmware/tools/check-release-nolog.sh --expect-present firmware/build/fw-debug/controller/controller.elf
+          firmware/tools/check-release-nolog.sh --expect-present firmware/build/fw-debug-o3/controller/controller.elf
+          firmware/tools/check-release-nolog.sh --expect-present=dbglog,testtl firmware/build/fw-debug-timeline/controller/controller.elf
+          firmware/tools/check-release-nolog.sh --expect-present=dbglog,testtl,hang firmware/build/fw-debug-hang0/controller/controller.elf
+          firmware/tools/check-release-nolog.sh --expect-present=dbglog,testtl,hang firmware/build/fw-debug-hang1/controller/controller.elf
+
+      # Story 2.5 D5, D24: the published-state handoff carries `dmb sy` in
+      # every controller ELF; the self-test fails without the definition.
+      - name: Cross-core barrier is a real DMB (story 2.5 D5)
+        run: |
+          firmware/tools/check-barrier.sh --self-test
+          for p in fw-release fw-debug fw-debug-o3 fw-debug-timeline fw-debug-hang0 fw-debug-hang1 fw-release-xip; do
+            firmware/tools/check-barrier.sh "firmware/build/$p/controller/controller.elf"
+          done
+
+      # Story 2.5 D2: the hot path is in RAM (copy_to_ram); the XIP variant
+      # proves the gate can tell the two apart.
+      - name: Controller hot path runs from RAM (story 2.5 D2)
+        run: |
+          for p in fw-release fw-debug fw-debug-o3 fw-debug-timeline fw-debug-hang0 fw-debug-hang1; do
+            firmware/tools/check-ram-hot-path.sh "firmware/build/$p/controller/controller.elf"
+          done
+          firmware/tools/check-ram-hot-path.sh --expect-flash firmware/build/fw-release-xip/controller/controller.elf
+
+      # Story 2.5 D15 (issue #21): the static core 1 chain stays <= 1536 bytes.
+      - name: Core 1 stack, static bound (story 2.5 D15)
+        run: |
+          for p in fw-release fw-debug fw-debug-o3 fw-debug-timeline; do
+            firmware/tools/check-stack.sh "firmware/build/$p"
+          done
 
       - name: Job summary
         run: |

@@ -29,6 +29,7 @@ int ocb_core_init(ocb_core *core, ocb_core_event *storage, uint16_t cap, uint16_
     core->last_t_us = 0u;
     core->have_last_t = false;
     core->end_queued = false;
+    ocb_core_timing_reset(&core->timing);
     ocb_core_set_report_period(core, report_period_us);
     return ocb_queue_init(&core->queue, storage, cap);
 }
@@ -171,6 +172,7 @@ static OCB_CORE_RAMFUNC void handle_start(ocb_core *core, const ocb_core_env *en
         ocb_core_publish_(core, &OCB_NEUTRAL);
         core->t0_us = env->now_us + (uint64_t)m.lead_us;
         core->mode = OCB_MODE_PLAYING;
+        ocb_core_timing_reset(&core->timing); /* statistics per run (D11) */
         reply_ack(out);
     }
 }

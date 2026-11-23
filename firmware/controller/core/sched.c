@@ -41,6 +41,9 @@ OCB_CORE_RAMFUNC void ocb_core_tick(ocb_core *core, const ocb_core_env *env, ocb
         return;
     }
 
+    /* Story 2.5 D11: lateness at apply, <= late_us here (fits 32 bits). */
+    ocb_core_timing_note(&core->timing, (uint32_t)(env->now_us - due));
+
     ocb_core_event ev;
     (void)ocb_queue_pop(&core->queue, &ev);
     const ocb_state masked = ocb_core_mask_state(&ev.state);

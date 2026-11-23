@@ -22,6 +22,17 @@ This test makes the copies in docs/link-protocol.md fail loudly when they drift:
      default bInterval, report length) equals ocb_p2/config.h, and the STATUS
      v3 tail sizes written in docs/link-protocol.md (24 bytes with an empty
      window, at most 56, body at most 67) equal ocb_link/config.h.
+  5. story 2.5: the STATUS v4 sizes (block 41 bytes, tail 65 with an empty
+     window and at most 97, body at most 108, 115 bytes on the wire) and the
+     v4 table's offsets equal ocb_link/config.h; the liveness numbers of
+     "Rules the controller applies (Story 2.5)" (20 ms, 60 ms, 5 ms, 85 ms)
+     equal ocb_core/live.h; the LATE fallback written in the docs (8000 us)
+     equals ocb_core/core.h.
+  6. story 2.5 review: the core 1 stack limit (1536 bytes) is the same in
+     tools/check-stack.sh, tools/link_probe.py (STACK_LIMIT_B) and the H.18
+     row of docs/test-plan.md, and the loop bound (5000 us) is the same in
+     ocb_core/live.h (OCB_LIVE_LOOP_BOUND_US), tools/link_probe.py
+     (LOOP_LIMIT_US) and the H.18 row.
 Stdlib only.
 """
 
@@ -180,12 +191,93 @@ def check_p2(usb_doc, link_doc, p2, cfg):
         errors.append("usb doc: report length differs from OCB_P2_REPORT_LEN")
     rules = section(link_doc, "Rules the controller link applies (Story 2.6)")
     m = re.search(r"(\d+) bytes in all with an empty window, at most (\d+); a debug STATUS body is at most (\d+) "
-                  r"bytes", rules)
+                  r"bytes without the v4 block", rules)
     empty = cfg["LINK_DEBUG_COUNTERS_LEN"] + cfg["LINK_DEBUG_V3_HEADER_LEN"]
     if m is None or (int(m.group(1)), int(m.group(2)), int(m.group(3))) != (
-            empty, cfg["LINK_DEBUG_TAIL_MAX_LEN"], 11 + cfg["LINK_DEBUG_TAIL_MAX_LEN"]):
+            empty, cfg["LINK_DEBUG_V3_MAX_LEN"], 11 + cfg["LINK_DEBUG_V3_MAX_LEN"]):
         errors.append("link doc: STATUS v3 sizes differ from ocb_link/config.h (%d, %d, %d)" % (
-            empty, cfg["LINK_DEBUG_TAIL_MAX_LEN"], 11 + cfg["LINK_DEBUG_TAIL_MAX_LEN"]))
+            empty, cfg["LINK_DEBUG_V3_MAX_LEN"], 11 + cfg["LINK_DEBUG_V3_MAX_LEN"]))
+    return errors
+
+
+def live_values():
+    text = read("firmware", "controller", "core", "include", "ocb_core", "live.h")
+    return {m.group(1): int(m.group(2)) for m in re.finditer(r"^#define OCB_([A-Z0-9_]+) (\d+)u\b", text, re.M)}
+
+
+def core_late_fallback():
+    text = read("firmware", "controller", "core", "include", "ocb_core", "core.h")
+    m = re.search(r"^#define OCB_CORE_LATE_FALLBACK_US (\d+)u\b", text, re.M)
+    return int(m.group(1)) if m else None
+
+
+def check_story_2_5(link_doc, cfg, live, late_fallback):
+    """Story 2.5: the STATUS v4 sizes and table, the liveness numbers, the LATE fallback."""
+    errors = []
+    rules = section(link_doc, "Rules the controller link applies (Story 2.6)")
+    v4 = cfg["LINK_DEBUG_V4_LEN"]
+    empty3 = cfg["LINK_DEBUG_COUNTERS_LEN"] + cfg["LINK_DEBUG_V3_HEADER_LEN"]
+    if cfg["LINK_DEBUG_V3_MAX_LEN"] + v4 != cfg["LINK_DEBUG_TAIL_MAX_LEN"]:
+        errors.append("config.h: V3_MAX_LEN + V4_LEN != TAIL_MAX_LEN")
+    m = re.search(r"one fixed block of (\d+) bytes", rules)
+    if m is None or int(m.group(1)) != v4:
+        errors.append("link doc: the v4 block size differs from OCB_LINK_DEBUG_V4_LEN (%d)" % v4)
+    body = 11 + cfg["LINK_DEBUG_TAIL_MAX_LEN"]
+    wire = 3 + body + 2 + 2  # header, CRC, one COBS byte (body < 254), the delimiter
+    want = (empty3 + v4, cfg["LINK_DEBUG_TAIL_MAX_LEN"], body, wire)
+    m = re.search(r"the debug tail is (\d+) bytes with an empty window, at most (\d+); the largest debug STATUS "
+                  r"body is (\d+) bytes \((\d+) bytes on the wire\)", rules)
+    if m is None or tuple(int(g) for g in m.groups()) != want:
+        errors.append("link doc: STATUS v4 sizes differ from ocb_link/config.h (%d, %d, %d, %d)" % want)
+    offsets = [int(x) for x in re.findall(r"^    \| (\d+) \| `", rules, re.M)]
+    if offsets != [0, 2, 4, 8, 20, 22, 24, 30, 32, 34, 35, 37, 38, 39]:
+        errors.append("link doc: v4 table offsets %s differ from the 41-byte layout of config.h" % offsets)
+    text = section(link_doc, "Rules the controller applies (Story 2.5)")
+    checks = (
+        (r"`OCB_LIVE_STALE_US` \((\d+) ms", live["LIVE_STALE_US"] // 1000, "OCB_LIVE_STALE_US"),
+        (r"`OCB_WDT_TIMEOUT_MS`, (\d+) ms", live["WDT_TIMEOUT_MS"], "OCB_WDT_TIMEOUT_MS"),
+        (r"one loop pass \(bound (\d+) ms\)", live["LIVE_LOOP_BOUND_US"] // 1000, "OCB_LIVE_LOOP_BOUND_US"),
+        (r"\(bound \d+ ms\) = (\d+) ms", (live["LIVE_STALE_US"] + live["WDT_TIMEOUT_MS"] * 1000 +
+                                         live["LIVE_LOOP_BOUND_US"]) // 1000, "the worst case sum"),
+    )
+    for rx, value, name in checks:
+        m = re.search(rx, text)
+        if m is None or int(m.group(1)) != value:
+            errors.append("link doc (Story 2.5): %s written as %s, live.h gives %d" % (
+                name, m.group(1) if m else "nothing", value))
+    m = re.search(r"Story 2\.5 \(D14\) keeps the fallback at (\d+) µs", link_doc)
+    if m is None or int(m.group(1)) != late_fallback:
+        errors.append("link doc: the LATE fallback differs from OCB_CORE_LATE_FALLBACK_US (%s)" % late_fallback)
+    return errors
+
+
+def check_limits(live):
+    """Story 2.5 review: one stack limit and one loop bound everywhere."""
+    errors = []
+
+    def grab(text, rx, what):
+        m = re.search(rx, text, re.M)
+        if m is None:
+            errors.append("%s not found" % what)
+            return None
+        return int(m.group(1))
+
+    stack_sh = grab(read("firmware", "tools", "check-stack.sh"), r"^limit=(\d+)$", "check-stack.sh limit=")
+    probe = read("firmware", "tools", "link_probe.py")
+    stack_py = grab(probe, r"^STACK_LIMIT_B = (\d+)\b", "link_probe.py STACK_LIMIT_B")
+    loop_py = grab(probe, r"^LOOP_LIMIT_US = (\d+)\b", "link_probe.py LOOP_LIMIT_US")
+    plan = read("docs", "test-plan.md")
+    m = re.search(r"^\| H\.18 \|.*$", plan, re.M)
+    row = m.group(0) if m else ""
+    stack_doc = grab(row, r"stack mark ≤ (\d+) bytes", "test-plan H.18 stack mark limit")
+    loop_doc = grab(row, r"loop maximum and `core0_pass_max_us` ≤ (\d+) µs", "test-plan H.18 loop limit")
+    stacks = {"check-stack.sh": stack_sh, "link_probe.py": stack_py, "test-plan H.18": stack_doc}
+    if len(set(stacks.values())) != 1 or None in stacks.values():
+        errors.append("the core 1 stack limit differs: %s" % stacks)
+    loops = {"live.h OCB_LIVE_LOOP_BOUND_US": live.get("LIVE_LOOP_BOUND_US"), "link_probe.py": loop_py,
+             "test-plan H.18": loop_doc}
+    if len(set(loops.values())) != 1 or None in loops.values():
+        errors.append("the loop bound differs: %s" % loops)
     return errors
 
 
@@ -197,6 +289,8 @@ def main():
     errors = check(read("docs", "link-protocol.md"), constants(), config_values())
     errors += check_p2(read("docs", "usb-controller-emulation.md"), read("docs", "link-protocol.md"), p2_config(),
                        config_values())
+    errors += check_story_2_5(read("docs", "link-protocol.md"), config_values(), live_values(), core_late_fallback())
+    errors += check_limits(live_values())
     for e in errors:
         print("docs_constants_check: FAIL %s" % e)
     if errors:

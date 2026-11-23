@@ -27,6 +27,11 @@
  *    stamped, for 0x30 reports only (D13; the hook cannot tell which endpoint completed, so the
  *    stamp includes the loop's own latency, recorded in the story).
  *
+ * Story 2.5: the reported state is NEUTRAL as soon as core 1 is seen stale
+ * (liveness.h, D6); the IN interval spread, the longest pass of this task
+ * and the published-state reader's counters go to the mailbox for the
+ * debug STATUS v4 (D12, D13), posted when they change.
+ *
  * USB-down posting (D11, D26): each of suspend, unmount and bus reset
  * restarts the profile and sets the report period to 0; it posts its
  * mailbox counter only when the device was mounted since the last post, so
@@ -41,6 +46,8 @@
 #include <string.h>
 
 #include "link_runner.h"
+#include "liveness.h"
+#include "ocb_core/timing.h"
 #include "ocb_link/dbglog.h"
 #include "ocb_link/ready.h"
 #include "ocb_p2/config.h"
@@ -49,6 +56,9 @@
 #include "ocb_proto/state.h"
 #include "pico/stdlib.h"
 #include "pico/unique_id.h"
+#ifdef OCB_DEBUG_HANG_CORE0
+#include "debug_hang.h"
+#endif
 
 /* Strict warnings stay on for this file, not for the SDK's headers. */
 #pragma GCC diagnostic push
@@ -82,6 +92,11 @@ static volatile uint32_t s_bus_resets_isr; /* written by the USB interrupt only 
 static uint32_t s_bus_resets_seen;
 static bool s_up;                 /* mounted since the last USB-down post */
 static uint32_t s_period_posted;  /* the report period last put in the mailbox */
+/* Story 2.5 D12, D13: the self-timing last put in the mailbox, and the
+ * longest pass since the last restart (or boot). */
+static uint32_t s_pass_max_us;
+static uint32_t s_spread_posted[4]; /* min, p95, max, slow */
+static uint32_t s_core0_posted[3];  /* pass max, seq retries, seq fallbacks */
 
 static void log_push(uint8_t kind, uint8_t id)
 {
@@ -112,11 +127,30 @@ static void post_period(uint32_t period)
     }
 }
 
+/* Story 2.5 D12, D13: posts the spread and core 0's numbers when they
+ * changed (one store per field, debug STATUS v4 only). */
+static void post_self_timing(void)
+{
+    const uint32_t sp[4] = {ocb_p2_interval_min_us(&s_p2), ocb_p2_interval_p95_us(&s_p2),
+                            ocb_p2_interval_max_us(&s_p2), ocb_p2_interval_slow(&s_p2)};
+    if (sp[0] != s_spread_posted[0] || sp[1] != s_spread_posted[1] || sp[2] != s_spread_posted[2] ||
+        sp[3] != s_spread_posted[3]) {
+        memcpy(s_spread_posted, sp, sizeof sp);
+        ocb_usb_mailbox_set_in_spread(ocb_ctrl_usb_mailbox(), sp[0], sp[1], sp[2], sp[3]);
+    }
+    const uint32_t c0[3] = {s_pass_max_us, ocb_ctrl_published_retries(), ocb_ctrl_published_fallbacks()};
+    if (c0[0] != s_core0_posted[0] || c0[1] != s_core0_posted[1] || c0[2] != s_core0_posted[2]) {
+        memcpy(s_core0_posted, c0, sizeof c0);
+        ocb_usb_mailbox_set_core0(ocb_ctrl_usb_mailbox(), c0[0], c0[1], c0[2]);
+    }
+}
+
 /* Restart of the profile for any of the four USB events (D11). */
 static void restart(uint8_t cause)
 {
     ocb_p2_restart(&s_p2);
     post_period(0u);
+    s_pass_max_us = 0u; /* story 2.5: the pass maximum is per restart */
     log_push(OCB_DBGLOG_RESTART, cause);
 }
 
@@ -136,7 +170,14 @@ static void pump(void)
         return;
     }
     ocb_state st;
-    ocb_ctrl_published_read(&st);
+    if (liveness_core1_stale()) {
+        st = OCB_NEUTRAL; /* story 2.5 D6: core 1 hung, release everything */
+    } else {
+        ocb_ctrl_published_read(&st);
+    }
+#ifdef OCB_DEBUG_HANG_CORE0
+    debug_hang_note(&st);
+#endif
     const size_t n = ocb_p2_next_in(&s_p2, &st, s_in, sizeof s_in);
     if (n > 0u) {
         (void)tud_hid_report(0u, s_in, (uint16_t)n);
@@ -173,11 +214,15 @@ void usb_p2_init(void)
     s_bus_resets_seen = 0u;
     s_up = false;
     s_period_posted = 0u;
+    s_pass_max_us = 0u;
+    memset(s_spread_posted, 0, sizeof s_spread_posted);
+    memset(s_core0_posted, 0, sizeof s_core0_posted);
     (void)tud_init(0u);
 }
 
 void usb_p2_task(void)
 {
+    const uint32_t t_start = time_us_32();
     bus_reset_check();
     tud_task();
     bus_reset_check();
@@ -186,6 +231,12 @@ void usb_p2_task(void)
     if (ocb_p2_ready(&s_p2) || ocb_p2_reply_pending(&s_p2)) {
         pump();
     }
+    /* Story 2.5 D12: the longest pass bounds the IN stamp latency. */
+    ocb_core_max_u32(&s_pass_max_us, ocb_core_span_us(t_start, time_us_32()));
+    post_self_timing();
+#ifdef OCB_DEBUG_HANG_CORE0
+    debug_hang_poll();
+#endif
 }
 
 /* ------------------------------------------------------------------ */

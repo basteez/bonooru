@@ -10,6 +10,39 @@ option(OCB_HOST_TESTS "Build host-side tests only (native compiler, no pico-sdk)
 option(OCB_DEBUG_BUILD "Define OCB_DEBUG_BUILD=1 for our targets (debug-only pins and aids)" OFF)
 option(OCB_ALLOW_OTHER_TOOLCHAIN "Accept a compiler other than the pinned one (local experiments only)" OFF)
 option(OCB_SANITIZE "host-tests only: build with AddressSanitizer and UBSan" OFF)
+# Story 2.5 D9: the debug flavours of the controller. Each needs
+# OCB_DEBUG_BUILD=ON; the hang flavours also need the timeline (the melody
+# supplies the held note). Use the presets fw-debug-timeline,
+# fw-debug-hang0, fw-debug-hang1 rather than typing these.
+option(OCB_DEBUG_TIMELINE "controller: load the built-in test timeline after HELLO (debug builds only)" OFF)
+set(OCB_DEBUG_HANG "NONE" CACHE STRING "controller: hang core 0 or core 1 on the first note (debug builds only)")
+set_property(CACHE OCB_DEBUG_HANG PROPERTY STRINGS NONE CORE0 CORE1)
+set(OCB_DEBUG_HANG_DELAY_US "50000" CACHE STRING "controller: the hang starts this long after the first note, us")
+# Story 2.5 D2: the controller program runs from RAM (copy_to_ram); OFF
+# builds the XIP variant, for the comparison H.20 and the RAM gate's
+# self-test only.
+option(OCB_CONTROLLER_RUN_FROM_RAM "controller: copy the whole program to RAM at boot" ON)
+
+if(OCB_DEBUG_TIMELINE AND NOT OCB_DEBUG_BUILD)
+    message(FATAL_ERROR "OCB_DEBUG_TIMELINE=ON needs OCB_DEBUG_BUILD=ON (a release build never carries the "
+        "test melody). Use the preset fw-debug-timeline, or add -DOCB_DEBUG_BUILD=ON.")
+endif()
+if(NOT OCB_DEBUG_HANG MATCHES "^(NONE|CORE0|CORE1)$")
+    message(FATAL_ERROR "OCB_DEBUG_HANG=${OCB_DEBUG_HANG}: must be NONE, CORE0 or CORE1")
+endif()
+if(NOT OCB_DEBUG_HANG STREQUAL "NONE")
+    if(NOT OCB_DEBUG_BUILD)
+        message(FATAL_ERROR "OCB_DEBUG_HANG=${OCB_DEBUG_HANG} needs OCB_DEBUG_BUILD=ON (a release build never "
+            "carries a hang injector). Use the preset fw-debug-hang0 or fw-debug-hang1.")
+    endif()
+    if(NOT OCB_DEBUG_TIMELINE)
+        message(FATAL_ERROR "OCB_DEBUG_HANG=${OCB_DEBUG_HANG} needs OCB_DEBUG_TIMELINE=ON (the built-in melody "
+            "supplies the held note). Use the preset fw-debug-hang0 or fw-debug-hang1.")
+    endif()
+endif()
+if(NOT OCB_DEBUG_HANG_DELAY_US MATCHES "^[0-9]+$" OR OCB_DEBUG_HANG_DELAY_US GREATER 1000000)
+    message(FATAL_ERROR "OCB_DEBUG_HANG_DELAY_US=${OCB_DEBUG_HANG_DELAY_US}: an integer in 0..1000000 (us)")
+endif()
 
 set(OCB_FW_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${OCB_FW_DIR}/cmake")

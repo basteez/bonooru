@@ -30,6 +30,40 @@
       }
     },
     {
+      "name": "fw-release-xip",
+      "displayName": "Firmware, release, XIP controller (story 2.5 D2: RAM gate self-test, H.20)",
+      "inherits": "fw-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "OCB_CONTROLLER_RUN_FROM_RAM": "OFF" }
+    },
+    {
+      "name": "fw-debug-o3",
+      "displayName": "Firmware, debug counters, optimised, no melody (story 2.5 D38: the worst-case stack soak)",
+      "inherits": "fw-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "OCB_DEBUG_BUILD": "ON" }
+    },
+    {
+      "name": "fw-debug-timeline",
+      "displayName": "Firmware, debug counters, optimised, built-in test melody (story 2.5 H.18)",
+      "inherits": "fw-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OCB_DEBUG_BUILD": "ON",
+        "OCB_DEBUG_TIMELINE": "ON"
+      }
+    },
+    {
+      "name": "fw-debug-hang0",
+      "displayName": "Firmware, timeline flavour that hangs core 0 on the first note (story 2.5 H.2a)",
+      "inherits": "fw-debug-timeline",
+      "cacheVariables": { "OCB_DEBUG_HANG": "CORE0" }
+    },
+    {
+      "name": "fw-debug-hang1",
+      "displayName": "Firmware, timeline flavour that hangs core 1 on the first note (story 2.5 H.2b)",
+      "inherits": "fw-debug-timeline",
+      "cacheVariables": { "OCB_DEBUG_HANG": "CORE1" }
+    },
+    {
       "name": "host-tests",
       "displayName": "Host tests (native compiler, no pico-sdk)",
       "generator": "Ninja",
@@ -44,6 +78,11 @@
   "buildPresets": [
     { "name": "fw-release", "configurePreset": "fw-release" },
     { "name": "fw-debug", "configurePreset": "fw-debug" },
+    { "name": "fw-release-xip", "configurePreset": "fw-release-xip" },
+    { "name": "fw-debug-o3", "configurePreset": "fw-debug-o3" },
+    { "name": "fw-debug-timeline", "configurePreset": "fw-debug-timeline" },
+    { "name": "fw-debug-hang0", "configurePreset": "fw-debug-hang0" },
+    { "name": "fw-debug-hang1", "configurePreset": "fw-debug-hang1" },
     { "name": "host-tests", "configurePreset": "host-tests" }
   ],
   "testPresets": [

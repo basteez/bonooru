@@ -37,12 +37,23 @@ exit 0 or 1, 2 for a usage error):
                           they change, so a press sent with link_probe.py
                           press is seen end to end without a console.
 
+  stall --expect core0|core1 [--drive --port "$P"]
+                          story 2.5 H.2a/H.2b, a hang flavour on the Mac:
+                          holds the stream, finds the first note, times the
+                          hang to the device vanishing (host clock, the
+                          assumptions printed), checks how the reports
+                          end (core 0: they stop; core 1: they turn NEUTRAL),
+                          waits for the board to come back with nothing
+                          pressed; --drive runs link_probe.py selfplay and
+                          hangcheck on the bridge port itself.
+
 No serial port and no device path is ever hard-coded: the HID device is
-found by VID:PID.
+found by VID:PID, the bridge port comes from --port.
 """
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -344,6 +355,9 @@ class HidTransport:
         r = self.dev.read(REPORT_LEN, int(timeout_ms))
         return bytes(r) if r else None
 
+    def close(self):
+        self.dev.close()
+
 
 def open_hid(out):
     """Retries for up to 30 s; the Input Monitoring hint once on failure."""
@@ -567,6 +581,300 @@ def cmd_watch(args, out=print):
     return run_watch(dev, args, out)
 
 
+# ------------------------------------------------------------ stall (2.5)
+# Story 2.5 D18, H.2a and H.2b: a hang flavour (fw-debug-hang0 or -hang1)
+# plugged into the Mac. The host clock times the hang; the assumptions are
+# printed with every result.
+STALL_WAIT_S = 120.0       # time for the press to come (or the device to come back)
+STALL_HANG_DELAY_MS = 50   # OCB_DEBUG_HANG_DELAY_US of the hang presets
+STALL_REPORT_LATENCY_MS = 4  # a report reaches hidapi within one Mac poll (2 ms) plus one more
+STALL_LIMIT_MS = 100       # AC4: stall to reset, the board's own interval (hangcheck, D31)
+STALL_CONSISTENCY_MS = 5   # host last report to gone may undercut the board's interval by this much (2 ms polls)
+STALL_CORE1_AGREE_MS = 15  # core 1: host hang-to-last-report vs the board's interval (polls, arming, D34)
+STALL_GONE_BUDGET_S = 2.0  # after the press: the device must vanish by then
+STALL_POLL_S = 0.005       # presence poll while the reports are silent
+STALL_STOP_GAP_MS = 10     # core 0 hang: the reports stop at least this long before the device vanishes
+STALL_NEUTRAL_READ_S = 1.0  # after it comes back: reports read to prove nothing is pressed
+_HANGCHECK_RE = re.compile(r"HANGCHECK stall_to_reset_us=(\d+)")
+NOTE_BUTTONS = ("Y", "X", "A", "L", "R")  # the AD-9 note buttons of the melody
+
+
+def note_pressed(r):
+    """The note buttons (AD-9) pressed in a 0x30 report."""
+    return [b for b in pressed(r) if b in NOTE_BUTTONS]
+
+
+class HidBackend:
+    """hidapi and subprocess for `stall`, replaced by a fake in the tests."""
+
+    def open(self):
+        return HidTransport()
+
+    def present(self):
+        import hid  # noqa: PLC0415
+        return bool(hid.enumerate(VID, PID))
+
+    def spawn(self, argv):
+        return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+
+    def run(self, argv):
+        """(exit code, output) of a link_probe.py step."""
+        p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        return p.returncode, p.stdout
+
+
+def _link_probe_argv(args, *rest):
+    tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "link_probe.py")
+    return [sys.executable, tool, "--port", args.port] + list(rest)
+
+
+def _open_retry(backend, budget_s):
+    end = time.monotonic() + budget_s
+    while True:
+        try:
+            return backend.open()
+        except (IOError, OSError, ValueError, ImportError):
+            if time.monotonic() >= end:
+                return None
+            time.sleep(0.2)
+
+
+def _stream_on(dev, out):
+    h = Host(dev, out)
+    h.usb(0x02, [0x81, 0x02])
+    dev.write(usb_cmd(0x04))
+    return h
+
+
+class _Child:
+    """The --drive selfplay process: ended exactly once, on every path."""
+
+    def __init__(self):
+        self.proc = None
+
+    def end(self):
+        """Terminates it (if any, once) and returns the last lines it printed."""
+        if self.proc is None:
+            return []
+        proc, self.proc = self.proc, None
+        proc.terminate()
+        return (proc.communicate()[0] or "").splitlines()[-5:]
+
+
+def run_stall(backend, args, out=print):
+    """H.2a/H.2b (story 2.5 D18, D31 to D33): times a hang from the first note
+    to the device vanishing, checks how the reports end and that the board
+    comes back with nothing pressed. With --drive it runs link_probe.py
+    selfplay (ended as soon as the device vanishes, so nothing drives the
+    rebooted board) and then hangcheck, whose board-side stall-to-reset
+    interval is the AC4 number (<= 100 ms); the host-side times are
+    information, and for core 0 they give the macOS removal latency
+    (calibration). --runs N repeats the whole cycle (needs --drive)."""
+    if args.runs > 1 and not args.drive:
+        out("FAIL --runs above 1 needs --drive (each run restarts selfplay)")
+        return 1
+    results = []
+    rc = 0
+    for i in range(args.runs):
+        if args.runs > 1:
+            out(">>> run %d of %d" % (i + 1, args.runs))
+        child = _Child()
+        try:
+            r, info = _run_stall(backend, args, out, child)
+        finally:
+            child.end()
+        rc = rc or r
+        results.append(info)
+        if r != 0:
+            break
+    if args.runs == 1:
+        return rc  # the run's own PASS / FAIL line is the last one
+    lat = sorted(x["removal_ms"] for x in results if x.get("removal_ms") is not None)
+    dev = [x["device_ms"] for x in results if x.get("device_ms") is not None]
+    if dev:
+        out("     board stall-to-reset over %d run(s): max %.1f ms (AC4 limit %d ms)" % (len(dev), max(dev),
+                                                                                       STALL_LIMIT_MS))
+    if lat:
+        out("     macOS removal latency (host gone - last report - board stall-to-reset) over %d run(s): median "
+            "%.1f ms, max %.1f ms" % (len(lat), lat[(len(lat) - 1) // 2], lat[-1]))
+    out("PASS" if rc == 0 else "FAIL run %d of %d did not pass" % (len(results), args.runs))
+    return rc
+
+
+def _run_stall(backend, args, out, child):
+    fails = []
+    info = {"ok": False, "removal_ms": None, "device_ms": None}
+
+    def check(ok, text):
+        out("%s %s" % ("ok  " if ok else "FAIL", text))
+        if not ok:
+            fails.append(text)
+        return ok
+
+    def finish():
+        if fails:
+            out("FAIL %s" % fails[0])
+            return 1, info
+        info["ok"] = True
+        out("PASS")
+        return 0, info
+
+    delay = args.hang_delay_ms
+    out("     the AC4 number is the board's own stall-to-reset interval (hangcheck, D31); host times are "
+        "information: hang delay %d ms (the preset), report latency %d ms" % (delay, STALL_REPORT_LATENCY_MS))
+    dev = _open_retry(backend, args.wait_s)
+    if not check(dev is not None, "the controller 057E:2009 is open (fw-debug-hang%s on the Mac)" %
+                 ("0" if args.expect == "core0" else "1")):
+        return finish()
+    _stream_on(dev, out)
+    if args.drive:
+        if not check(bool(args.port), "--drive needs --port \"$P\" (the bridge's serial port)"):
+            return finish()
+        child.proc = backend.spawn(_link_probe_argv(args, "selfplay", "--wait-s", "%d" % args.wait_s, "--any-host",
+                                                     "--settle-s", "0"))
+        out(">>> STREAM ON. link_probe.py selfplay started on %s; waiting up to %.0f s for the first note." % (
+            args.port, args.wait_s))
+    else:
+        out(">>> STREAM ON. Start `python3 firmware/tools/link_probe.py --port \"$P\" selfplay` now; waiting up to "
+            "%.0f s for the first note." % args.wait_s)
+    t_press = t_last = t_neutral = t_gone = None
+    n = 0
+    end = time.monotonic() + args.wait_s
+    while t_gone is None:
+        now = time.monotonic()
+        if t_press is None and now >= end:
+            break
+        if t_press is not None and now - t_press > STALL_GONE_BUDGET_S:
+            break
+        try:
+            r = dev.read(STALL_POLL_S * 1000.0)
+        except (IOError, OSError, ValueError):
+            t_gone = time.monotonic()  # the read failed: the device went away
+            break
+        if r and r[0] == 0x30:
+            n += 1
+            t = time.monotonic()
+            notes = note_pressed(r)
+            if t_press is None and notes:
+                t_press = t
+                out("     first note seen: %s" % " ".join(notes))
+            elif t_press is not None and not notes and t_neutral is None and not pressed(r):
+                t_neutral = t
+            t_last = t
+            continue
+        if t_press is not None and not backend.present():
+            t_gone = time.monotonic()
+    # D32: the board is gone (or never pressed): stop selfplay now, so its
+    # heartbeats never arm the rebooted board's link and hangcheck sees the
+    # boot as it is.
+    tail = child.end()
+    if t_press is None:
+        for line in tail:
+            out("     selfplay: %s" % line)
+    _close(dev)
+    if not check(t_press is not None, "a note button pressed in the 0x30 stream within %.0f s (%d reports)" % (
+            args.wait_s, n)):
+        return finish()
+    if not check(t_gone is not None, "the controller vanished within %.0f s of the first note (the reboot)"
+                 % STALL_GONE_BUDGET_S):
+        return finish()
+
+    def ms(t):
+        return (t - t_press) * 1000.0 if t is not None else float("nan")
+
+    out("     raw: press 0 ms, last report %+.1f ms, neutral report %s, gone %+.1f ms (host monotonic)" % (
+        ms(t_last), ("%+.1f ms" % ms(t_neutral)) if t_neutral is not None else "none", ms(t_gone)))
+    if args.expect == "core0":
+        check((t_gone - t_last) * 1000.0 >= STALL_STOP_GAP_MS,
+              "core 0 hung: the reports stopped %.1f ms before the device vanished (want >= %d ms)" % (
+                  (t_gone - t_last) * 1000.0, STALL_STOP_GAP_MS))
+    else:
+        check(t_neutral is not None and t_neutral < t_gone,
+              "core 1 hung: the reports went on and turned NEUTRAL before the reset (core 0 saw core 1 stale)")
+        if t_neutral is not None:
+            out("     press to NEUTRAL %.1f ms = %d ms hang delay + %.1f ms (expected about 20 to 30 ms)" % (
+                ms(t_neutral), delay, ms(t_neutral) - delay))
+    out("     host: press to gone %.1f ms, minus the %d ms delay and %d ms report latency = %.1f ms (includes the "
+        "macOS removal latency; information, not the AC4 number)" % (
+            ms(t_gone), delay, STALL_REPORT_LATENCY_MS, ms(t_gone) - delay - STALL_REPORT_LATENCY_MS))
+    out(">>> The controller rebooted; waiting up to %.0f s for it to come back." % args.wait_s)
+    end = time.monotonic() + args.wait_s
+    while not backend.present() and time.monotonic() < end:
+        time.sleep(0.05)
+    back = backend.present()
+    if not check(back, "the controller came back (re-enumerated) within %.0f s" % args.wait_s):
+        return finish()
+    out("     back %.0f ms after it vanished" % ((time.monotonic() - t_gone) * 1000.0))
+    dev = _open_retry(backend, 30.0)
+    if not check(dev is not None, "reopened after the reboot"):
+        return finish()
+    _stream_on(dev, out)
+    bad = []
+    seen = 0
+    end = time.monotonic() + STALL_NEUTRAL_READ_S
+    while time.monotonic() < end:
+        r = dev.read(50)
+        if r and r[0] == 0x30:
+            seen += 1
+            if note_pressed(r):
+                bad.append(" ".join(note_pressed(r)))
+    _close(dev)
+    check(seen > 0 and not bad, "after the reboot: %d reports, no note pressed%s" % (
+        seen, (" (pressed: %s)" % bad[0]) if bad else ""))
+    if args.drive:
+        rc, text = backend.run(_link_probe_argv(args, "hangcheck", "--expect", args.expect))
+        for line in (text or "").splitlines():
+            out("     hangcheck: %s" % line)
+        m = _HANGCHECK_RE.search(text or "")
+        if check(rc == 0 and m is not None, "link_probe.py hangcheck --expect %s: %s" % (
+                args.expect, "PASS" if rc == 0 else "FAIL")):
+            device_ms = int(m.group(1)) / 1000.0
+            info["device_ms"] = device_ms
+            check(device_ms <= STALL_LIMIT_MS, "AC4: the board's own stall-to-reset %.1f ms <= %d ms" % (
+                device_ms, STALL_LIMIT_MS))
+            if args.expect == "core0":
+                # The reports stop at the hang (within one 2 ms poll), so the
+                # host's last-report-to-gone time is the board's stall-to-reset
+                # plus the macOS removal latency.
+                removal = (t_gone - t_last) * 1000.0 - device_ms
+                info["removal_ms"] = removal
+                out("     macOS removal latency this run: %.1f ms = %.1f ms (last report to gone) - %.1f ms (board)"
+                    % (removal, (t_gone - t_last) * 1000.0, device_ms))
+                check(removal >= -STALL_CONSISTENCY_MS, "host and board agree: the host saw at least the board's "
+                      "interval (within %d ms)" % STALL_CONSISTENCY_MS)
+            elif t_last is not None:
+                # D34: core 0 keeps reporting (NEUTRAL) until the watchdog
+                # resets the board, so the host's last report marks the reset
+                # (within one 2 ms poll) and press + hang delay marks the hang
+                # (the note is seen within one poll of its publication): an
+                # independent estimate of the board's interval.
+                host_ms = (t_last - t_press) * 1000.0 - delay
+                check(abs(host_ms - device_ms) <= STALL_CORE1_AGREE_MS,
+                      "host and board agree: hang to the last report %.1f ms vs the board's %.1f ms (within %d ms)"
+                      % (host_ms, device_ms, STALL_CORE1_AGREE_MS))
+                removal = (t_gone - t_last) * 1000.0
+                info["removal_ms"] = removal
+                out("     macOS removal latency this run: %.1f ms (last report to gone; core 0 reported until the "
+                    "reset)" % removal)
+    else:
+        out("     run `python3 firmware/tools/link_probe.py --port \"$P\" hangcheck --expect %s` now for the AC4 "
+            "number (the board's own stall-to-reset)" % args.expect)
+    return finish()
+
+
+def _close(dev):
+    close = getattr(dev, "close", None)
+    if close is not None:
+        try:
+            close()
+        except (IOError, OSError, ValueError):
+            pass
+
+
+def cmd_stall(args, out=print):
+    return run_stall(HidBackend(), args, out)
+
+
 # -------------------------------------------------------------------- cli
 def wait_arg(text):
     try:
@@ -588,6 +896,16 @@ def seconds_arg(text):
     return v
 
 
+def runs_arg(text):
+    try:
+        v = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not an integer: %r" % text) from None
+    if not 1 <= v <= 50:
+        raise argparse.ArgumentTypeError("must be in 1..50, got %d" % v)
+    return v
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -601,11 +919,26 @@ def main(argv=None):
     p.add_argument("--seconds", type=seconds_arg, default=30.0, help="time to watch (default %(default)s)")
     p.add_argument("--expect", choices=sorted(name for _, _, name in BTN_BITS),
                    help="FAIL unless this button is seen pressed at least once")
+    p = sub.add_parser("stall", help="story 2.5 H.2a/H.2b: time a hang flavour's reboot from the first note "
+                                     "(Mac, no console)")
+    p.add_argument("--expect", choices=("core0", "core1"), required=True, dest="expect")
+    p.add_argument("--hang-delay-ms", type=int, default=STALL_HANG_DELAY_MS,
+                   help="the preset's OCB_DEBUG_HANG_DELAY_US in ms (default %(default)s)")
+    p.add_argument("--wait-s", type=wait_arg, default=STALL_WAIT_S,
+                   help="time for the first note, and for the device to come back (default %(default)s)")
+    p.add_argument("--drive", action="store_true",
+                   help="run link_probe.py selfplay (and hangcheck at the end) on --port itself")
+    p.add_argument("--port", default=None, help="the bridge's serial port, for --drive (pass \"$P\")")
+    p.add_argument("--runs", type=runs_arg, default=1,
+                   help="repeat the whole cycle N times (needs --drive): the calibration of the macOS removal "
+                        "latency, median and max (default %(default)s)")
     args = ap.parse_args(argv)
     if args.cmd == "enum":
         return cmd_enum(args)
     if args.cmd == "watch":
         return cmd_watch(args)
+    if args.cmd == "stall":
+        return cmd_stall(args)
     return cmd_handshake(args)
 
 

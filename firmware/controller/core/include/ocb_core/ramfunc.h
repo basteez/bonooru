@@ -9,10 +9,16 @@
  * both the declaration and the definition, and follows `static` on the
  * private helpers of the hot path.
  *
- * Not covered by this macro (Story 2.5 must review their placement when it
- * runs the core from RAM): the ocb_proto functions the core calls (message
- * decoders, state predicates), the OCB_NEUTRAL constant, and any constant
- * table the compiler emits for a switch (read-only data, in flash).
+ * Story 2.5 D2 decided the placement: the controller is linked with the
+ * SDK's copy_to_ram binary type, so the whole program (every library, the
+ * SDK, TinyUSB, the ocb_proto decoders, OCB_NEUTRAL and the compiler's
+ * switch tables) runs from SRAM and this macro stays empty;
+ * tools/check-ram-hot-path.sh proves the hot functions are in RAM. No
+ * build defines the macro: the XIP comparison variant
+ * (OCB_CONTROLLER_RUN_FROM_RAM=OFF, bench H.20) compares the whole image in
+ * RAM with the whole image in flash, where only the functions the
+ * platform glue marks with the SDK's RAM attribute stay in RAM. The macro
+ * stays as the hook a later build could define.
  */
 #ifndef OCB_CORE_RAMFUNC_H
 #define OCB_CORE_RAMFUNC_H

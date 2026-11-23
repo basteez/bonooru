@@ -2,9 +2,11 @@
 
 Switch-side board: wired Pro Controller emulation, on-device timeline scheduling, link watchdog (neutral within 100 ms) (milestone M3).
 
-Currently core 0 blinks the onboard LED amber at 2 Hz (Story 2.1) and runs the USB stack, the
-wired Pro Controller profile P2 (Story 2.3); core 1 runs the board link (Story 2.6, bring-up loop
-in `main.c`) with its link watchdog (Story 2.7).
+Core 0 blinks the onboard LED amber at 2 Hz (Story 2.1) and runs the USB stack, the wired Pro
+Controller profile P2 (Story 2.3); core 1 runs the board link (Story 2.6) with its link watchdog
+(Story 2.7) in the AD-11 super-loop of Story 2.5 (`main.c`). Both cores watch each other and a
+hardware watchdog resets the board when one hangs (Story 2.5, below). The whole program runs from
+RAM (`copy_to_ram`, Story 2.5 D2).
 
 ## `core/`: the playback core (Story 2.4)
 
@@ -18,11 +20,20 @@ the host preset: `cmake --preset host-tests && cmake --build --preset host-tests
 Since Story 2.6 the link layer drives it on core 1; Stories 2.5, 2.3 and 2.7 wire it to the
 timer, USB and the watchdog.
 
-RAM placement (for Story 2.5): the hot functions of the core, including its private helpers, carry
-the `OCB_CORE_RAMFUNC` macro (empty by default, `ocb_core/ramfunc.h`). It does not cover the
-`ocb_proto` functions the core calls (message decoders, state predicates), the `OCB_NEUTRAL`
-constant or compiler-generated read-only tables; Story 2.5 must review where those live before
-claiming the hot path runs from RAM.
+RAM placement: the hot functions of the core, including its private helpers, carry the
+`OCB_CORE_RAMFUNC` macro (empty, `ocb_core/ramfunc.h`). Story 2.5 D2 links the controller with
+the SDK's `copy_to_ram` binary type instead, so the whole program (the `ocb_proto` decoders,
+`OCB_NEUTRAL`, the SDK, TinyUSB and the compiler's tables included) runs from SRAM;
+`tools/check-ram-hot-path.sh` proves the hot functions are in RAM (CI). The CMake option
+`OCB_CONTROLLER_RUN_FROM_RAM=OFF` (preset `fw-release-xip`) builds the XIP variant for the
+comparison H.20 and the gate's self-test only.
+
+Story 2.5 adds to `ocb_core`: `live.c` (the liveness rules: a peer counter unchanged for more than
+20 ms is stale, the 60 ms hardware watchdog, the reboot-cause encoding), `timing.c` (the
+scheduler's lateness statistics, per run, reported by the debug STATUS v4) and the built-in test
+timeline (`testtl.c` and the generated `testtl_data.c`, a separate library `ocb_core_testtl`
+linked only by the timeline flavour; regenerate with `python3 firmware/tools/gen_test_timeline.py`,
+ctest `testtl_drift` fails on drift).
 
 ## `link/`: the link layer (Story 2.6)
 
@@ -43,16 +54,48 @@ F.14 to F.17 in `docs/test-plan.md`, under the host preset.
 `common/hw/uart_link.c`: `ocb_ctrl_link_init()` (512-event static queue, version from the
 generated header, profile P2), `ocb_ctrl_link_start_rx()` (RX interrupt enabled from core 1) and
 `ocb_ctrl_link_step()` (one non-blocking pass: RX level into the TX gate, poll (USB mailbox,
-`ready`, scheduler), RX ring into the link, at most one frame into the UART TX ring). `main.c`
-zeroes the USB mailbox before core 1 starts, and the link counts mailbox events from zero, so
-core-0 posts made before core 1 is up are not lost. `main.c` launches core 1 with a bring-up loop
-that only calls `ocb_ctrl_link_step()`; Story 2.5 replaces that loop with the real super-loop
-and keeps the call. Core 1 is the only UART TX writer (a debug-build assertion). Since Story 2.3
-the P2 glue on core 0 posts to the USB mailbox (handshake, IN reports, suspend / unmount / bus
-reset, the measured report period); `ocb_ctrl_published_read()` is the state the profile reports
-(in debug builds core 1's published state through the sequence lock of `link/pubstate.c`, D35;
-NEUTRAL in release builds until Story 2.5), and in debug builds `ocb_ctrl_link_step()` drains the P2
-debug log into the debug STATUS. Bench sender: `tools/link_probe.py`.
+`ready`, scheduler), RX ring into the link, at most one frame into the UART TX ring, then the
+published state). `main.c` zeroes the USB mailbox before core 1 starts, and the link counts
+mailbox events from zero, so core-0 posts made before core 1 is up are not lost. Core 1's
+super-loop (Story 2.5, `main.c`): per pass the liveness step, `ocb_ctrl_link_step()` and, in debug
+builds, `ocb_ctrl_link_pass_end()` (the loop maximum since `START` and one step of the stack
+high-water scan, both into the debug STATUS v4); no sleep, no blocking call, no stdio, no divide;
+the scheduler is the polled 1 MHz timer (no alarm interrupt). Core 1 is the only UART TX writer (a
+debug-build assertion). Since Story 2.3 the P2 glue on core 0 posts to the USB mailbox
+(handshake, IN reports, suspend / unmount / bus reset, the measured report period; Story 2.5: the
+IN interval spread, its own longest pass and the handoff counters); `ocb_ctrl_published_read()`
+is the state the profile reports: core 1's published state through the seqlock double buffer of
+`link/pubstate.c`, in every build (Story 2.5 D4: 3 tries, then NEUTRAL). In debug builds
+`ocb_ctrl_link_step()` drains the P2 debug log into the debug STATUS. Bench sender:
+`tools/link_probe.py`.
+
+## Liveness and the hardware watchdog (Story 2.5)
+
+`platform/liveness.c`, in every build: each core counts its passes; core 0 feeds the hardware
+watchdog (60 ms) only while core 1's count moves (stale after more than 20 ms), and reports
+NEUTRAL once core 1 is stale; core 1 aborts the core (`CORE_STALL`) and reboots the board at once
+when core 0's count stops. Worst case stall to reset: 20 + 60 + 5 ms = 85 ms (AC4, NFR-05; a
+compile-time check in `ocb_core/live.h`). The cause and a reboot count survive the reset in the
+watchdog scratch registers 0 and 1 (`scratch[4..7]` are the SDK's) and are reported by the debug
+STATUS v4. The cross-core barrier of `ocb_link` is a real `dmb sy` on the target
+(`platform/ocb_link_barrier.h`, force-included; `tools/check-barrier.sh`, CI).
+
+## Debug flavours (Story 2.5)
+
+Each hardware check of Story 2.5 flashes one UF2 (presets in `firmware/CMakePresets.json`;
+`Release` optimisation with the debug counters, so the measured timing is the release timing):
+
+- `fw-debug-timeline` (`OCB_DEBUG_TIMELINE=ON`): after the host's `HELLO` (and after every `STOP`
+  or `HELLO` that empties the queue) the built-in melody (the Story 1.6 Ode to Joy, 158 events) is
+  loaded into the core through the real validation path; the host sends only `HELLO` and
+  `START lead_us` (`link_probe.py selfplay`, H.18) and must not send its own `QUEUE_EVENT`s.
+- `fw-debug-hang0`, `fw-debug-hang1` (`OCB_DEBUG_HANG=CORE0|CORE1`, with the timeline): the chosen
+  core stops looping `OCB_DEBUG_HANG_DELAY_US` (50 ms) after the first note was published or read,
+  with the note held (`p2_probe.py stall`, H.2a/H.2b).
+
+Guards (configure stops with the fix in the message): `OCB_DEBUG_TIMELINE` and `OCB_DEBUG_HANG`
+need `OCB_DEBUG_BUILD=ON`; `OCB_DEBUG_HANG` needs `OCB_DEBUG_TIMELINE=ON`. A release ELF is proven
+free of the melody and the injectors by `tools/check-release-nolog.sh` (CI).
 
 ## The link watchdog (Story 2.7)
 
@@ -91,8 +134,10 @@ interface, 64-byte reports). It returns `ocb_p2`'s descriptors, passes every OUT
 `ocb_p2_on_output()`, sends `ocb_p2_next_in()` whenever the IN endpoint is free, restarts the
 profile and posts to the USB mailbox on mount, unmount, suspend and bus reset (the bus reset is
 seen only through `tud_event_hook_cb`, in the interrupt; it is handled in the task), stamps
-each 0x30 report completion for the median and puts it in the mailbox, and in debug builds pushes the
-profile's log records into the SPSC ring. `usb_p2_task()` runs once per pass of core 0's plain
+each 0x30 report completion for the median and puts it in the mailbox (Story 2.5: with the
+minimum, 95th percentile, maximum and slow-interval count of the same window, and its own longest
+pass, which bounds the stamp latency), reports NEUTRAL once core 1 is stale, and in debug builds
+pushes the profile's log records into the SPSC ring. `usb_p2_task()` runs once per pass of core 0's plain
 loop, next to the LED blink; it never blocks. The MAC is derived from the board's unique id
 (locally administered). Build options: `OCB_PROFILE` (`P2` only), `OCB_P2_BINTERVAL` (1..16,
 default 1). Bench tools: `tools/p2_probe.py` (Mac) and `link_probe.py p2check` / `p2watch`

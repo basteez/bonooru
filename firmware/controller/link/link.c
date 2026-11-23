@@ -62,6 +62,12 @@ void ocb_link_set_report_period(ocb_link *link, uint16_t report_period_us)
     ocb_core_set_report_period(link->core, report_period_us);
 }
 
+void ocb_link_set_self_timing(ocb_link *link, uint32_t loop_max_us, uint32_t stack_used_max)
+{
+    link->dbg_loop_max_us = loop_max_us;
+    link->dbg_stack_used = stack_used_max;
+}
+
 ocb_dbglog_window *ocb_link_dbglog_window(ocb_link *link)
 {
     return &link->dbg;

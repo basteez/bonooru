@@ -29,14 +29,18 @@
 #include "ocb_core/mask.h"
 #include "ocb_core/queue.h"
 #include "ocb_core/ramfunc.h"
+#include "ocb_core/timing.h"
 #include "ocb_proto/consts.h"
 #include "ocb_proto/frame.h"
 #include "ocb_proto/state.h"
 
-/* LATE threshold when the report period is unknown (0): the 8 ms poll
- * interval commonly seen for the Pro Controller on Switch 1
- * (docs/usb-controller-emulation.md), a hypothesis until the IN interval
- * is measured (story 2.4 D6). */
+/* LATE threshold when the report period is unknown (0): one report period
+ * of the Switch 2, whose IN polls were measured at a median of 8000 us
+ * (Story 2.3 H.15, docs/usb-controller-emulation.md "Measured on the
+ * Switch 2"); story 2.5 D14 keeps it equal to the measured period (issue
+ * #21; the jitter of the IN intervals is recorded by bench H.18) and
+ * F.4 pins it. Used only while the period is unknown (the first 64 polls
+ * after a handshake, or after a USB-down event). */
 #define OCB_CORE_LATE_FALLBACK_US 8000u
 
 /* Inputs of every call (D1). now_us is a monotonic 1 MHz count (the RP2040
@@ -97,6 +101,10 @@ typedef struct {
     uint32_t late_us;   /* LATE threshold, the report period or the fallback */
 
     ocb_queue queue;
+
+    /* Story 2.5 D11: lateness of the applied events, reset at every
+     * accepted START, kept after the piece ends (read once IDLE). */
+    ocb_core_timing_stats timing;
 } ocb_core;
 
 /* Snapshot for STATUS (AD-19, D13); flags (link_ok, console_ready) are not
