@@ -76,6 +76,7 @@ static inline void lh_init_cfg(lh *h, uint16_t cap, bool debug_counters)
     cfg.debug_counters = debug_counters;
     cfg.boot_cause = 0u;   /* story 2.5 D7 */
     cfg.reboot_count = 0u;
+    cfg.stall_reset_us = 0u;
     ocb_link_init(&h->link, &h->core, &h->mb, &cfg, h->now);
 }
 

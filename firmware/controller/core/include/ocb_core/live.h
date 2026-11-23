@@ -88,6 +88,18 @@ uint32_t ocb_live_scratch_encode(uint8_t value);
  * decodes to 0 (no cause, count 0). */
 uint8_t ocb_live_scratch_decode(uint32_t word);
 
+/* Story 2.5 D31: the device-side stall-to-reset interval, us, stored in a
+ * third scratch word before the reset: magic in the high 16 bits, the
+ * interval in units of OCB_LIVE_SPAN_UNIT_US in the low 16 (saturating at
+ * 65535 units, 655 ms). Decodes to 0 without the magic. */
+#define OCB_LIVE_SPAN_UNIT_US 10u
+uint32_t ocb_live_span_encode(uint32_t span_us);
+uint32_t ocb_live_span_decode(uint32_t word);
+
+/* The observer's time since the peer's counter last changed (or since
+ * init), us; 0 when the clock went back. */
+uint64_t ocb_live_peer_since_us(const ocb_live_peer *p, uint64_t now_us);
+
 /* Cause helpers: decode refuses values above OCB_LIVE_CAUSE_MAX (NONE). */
 uint32_t ocb_live_cause_encode(uint8_t cause);
 uint8_t ocb_live_cause_decode(uint32_t word);

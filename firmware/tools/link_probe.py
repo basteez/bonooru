@@ -380,13 +380,15 @@ def p2_log_str(kind, ident):
     return "%s %02x" % (P2_LOG_KINDS.get(kind, "kind%02x" % kind), ident)
 
 
-# v4 (story 2.5 D13): one fixed 39-byte block after the v3 window, at offset
-# 24 + 2 * p2_log_n of the debug tail, little-endian, every u16 saturating.
-DEBUG_V4_LEN = 39
-DEBUG_V4_FORMAT = "<HHI6HHHHHHHHBHBB"
+# v4 (story 2.5 D13, D31): one fixed 41-byte block after the v3 window, at
+# offset 24 + 2 * p2_log_n of the debug tail, little-endian, every u16
+# saturating; the last field is the board's own stall-to-reset interval of the
+# last liveness reboot in 10 us units (decoded as stall_reset_us).
+DEBUG_V4_LEN = 41
+DEBUG_V4_FORMAT = "<HHI6HHHHHHHHBHBBH"
 DEBUG_V4 = ("late_n", "late_max_us", "late_sum_us", "late_hist", "loop_max_us", "core0_pass_max_us", "in_min_us",
             "in_p95_us", "in_max_us", "in_slow", "seq_retries", "seq_fallbacks", "stack_used_max", "boot_cause",
-            "reboot_count")
+            "reboot_count", "stall_reset_us")
 LATE_BUCKETS_US = ("<50", "50-99", "100-249", "250-999", "1000-3999", ">=4000")
 BOOT_CAUSES = {0: "NONE", 1: "CORE0_STALE", 2: "CORE1_STALE", 3: "BOOT_NOT_ALIVE"}
 
@@ -397,6 +399,7 @@ def debug_v4(block):
     d = dict(zip(DEBUG_V4[:3], v[:3]))
     d["late_hist"] = list(v[3:9])
     d.update(zip(DEBUG_V4[4:], v[9:]))
+    d["stall_reset_us"] = v[-1] * 10
     return d
 
 
@@ -426,11 +429,11 @@ def v4_str(v):
     """The v4 block as one line."""
     mean = v["late_sum_us"] / float(v["late_n"]) if v["late_n"] else 0.0
     return ("late n=%d max=%d us mean=%.1f us hist=%s | loop_max=%d us core0_pass_max=%d us | IN min=%d p95=%d "
-            "max=%d slow=%d | seq retries=%d fallbacks=%d | stack=%d B | boot=%s reboots=%d" % (
+            "max=%d slow=%d | seq retries=%d fallbacks=%d | stack=%d B | boot=%s reboots=%d stall_to_reset=%d us" % (
                 v["late_n"], v["late_max_us"], mean, "/".join(str(x) for x in v["late_hist"]), v["loop_max_us"],
                 v["core0_pass_max_us"], v["in_min_us"], v["in_p95_us"], v["in_max_us"], v["in_slow"],
                 v["seq_retries"], v["seq_fallbacks"], v["stack_used_max"],
-                BOOT_CAUSES.get(v["boot_cause"], "%d" % v["boot_cause"]), v["reboot_count"]))
+                BOOT_CAUSES.get(v["boot_cause"], "%d" % v["boot_cause"]), v["reboot_count"], v["stall_reset_us"]))
 
 
 def dbg_str(d):
@@ -2034,6 +2037,7 @@ SELFPLAY_STABLE_S = 2.0     # console_ready must hold this long (plug bounces)
 SELFPLAY_LEAD_MS = 3000
 SELFPLAY_TAIL_S = 10.0      # after the last event, before giving up on PLAYBACK_DONE
 SELFPLAY_LOAD_S = 1.0       # the loader fills the queue within one pass of the STOP
+SELFPLAY_SILENT_S = 0.15    # no STATUS (one every 50 ms) for this long during a run: the board is gone
 FIRST_INPUT_PRESSES = 3     # D17: D-pad down, never A
 FIRST_INPUT_HOLD_MS = 150
 FIRST_INPUT_GAP_MS = 300
@@ -2214,10 +2218,33 @@ def cmd_selfplay(port, args):
                                                                           rtt * 1000.0))
         budget = lead_us / 1e6 + end_us / 1e6 + SELFPLAY_TAIL_S
 
-        def ended():
-            return any(code in (EVT_PLAYBACK_DONE, EVT_LATE, EVT_UNDERRUN) for _, code in link.events[n_ev:])
+        rb0 = (_v4_of(link.status) or {}).get("reboot_count")
+        t_run = port.now()
 
-        if not c.check(link.wait(budget, ended), "run %d: an end EVENT within %.0f s" % (i, budget)):
+        def rebooted():
+            """D33: the board rebooted (a hang flavour, or a fault): its
+            reboot count moved, or STATUS stopped for SELFPLAY_SILENT_S."""
+            v_ = _v4_of(link.status) or {}
+            if rb0 is not None and v_.get("reboot_count", rb0) != rb0:
+                return True
+            last = link.status_t if link.status_t is not None else t_run
+            return port.now() - max(last, t_run) > SELFPLAY_SILENT_S
+
+        def ended():
+            return rebooted() or any(code in (EVT_PLAYBACK_DONE, EVT_LATE, EVT_UNDERRUN)
+                                     for _, code in link.events[n_ev:])
+
+        got = link.wait(budget, ended)
+        if rebooted():
+            # Stop feeding the rebooted board at once (it would arm its link
+            # watchdog, and the loss when this process exits would show up
+            # as an abort on the fresh board).
+            if port.hb_running():
+                port.hb_stop()
+            c.check(False, "run %d: the controller stopped answering or rebooted during the piece (a hang flavour "
+                    "does this on purpose; run hangcheck next)" % i)
+            return c.finish()
+        if not c.check(got, "run %d: an end EVENT within %.0f s" % (i, budget)):
             break
         st = link.next_status(0.5)
         v = _v4_of(st)
@@ -2240,23 +2267,46 @@ def cmd_selfplay(port, args):
     return c.finish()
 
 
+STALL_RESET_LIMIT_US = 100000  # AC4: the board's own stall-to-reset interval (D31)
+STATUS_FRESH_S = 0.3           # hangcheck: STATUS frames read before anything is sent
+
+
 def cmd_hangcheck(port, args):
-    """H.2a, H.2b: after a liveness reboot the controller comes back fresh
-    and its debug STATUS v4 names the cause (CORE0_STALE or CORE1_STALE)."""
+    """H.2a, H.2b: after a liveness reboot. First, with nothing sent (no
+    HELLO, no heartbeat: story 2.5 D32), the STATUS the rebooted controller
+    sends on its own must show a fresh boot: IDLE, no abort but link-watchdog
+    trips (a stopped heartbeat source), and its debug v4 the cause
+    (CORE0_STALE or CORE1_STALE),
+    the reboot count and the board's own stall-to-reset interval, which must
+    be <= 100 ms (AC4, D31). Then a HELLO: INFO's queue_cap must equal the
+    free count of that first STATUS (nothing was queued before the session).
+    Prints `HANGCHECK stall_to_reset_us=N` for p2_probe.py stall."""
     link = Link(port, trace=getattr(args, "trace", None))
     c = Checks(link)
-    if getattr(args, "hb_enabled", True):
-        port.hb_start(_hb_period(args))
     want = {"core0": 1, "core1": 2}[args.expect]
-    link.out(">>> Waiting up to %.0f s for the controller to answer after its reboot (HELLO every 100 ms)."
-             % args.wait_s)
-    info = link.hello(timeout=args.wait_s)
-    if not c.check(info is not None, "INFO received (the controller is back)"):
+    link.out(">>> Waiting up to %.0f s for the controller's own STATUS after its reboot (nothing is sent "
+             "before it)." % args.wait_s)
+    st = link.next_status(args.wait_s, lambda s_: _v4_of(s_) is not None)
+    if not c.check(st is not None, "a debug STATUS with the v4 block arrived (the controller is back, a story 2.5 "
+                   "debug build)"):
         return c.finish()
-    st = link.next_status(1.0)
+    link.wait(STATUS_FRESH_S)  # a few more, still sending nothing
+    st = link.status
     v = _v4_of(st)
-    if not c.check(v is not None, "the debug STATUS carries the v4 block (a story 2.5 debug build)"):
-        return c.finish()
+    # D32: what only a fresh board shows. No session was opened (the queue
+    # is empty: the hang flavours load the melody at the first HELLO), IDLE,
+    # and no abort but link-watchdog trips: a heartbeat source that reached
+    # the board after it booted and then stopped (the driver of the hang, the
+    # bridge port closing) makes a link loss, which is the link watchdog
+    # doing its job, not a stale session.
+    d = st.get("dbg") or {}
+    trips = d.get("watchdog_trips", 0)
+    c.check(st["mode"] == MODE_IDLE and st["abort_count"] <= trips and st["last_event"] in (0, EVT_LINK_LOST),
+            "fresh boot, before anything is sent: mode IDLE, every abort a link-watchdog trip, last_event NONE or "
+            "LINK_LOST (%s)" % _status_str(st))
+    if st["abort_count"]:
+        c.note("%d link loss(es) since the boot: a heartbeat reached the rebooted board and stopped (the hang's "
+               "driver); expected, not a board fault" % st["abort_count"])
     c.check(v["boot_cause"] == want, "boot_cause %s (want %s)" % (
         BOOT_CAUSES.get(v["boot_cause"], v["boot_cause"]), BOOT_CAUSES[want]))
     if args.reboots_before is not None:
@@ -2264,9 +2314,18 @@ def cmd_hangcheck(port, args):
             v["reboot_count"], args.reboots_before))
     else:
         c.check(v["reboot_count"] >= 1, "reboot_count %d (at least 1 since power-on)" % v["reboot_count"])
-    c.check(st["mode"] == MODE_IDLE and st["abort_count"] == 0, "fresh boot: mode IDLE, abort_count 0 (%s)"
-            % _status_str(st))
-    c.note("console_ready %d (0 until a USB host completes the handshake)" % (1 if _ready(st) else 0))
+    link.out("HANGCHECK stall_to_reset_us=%d" % v["stall_reset_us"])
+    c.check(0 < v["stall_reset_us"] <= STALL_RESET_LIMIT_US,
+            "the board's own stall-to-reset interval %.1f ms (want > 0 and <= %d ms, AC4)" % (
+                v["stall_reset_us"] / 1000.0, STALL_RESET_LIMIT_US // 1000))
+    free0 = st["free"]
+    if getattr(args, "hb_enabled", True):
+        port.hb_start(_hb_period(args))
+    info = link.hello()
+    if c.check(info is not None, "INFO received after the checks"):
+        c.check(free0 == info["queue_cap"], "no session since the boot (the queue was empty before this HELLO): free %d = queue_cap %d"
+                % (free0, info["queue_cap"]))
+    c.note("console_ready %d (0 until a USB host completes the handshake)" % (1 if _ready(link.status) else 0))
     return c.finish()
 
 

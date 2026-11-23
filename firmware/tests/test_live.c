@@ -114,8 +114,26 @@ static void test_scratch(void)
     OCB_CHECK(ocb_live_scratch_decode(0u) == 0u, "power-on count 0");
 }
 
+/* Story 2.5 D31: the stall-to-reset span word and the observer's age. */
+static void test_span(void)
+{
+    OCB_CHECK(ocb_live_span_encode(21340u) == 0xB0E50856u, "21340 us -> 2134 (0x856) units: %08x",
+              ocb_live_span_encode(21340u));
+    OCB_CHECK(ocb_live_span_decode(ocb_live_span_encode(21340u)) == 21340u, "round trip 21340");
+    OCB_CHECK(ocb_live_span_decode(ocb_live_span_encode(80009u)) == 80000u, "truncated to 10 us");
+    OCB_CHECK(ocb_live_span_decode(ocb_live_span_encode(0xFFFFFFFFu)) == 655350u, "saturates at 655350 us");
+    OCB_CHECK(ocb_live_span_decode(0u) == 0u && ocb_live_span_decode(0x12340855u) == 0u, "no magic: 0");
+    ocb_live_peer p;
+    ocb_live_peer_init(&p, 1u, 5000u);
+    OCB_CHECK(ocb_live_peer_since_us(&p, 25001u) == 20001u, "since init");
+    (void)ocb_live_peer_stale(&p, 2u, 30000u);
+    OCB_CHECK(ocb_live_peer_since_us(&p, 30500u) == 500u, "since the last change");
+    OCB_CHECK(ocb_live_peer_since_us(&p, 100u) == 0u, "clock back: 0");
+}
+
 int main(void)
 {
+    test_span();
     test_boundary();
     test_steady();
     test_wrap();

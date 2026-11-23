@@ -17,10 +17,14 @@ Run by ctest as `python3 -I test_p2_probe.py FIRMWARE_DIR P2_SIM_LIB`.
    through a scripted hang on the same fake transport: a note pressed, then
    (core 0) the reports stop and the device vanishes 20 ms later, or (core
    1) the reports turn NEUTRAL 20 ms after the hang and the device vanishes
-   60 ms after that; the board comes back neutral; --drive runs the two
-   link_probe.py steps through a fake. Negative controls: the device never
-   vanishing, vanishing 160 ms after the hang, coming back with a note
-   pressed, core 1's reports never turning NEUTRAL, hangcheck failing.
+   60 ms after that, macOS noticing 110 ms later (the H.2a bench shape);
+   the board comes back neutral; --drive ends selfplay when the device
+   vanishes and takes the AC4 number from hangcheck's board-side
+   stall-to-reset (D31, D32); --runs N gives the macOS removal latency
+   (median, max). Negative controls: the device never vanishing, a board
+   interval above 100 ms, host and board disagreeing, coming back with a
+   note pressed, core 1's reports never turning NEUTRAL, hangcheck failing,
+   --runs without --drive.
 """
 
 import argparse
@@ -30,6 +34,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import unittest
 
@@ -332,31 +337,47 @@ NOTE_Y8 = bytes([0x01, 0x00, 0x08, 0x80, 0x80, 0x80, 0x80, 0x00])  # AD-10: Y
 
 
 class HangBoard:
-    """A hang flavour on the Mac, on a fake clock (story 2.5 D6, D18): the
-    melody's first note at t_press; the hang `delay` later. core0: the
+    """A hang flavour on the Mac, on a fake clock (story 2.5 D6, D18, D31):
+    the melody's first note at t_press; the hang `delay` later. core0: the
     reports stop, core 1 sees core 0 stale 20 ms later and reboots at once;
     core1: the reports go on, NEUTRAL 20 ms after the hang (core 0 sees core
-    1 stale), the watchdog resets 60 ms after that. The device is absent
-    for `absent_s`, then a fresh board (NEUTRAL, or `back_pressed`)."""
+    1 stale), the watchdog resets 60 ms after that. macOS notices the
+    removal `removal_s` after the reset. The device is absent for
+    `absent_s`, then a fresh board (NEUTRAL, or `back_pressed`). Each
+    selfplay spawned after a reboot starts a new cycle (--runs). `run`
+    answers hangcheck with `device_us` (default: the modelled interval)."""
 
-    def __init__(self, lib, clock, expect, delay_s=0.050, gone_after_s=None, absent_s=1.5, back_pressed=False,
-                 neutral_after_s=0.020, never_gone=False, never_neutral=False):
+    def __init__(self, lib, clock, expect, delay_s=0.050, gone_after_s=None, absent_s=0.3, back_pressed=False,
+                 neutral_after_s=0.020, never_gone=False, never_neutral=False, removal_s=0.110, device_us=None):
         self.lib = lib
         self.clock = clock
-        self.t_press = clock.t + 0.5
-        self.t_hang = self.t_press + delay_s
+        self.expect = expect
+        self.delay_s = delay_s
         if gone_after_s is None:
             gone_after_s = 0.020 if expect == "core0" else 0.020 + 0.060
-        self.t_gone = None if never_gone else self.t_hang + gone_after_s
-        self.t_back = None if never_gone else self.t_gone + absent_s
-        self.expect = expect
+        self.reset_after_s = gone_after_s
+        self.removal_s = removal_s
+        self.absent_s = absent_s
+        self.never_gone = never_gone
         self.neutral_after_s = neutral_after_s
         self.never_neutral = never_neutral
         self.back_pressed = back_pressed
+        self.device_us = device_us
         self.spawned = []
         self.children = []
         self.ran = []
         self.run_rc = 0
+        self.cycles = 0
+        self.t_back = None
+        self.start_cycle()
+
+    def start_cycle(self):
+        self.cycles += 1
+        self.t_press = self.clock.t + 0.5
+        self.t_hang = self.t_press + self.delay_s
+        self.t_gone = None if self.never_gone else self.t_hang + self.reset_after_s + self.removal_s
+        self.t_back = None if self.never_gone else self.t_gone + self.absent_s
+        self.boot_done = False
 
     def gone(self):
         return self.t_gone is not None and self.t_gone <= self.clock.t < self.t_back
@@ -391,21 +412,28 @@ class HangBoard:
         return HangHid(self)
 
     def spawn(self, argv):
+        if self.rebooted():
+            self.start_cycle()  # the next run of --runs: a new press, a new hang
         self.spawned.append(argv)
-        self.children.append(FakeChild())
+        self.children.append(FakeChild(self.clock))
         return self.children[-1]
 
     def run(self, argv):
         self.ran.append(argv)
-        return self.run_rc
+        us = self.device_us if self.device_us is not None else int(self.reset_after_s * 1e6)
+        return self.run_rc, "   0.000  ok   fresh boot\nHANGCHECK stall_to_reset_us=%d\n%s\n" % (
+            us, "PASS" if self.run_rc == 0 else "FAIL boot_cause")
 
 
 class FakeChild:
-    def __init__(self):
+    def __init__(self, clock):
+        self.clock = clock
         self.terminated = 0
+        self.t_end = None
 
     def terminate(self):
         self.terminated += 1
+        self.t_end = self.clock.t
 
     def communicate(self):
         return ("selfplay output", None)
@@ -439,15 +467,22 @@ class HangHid:
             if b.clock.t >= end:
                 return None
 
+    def close(self):
+        pass
+
 
 def stall_args(**kw):
-    a = dict(expect="core0", hang_delay_ms=50, wait_s=10.0, drive=False, port=None)
+    a = dict(expect="core0", hang_delay_ms=50, wait_s=10.0, drive=False, port=None, runs=1)
     a.update(kw)
     return argparse.Namespace(**a)
 
 
+def drive(**kw):
+    return stall_args(drive=True, port="/dev/cu.test", **kw)
+
+
 class Stall(unittest.TestCase):
-    """Story 2.5 F.32 extension: `stall` against a scripted hang."""
+    """Story 2.5 F.32 extension: `stall` against a scripted hang (D18, D31 to D33)."""
 
     def setUp(self):
         if SIM_LIB is None:
@@ -462,12 +497,14 @@ class Stall(unittest.TestCase):
         return rc, text, board
 
     def test_core0(self):
+        # The H.2a bench shape: the reset 20 ms after the hang, macOS sees it 110 ms later.
         rc, text, _ = self.stall("core0")
         self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
         self.assertIn("first note seen: Y", text)
         self.assertIn("core 0 hung: the reports stopped", text)
-        self.assertIn("host tolerance", text)
+        self.assertIn("information, not the AC4 number", text)
         self.assertIn("after the reboot:", text)
+        self.assertIn("hangcheck --expect core0` now for the AC4 number", text)
 
     def test_core1(self):
         rc, text, _ = self.stall("core1")
@@ -475,27 +512,53 @@ class Stall(unittest.TestCase):
         self.assertIn("turned NEUTRAL before the reset", text)
         self.assertIn("press to NEUTRAL", text)
 
-    def test_drive(self):
-        rc, text, board = self.stall("core1", args=stall_args(expect="core1", drive=True, port="/dev/cu.test"))
+    def test_drive_and_the_board_number(self):
+        rc, text, board = self.stall("core0", args=drive())
         self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
         self.assertEqual(board.spawned[0][2:5], ["--port", "/dev/cu.test", "selfplay"])
-        self.assertEqual(board.ran[0][2:], ["--port", "/dev/cu.test", "hangcheck", "--expect", "core1"])
-        self.assertEqual([c.terminated for c in board.children], [1])
+        self.assertEqual(board.ran[0][2:], ["--port", "/dev/cu.test", "hangcheck", "--expect", "core0"])
+        self.assertIn("AC4: the board's own stall-to-reset 20.0 ms <= 100 ms", text)
+        m = re.search(r"macOS removal latency this run: ([0-9.]+) ms", text)
+        self.assertIsNotNone(m, text)
+        self.assertLess(abs(float(m.group(1)) - 110.0), 4.0, text)
+        # D32: selfplay ended when the device vanished, before it came back.
+        child = board.children[0]
+        self.assertEqual(child.terminated, 1)
+        self.assertLess(child.t_end, board.t_gone + 0.01)
+        rc, text, board = self.stall("core1", args=drive(expect="core1"))
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("AC4: the board's own stall-to-reset 80.0 ms <= 100 ms", text)
+        self.assertNotIn("removal latency this run", text)
         rc, text, board = self.stall("core0", args=stall_args(drive=True, port=None))
         self.assertEqual(rc, 1, text)
         self.assertIn("--drive needs --port", last_line(text))
+
+    def test_calibration_runs(self):
+        rc, text, board = self.stall("core0", args=drive(runs=3))
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertEqual((board.cycles, len(board.ran), [c.terminated for c in board.children]), (3, 3, [1, 1, 1]))
+        self.assertRegex(text, r"macOS removal latency .* over 3 run\(s\): median 1[01][0-9]\.[0-9] ms, max")
+        self.assertIn("board stall-to-reset over 3 run(s): max 20.0 ms", text)
+        rc, text, _ = self.stall("core0", args=stall_args(runs=2))
+        self.assertEqual(rc, 1, text)
+        self.assertIn("--runs above 1 needs --drive", last_line(text))
 
     def test_negative_controls(self):
         rc, text, _ = self.stall("core0", never_gone=True)
         self.assertEqual(rc, 1, text)
         self.assertIn("vanished within", last_line(text))
-        # Review fix: the --drive child is ended on every path, also this one.
-        rc, text, board = self.stall("core0", never_gone=True, args=stall_args(drive=True, port="/dev/cu.test"))
+        # The --drive child is ended on every path, also this one.
+        rc, text, board = self.stall("core0", never_gone=True, args=drive())
         self.assertEqual(rc, 1, text)
         self.assertEqual([c.terminated for c in board.children], [1])
-        rc, text, _ = self.stall("core0", gone_after_s=0.160)
+        # The board's own interval above 100 ms (the AC4 failure).
+        rc, text, _ = self.stall("core0", args=drive(), device_us=120000)
         self.assertEqual(rc, 1, text)
-        self.assertIn("stall to gone", last_line(text))
+        self.assertIn("AC4: the board's own stall-to-reset 120.0 ms", last_line(text))
+        # Host and board disagree: the board claims 60 ms, the host saw 20.
+        rc, text, _ = self.stall("core0", args=drive(), removal_s=0.0, device_us=60000)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("host and board agree", last_line(text))
         rc, text, _ = self.stall("core1", back_pressed=True)
         self.assertEqual(rc, 1, text)
         self.assertIn("no note pressed (pressed: Y)", last_line(text))
@@ -506,7 +569,7 @@ class Stall(unittest.TestCase):
         board = HangBoard(self.lib, clock, "core0")
         board.run_rc = 1
         with fake_time(clock):
-            rc, text = run(p2.run_stall, board, stall_args(drive=True, port="/dev/cu.test"))
+            rc, text = run(p2.run_stall, board, drive())
         self.assertEqual(rc, 1, text)
         self.assertIn("hangcheck --expect core0: FAIL", last_line(text))
 

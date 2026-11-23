@@ -105,6 +105,7 @@ void ocb_ctrl_link_init(void)
     cfg.debug_counters = OCB_LINK_DEBUG_COUNTERS;
     cfg.boot_cause = liveness_boot_cause();     /* story 2.5 D7 */
     cfg.reboot_count = liveness_reboot_count();
+    cfg.stall_reset_us = liveness_stall_to_reset_us(); /* story 2.5 D31 */
     const uint64_t t = time_us_64();
     ocb_link_init(&s_link, &s_core, &s_mailbox, &cfg, t);
     /* D28: the mailbox was zeroed by main() before core 1 started, so count

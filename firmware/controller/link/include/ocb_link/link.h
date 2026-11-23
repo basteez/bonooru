@@ -76,6 +76,7 @@ typedef struct {
     bool debug_counters;     /* append the STATUS debug counters (D12; v3 tail: story 2.3 D14; v4: story 2.5 D13) */
     uint8_t boot_cause;      /* story 2.5 D7: why the board last rebooted (OCB_LIVE_CAUSE_*), debug STATUS v4 */
     uint8_t reboot_count;    /* story 2.5 D7: liveness reboots since power-on, debug STATUS v4 */
+    uint32_t stall_reset_us; /* story 2.5 D31: the last liveness reboot's stall-to-reset interval, us (0: none) */
 } ocb_link_cfg;
 
 /* Counters, u32, wrap. dropped_bytes (STATUS debug counter) =

@@ -74,3 +74,22 @@ uint8_t ocb_live_cause_decode(uint32_t word)
     const uint8_t c = ocb_live_scratch_decode(word);
     return c > (uint8_t)OCB_LIVE_CAUSE_MAX ? (uint8_t)OCB_LIVE_CAUSE_NONE : c;
 }
+
+uint32_t ocb_live_span_encode(uint32_t span_us)
+{
+    const uint32_t units = span_us / OCB_LIVE_SPAN_UNIT_US;
+    return ((uint32_t)OCB_LIVE_SCRATCH_MAGIC << 16) | (units > 0xFFFFu ? 0xFFFFu : units);
+}
+
+uint32_t ocb_live_span_decode(uint32_t word)
+{
+    if ((word >> 16) != (uint32_t)OCB_LIVE_SCRATCH_MAGIC) {
+        return 0u;
+    }
+    return (word & 0xFFFFu) * OCB_LIVE_SPAN_UNIT_US;
+}
+
+uint64_t ocb_live_peer_since_us(const ocb_live_peer *p, uint64_t now_us)
+{
+    return now_us > p->last_change_us ? now_us - p->last_change_us : 0u;
+}

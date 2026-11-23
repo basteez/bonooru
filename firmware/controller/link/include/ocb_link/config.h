@@ -50,11 +50,12 @@
  *  20 loop_max_us u16, 22 core0_pass_max_us u16, 24 in_min_us u16,
  *  26 in_p95_us u16, 28 in_max_us u16, 30 in_slow u16, 32 seq_retries u16,
  *  34 seq_fallbacks u8, 35 stack_used_max u16, 37 boot_cause u8,
- *  38 reboot_count u8.
- * Debug tail: 63 bytes with an empty window, at most 95; the largest
- * debug STATUS body is 11 + 95 = 106 bytes. */
-#define OCB_LINK_DEBUG_V4_LEN 39
-#define OCB_LINK_DEBUG_TAIL_MAX_LEN 95
+ *  38 reboot_count u8, 39 stall_reset_10us u16 (D31: the board's own
+ *  stall-to-reset interval of the last liveness reboot, 10 us units).
+ * Debug tail: 65 bytes with an empty window, at most 97; the largest
+ * debug STATUS body is 11 + 97 = 108 bytes. */
+#define OCB_LINK_DEBUG_V4_LEN 41
+#define OCB_LINK_DEBUG_TAIL_MAX_LEN 97
 
 /* RX ring entry layout: the PL011 data register value (dr & 0x0FFF). */
 #define OCB_LINK_RX_DATA_MASK 0x00FFu

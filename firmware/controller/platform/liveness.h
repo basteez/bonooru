@@ -18,7 +18,9 @@
  *
  * Scratch registers (they survive a watchdog reset, not a power loss):
  * scratch[0] = magic | cause, read and cleared once at boot; scratch[1] =
- * magic | reboot count since power-on. scratch[4..7] belong to the SDK.
+ * magic | reboot count since power-on; scratch[2] = magic | the
+ * device-side interval from the stall to the reset (story 2.5 D31), read
+ * and cleared at boot. scratch[4..7] belong to the SDK.
  */
 #ifndef OCB_CTRL_LIVENESS_H
 #define OCB_CTRL_LIVENESS_H
@@ -34,6 +36,10 @@ void liveness_boot(void);
 /* The boot cause and reboot count read by liveness_boot (OCB_LIVE_CAUSE_*). */
 uint8_t liveness_boot_cause(void);
 uint8_t liveness_reboot_count(void);
+/* Story 2.5 D31: the last liveness reboot's interval from the stalled
+ * core's last pass to the reset, us (0 after a power-on); measured by the
+ * board itself, the AC4 number. */
+uint32_t liveness_stall_to_reset_us(void);
 
 /* Core 0, once per pass, after usb_p2_task(): counts the pass, observes
  * core 1, feeds the watchdog while core 1 is fresh. */

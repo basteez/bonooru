@@ -31,12 +31,16 @@ static volatile bool s_core1_stale; /* written by core 0, read by core 0 (USB pu
 static bool s_cause_written;
 static uint8_t s_boot_cause;
 static uint8_t s_reboot_count;
+static uint32_t s_stall_reset_us;
 
 /* Core 1 only. */
 static ocb_live_peer s_core0_peer;
 
-static void record_cause(uint8_t cause)
+/* D7, D31: the cause, the count, and the device-side interval from the
+ * stall (the peer's last pass) to the reset, us. */
+static void record_cause(uint8_t cause, uint32_t stall_to_reset_us)
 {
+    watchdog_hw->scratch[2] = ocb_live_span_encode(stall_to_reset_us);
     watchdog_hw->scratch[0] = ocb_live_cause_encode(cause);
     const uint8_t n = ocb_live_scratch_decode(watchdog_hw->scratch[1]);
     watchdog_hw->scratch[1] = ocb_live_scratch_encode(n == 0xFFu ? n : (uint8_t)(n + 1u));
@@ -46,12 +50,15 @@ void liveness_boot(void)
 {
     s_boot_cause = ocb_live_cause_decode(watchdog_hw->scratch[0]);
     s_reboot_count = ocb_live_scratch_decode(watchdog_hw->scratch[1]);
-    if (!watchdog_caused_reboot()) {
+    s_stall_reset_us = ocb_live_span_decode(watchdog_hw->scratch[2]);
+    if (!watchdog_caused_reboot() || s_boot_cause == (uint8_t)OCB_LIVE_CAUSE_NONE) {
         /* Power-on or a reset by the RUN pin or BOOTSEL: whatever the scratch
          * holds is not ours to report. */
         s_boot_cause = (uint8_t)OCB_LIVE_CAUSE_NONE;
+        s_stall_reset_us = 0u;
     }
     watchdog_hw->scratch[0] = 0u; /* read once, cleared */
+    watchdog_hw->scratch[2] = 0u;
     watchdog_hw->scratch[1] = ocb_live_scratch_encode(s_reboot_count);
     s_core0_pass = 0u;
     s_core1_pass = 0u;
@@ -69,6 +76,11 @@ uint8_t liveness_boot_cause(void)
 uint8_t liveness_reboot_count(void)
 {
     return s_reboot_count;
+}
+
+uint32_t liveness_stall_to_reset_us(void)
+{
+    return s_stall_reset_us;
 }
 
 void __not_in_flash_func(liveness_core0_step)(void)
@@ -90,7 +102,13 @@ void __not_in_flash_func(liveness_core0_step)(void)
     s_core1_stale = true;
     if (!s_cause_written) {
         s_cause_written = true;
-        record_cause(ocb_live_core1_cause(&s_core1_peer));
+        /* D31: the reset comes when the watchdog runs out, which it does
+         * now that nobody feeds it: stall to reset = time since core 1's
+         * last pass + the watchdog's remaining time (us; the SDK divides
+         * the RP2040's double-decrementing count by 2, E1). */
+        const uint64_t since = ocb_live_peer_since_us(&s_core1_peer, now);
+        const uint64_t span = since + (uint64_t)watchdog_get_time_remaining_us();
+        record_cause(ocb_live_core1_cause(&s_core1_peer), span > UINT32_MAX ? UINT32_MAX : (uint32_t)span);
     }
 }
 
@@ -107,10 +125,14 @@ void liveness_core1_start(void)
 void __not_in_flash_func(liveness_core1_step)(void)
 {
     s_core1_pass = s_core1_pass + 1u;
-    const bool stale = ocb_live_peer_stale(&s_core0_peer, s_core0_pass, time_us_64());
+    const uint64_t now = time_us_64();
+    const bool stale = ocb_live_peer_stale(&s_core0_peer, s_core0_pass, now);
     if (ocb_live_core1_must_reboot(stale)) {
         ocb_ctrl_link_abort_stall(); /* NEUTRAL published, latch set */
-        record_cause((uint8_t)OCB_LIVE_CAUSE_CORE0_STALE);
+        /* D31: the reset is immediate, so stall to reset = time since core
+         * 0's last pass, read just before the reboot. */
+        const uint64_t span = ocb_live_peer_since_us(&s_core0_peer, time_us_64());
+        record_cause((uint8_t)OCB_LIVE_CAUSE_CORE0_STALE, span > UINT32_MAX ? UINT32_MAX : (uint32_t)span);
         watchdog_reboot(0u, 0u, 0u);
         for (;;) {
             tight_loop_contents(); /* the reset is immediate */

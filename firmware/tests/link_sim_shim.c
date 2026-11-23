@@ -51,7 +51,7 @@ void sim_timeline(int mode);
 void sim_in_spread(uint32_t min_us, uint32_t p95_us, uint32_t max_us, uint32_t slow);
 void sim_core0(uint32_t pass_max_us, uint32_t seq_retries, uint32_t seq_fallbacks);
 void sim_self_timing(uint32_t loop_max_us, uint32_t stack_used);
-void sim_set_boot(uint8_t cause, uint8_t count);
+void sim_set_boot(uint8_t cause, uint8_t count, uint32_t stall_reset_us);
 
 /* Story 2.5: a short table for fast probe tests (6 events, 0.5 s): the
  * matching expected-notes file is written by tests/test_link_probe.py. */
@@ -230,10 +230,12 @@ void sim_self_timing(uint32_t loop_max_us, uint32_t stack_used)
     ocb_link_set_self_timing(&s_link, loop_max_us, stack_used);
 }
 
-/* Story 2.5 D7: the boot cause and reboot count the firmware reads at boot
+/* Story 2.5 D7, D31: the boot cause, the reboot count and the stall-to-reset
+ * interval the firmware reads at boot
  * (call right after sim_init, as ocb_ctrl_link_init does). */
-void sim_set_boot(uint8_t cause, uint8_t count)
+void sim_set_boot(uint8_t cause, uint8_t count, uint32_t stall_reset_us)
 {
+    s_link.cfg.stall_reset_us = stall_reset_us;
     s_link.cfg.boot_cause = cause;
     s_link.cfg.reboot_count = count;
 }

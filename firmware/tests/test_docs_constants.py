@@ -22,8 +22,8 @@ This test makes the copies in docs/link-protocol.md fail loudly when they drift:
      default bInterval, report length) equals ocb_p2/config.h, and the STATUS
      v3 tail sizes written in docs/link-protocol.md (24 bytes with an empty
      window, at most 56, body at most 67) equal ocb_link/config.h.
-  5. story 2.5: the STATUS v4 sizes (block 39 bytes, tail 63 with an empty
-     window and at most 95, body at most 106, 113 bytes on the wire) and the
+  5. story 2.5: the STATUS v4 sizes (block 41 bytes, tail 65 with an empty
+     window and at most 97, body at most 108, 115 bytes on the wire) and the
      v4 table's offsets equal ocb_link/config.h; the liveness numbers of
      "Rules the controller applies (Story 2.5)" (20 ms, 60 ms, 5 ms, 85 ms)
      equal ocb_core/live.h; the LATE fallback written in the docs (8000 us)
@@ -230,8 +230,8 @@ def check_story_2_5(link_doc, cfg, live, late_fallback):
     if m is None or tuple(int(g) for g in m.groups()) != want:
         errors.append("link doc: STATUS v4 sizes differ from ocb_link/config.h (%d, %d, %d, %d)" % want)
     offsets = [int(x) for x in re.findall(r"^    \| (\d+) \| `", rules, re.M)]
-    if offsets != [0, 2, 4, 8, 20, 22, 24, 30, 32, 34, 35, 37, 38]:
-        errors.append("link doc: v4 table offsets %s differ from the 39-byte layout of config.h" % offsets)
+    if offsets != [0, 2, 4, 8, 20, 22, 24, 30, 32, 34, 35, 37, 38, 39]:
+        errors.append("link doc: v4 table offsets %s differ from the 41-byte layout of config.h" % offsets)
     text = section(link_doc, "Rules the controller applies (Story 2.5)")
     checks = (
         (r"`OCB_LIVE_STALE_US` \((\d+) ms", live["LIVE_STALE_US"] // 1000, "OCB_LIVE_STALE_US"),

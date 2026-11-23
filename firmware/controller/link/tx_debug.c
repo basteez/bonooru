@@ -3,7 +3,7 @@
  *
  * The debug STATUS (story 2.6 D12, D35; story 2.3 D14; story 2.5 D13): the
  * 11 base bytes, the v1 and v2 debug counters (21 bytes), the v3 P2 debug
- * log window (3 + 2n bytes) and the v4 self-timing block (39 bytes: the
+ * log window (3 + 2n bytes) and the v4 self-timing block (41 bytes: the
  * core's lateness statistics, core 0's numbers from the USB mailbox, the
  * runner's loop maximum and stack mark, the boot cause from the config). Built only when cfg.debug_counters is set, in its own
  * function with its own buffers, so the release TX path (tx.c) keeps its
@@ -23,8 +23,8 @@
 #include "ocb_proto/frame.h"
 #include "ocb_proto/msgs.h"
 
-#define TX_DBG_BODY_MAX (OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_TAIL_MAX_LEN) /* 106 */
-/* header 3 + body 106 + crc 2 = 111 raw bytes, COBS overhead 1, delimiter 1 */
+#define TX_DBG_BODY_MAX (OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_TAIL_MAX_LEN) /* 108 */
+/* header 3 + body 108 + crc 2 = 113 raw bytes, COBS overhead 1, delimiter 1 */
 #define TX_DBG_WIRE_MAX (OCB_FRAME_HEADER_SIZE + TX_DBG_BODY_MAX + OCB_FRAME_CRC_SIZE + 2)
 /* The UART driver's TX ring (ocb_hw/uart_link.h, OCB_UART_LINK_TX_RING): a
  * pure library cannot include it, so the size is restated here and pinned
@@ -57,7 +57,7 @@ static OCB_CORE_RAMFUNC void put_u32(uint8_t *p, uint32_t v)
     p[3] = (uint8_t)(v >> 24);
 }
 
-/* v4 (story 2.5 D13): 39 bytes at p. Layout in ocb_link/config.h. */
+/* v4 (story 2.5 D13, D31): 41 bytes at p. Layout in ocb_link/config.h. */
 static OCB_CORE_RAMFUNC void put_v4(const ocb_link *link, uint8_t *p)
 {
     const ocb_core_timing_stats *t = &link->core->timing;
@@ -80,6 +80,7 @@ static OCB_CORE_RAMFUNC void put_v4(const ocb_link *link, uint8_t *p)
     put_u16(&p[35], link->dbg_stack_used);
     p[37] = link->cfg.boot_cause;
     p[38] = link->cfg.reboot_count;
+    put_u16(&p[39], link->cfg.stall_reset_us / 10u); /* D31: 10 us units, saturating */
 }
 
 OCB_CORE_RAMFUNC size_t ocb_link_tx_status_debug_(ocb_link *link, uint64_t now_us, uint8_t *out, size_t cap)
