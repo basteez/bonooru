@@ -44,7 +44,7 @@ Software cannot brick the console: HID (P1) and wired Pro Controller (P2) involv
 |-----|------|---|---|-------|---------------------|
 | R1  | Ocarina mechanics differ from the community chart (no sustain, min note length, cooldown, free play limits) | 2 | 3 | 6 | spike 1 by hand with a real controller first, no hardware needed |
 | R2  | A melody accidentally contains one of the 12 official songs → in-game effect, free play ends mid-piece | 2 | 3 | 6 | **warn only** (spike 1.8, 2026-11-20: the game matches songs by pitch, not by button, at any tempo, so an alternative fingering does not avoid the song); the compiler detects official song pitch sequences and warns |
-| R3  | NFR-04 (≤ 1 frame) unreachable as written: frame sampling (0–16.7 ms) + USB polling (0–8 ms) not synced to our clock; aubio ±5–10 ms | 3 | 2 | 6 | measure polling interval (GPIO toggle per IN); restate NFR-04 on inter-onset error (p95 ≤ 1 frame, max ≤ 1.5, drift < 1) |
+| R3  | NFR-04 (≤ 1 frame) unreachable as written: frame sampling (0–16.7 ms) + USB polling (0–8 ms) not synced to our clock; aubio ±5–10 ms | 3 | 2 | 6 | measure polling interval (GPIO toggle per IN); restate NFR-04 on inter-onset error (p95 ≤ 1 frame, max ≤ 1.5, drift < 1). Measured (Story 2.3 H.15, Story 2.5 H.18, 2026-11-23): the Switch 2 polls every 8000 µs (95th percentile 8000 µs, a few missed polls under 20 ms in a 44 s piece); the firmware applies every event within 14 µs of its time (mean about 5 µs), so the firmware's share of the jitter is negligible and the polling grid (0–8 ms) plus the game's frame (0–16.7 ms) remain; the audio result (H.19) and the explanation of AC3 decide the NFR-04 reading |
 | R4  | Scope too large for a fun project: first song only at M6 → motivation loss | 2 | 3 | 6 | walking skeleton after M2 (spike-2 script plays a whole melody through the 2wiCC queue); 3-OS hardware tests as smoke tests on 2 of 3 OS |
 | R5  | Unsigned app bundle blocked by Gatekeeper / SmartScreen, antivirus false positives → breaks NFR-10, A.5 | 3 | 2 | 6 | accepted 2026-11-19 (Q3): no signing; README documents the first-run unblock per OS with screenshots ("right-click → Open" no longer works on macOS 15+, so the docs use Open Anyway) |
 | R6  | Switch 2 system update breaks the controller profile | 2 | 2 | 4 | profile-agnostic firmware: P1 or P3 behind the same interface (ADR-002) |
@@ -59,13 +59,13 @@ Software cannot brick the console: HID (P1) and wired Pro Controller (P2) involv
 
 ## Inconsistencies found in the notes (RISK, unresolved)
 
-- **Old link-protocol watchdog timeout vs NFR-05 / A.3 (100 ms)** — resolved 2026-11-19 by the owner: two-level watchdog, see `docs/link-protocol.md` (Watchdog) and AD-4/AD-5.
+- **Old link-protocol watchdog timeout vs NFR-05 / A.3 (100 ms)** — resolved 2026-11-19 by the owner: two-level watchdog, see `docs/link-protocol.md` (Watchdog) and AD-4/AD-5. Story 2.5 (2026-11-23) measured the core-stall half of NFR-05 on the board: a hung core 0 resets the board 20.0 ms after its last pass (5 runs), a hung core 1 80.0 ms after (detection plus the 60 ms hardware watchdog), nothing left pressed (test plan H.2a, H.2b).
 - **NFR-04 measures absolute per-note error** — resolved 2026-11-19 (Q4): NFR-04 restated on inter-onset intervals; T.1 rewritten.
 
 ## Next actions (from notes)
 
 1. [x] Spike 1 by hand with a real controller + row 1.8 (R1, R2): done 2026-11-20, results in `docs/test-plan.md`
-2. [ ] Measure the USB polling interval (R3, R6)
+2. [x] Measure the USB polling interval (R3, R6): 8000 µs median (Story 2.3 H.15), jitter and scheduler lateness measured on the console (Story 2.5 H.18, 2026-11-23)
 3. [ ] Walking skeleton after M2 (R4)
 4. [ ] Fix the two inconsistencies above in link protocol and requirements
 5. [x] Code signing: not signing (Q3, 2026-11-19, R5); NFR-07 amendment (Q2) done 2026-11-19 (R12)

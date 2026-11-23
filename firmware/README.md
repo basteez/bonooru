@@ -52,7 +52,8 @@ Presets (`CMakePresets.json`):
   counters): `fw-debug-timeline` (the built-in melody, H.18 and H.19), `fw-debug-hang0` and
   `fw-debug-hang1` (core 0 or core 1 hangs 50 ms after the first note, H.2a to H.2c); and
   `fw-release-xip` (the controller from flash instead of RAM: the RAM gate's self-test and the
-  comparison H.20). Options behind them: `OCB_DEBUG_TIMELINE`, `OCB_DEBUG_HANG`
+  comparison H.20); `fw-debug-o3` (the debug counters and the stack mark at the timeline's
+  optimisation, without the melody: the worst-case stack soak of H.18, which needs a free queue). Options behind them: `OCB_DEBUG_TIMELINE`, `OCB_DEBUG_HANG`
   (`NONE|CORE0|CORE1`), `OCB_DEBUG_HANG_DELAY_US` (default 50000), `OCB_CONTROLLER_RUN_FROM_RAM`
   (default ON); the debug options need `OCB_DEBUG_BUILD=ON` (configure stops otherwise, with the
   preset to use in the message). UF2s: `build/<preset>/controller/controller.uf2`.

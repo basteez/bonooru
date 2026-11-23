@@ -1338,8 +1338,9 @@ def driver_argv(cmd: str) -> list[str]:
 
 
 def run_driver(cmd: str) -> tuple[int, list[tuple[float, str]], bool]:
-    """Run the driver (e.g. link_probe.py selfplay); echo and timestamp its output."""
-    return run_streaming(driver_argv(cmd), stderr_too=True)
+    """Run the driver (e.g. link_probe.py selfplay); echo and timestamp its output. Unbuffered, so its prompts
+    (selfplay asks for Enter after the first input, Story 2.5 D37) show at once; stdin stays the terminal's."""
+    return run_streaming(driver_argv(cmd), stderr_too=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
 
 
 def driver_t0(lines: Sequence[tuple[float, str]]) -> float | None:
@@ -1361,11 +1362,12 @@ def driver_self_timing(lines: Sequence[tuple[float, str]]) -> tuple[float, float
     return None
 
 
-def run_streaming(cmd: Sequence[str], stderr_too: bool = False) -> tuple[int, list[tuple[float, str]], bool]:
+def run_streaming(cmd: Sequence[str], stderr_too: bool = False,
+                  env: dict[str, str] | None = None) -> tuple[int, list[tuple[float, str]], bool]:
     """Run `cmd`, echo and timestamp its stdout. Returns (code, lines, interrupted)."""
     # Same process group: a real terminal Ctrl+C reaches the child directly (its own stop sequence).
     proc = subprocess.Popen(list(cmd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT if stderr_too else None,
-                            text=True, bufsize=1)
+                            text=True, bufsize=1, env=env)
     lines: list[tuple[float, str]] = []
 
     def pump():

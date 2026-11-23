@@ -308,8 +308,8 @@ The firmware's `controller/link` (`ocb_link`) sits between the UART and the core
     | 8 | `late_hist u16 × 6` | applied events per lateness bucket: `[0,50)`, `[50,100)`, `[100,250)`, `[250,1000)`, `[1000,4000)`, `[4000,∞)` µs; an event later than the LATE threshold is never applied, so never counted |
     | 20 | `loop_max_us u16` | the longest core 1 super-loop pass since `START` |
     | 22 | `core0_pass_max_us u16` | the longest core 0 pass (`usb_p2_task`) since the last profile restart; it bounds the stamp latency of the IN intervals |
-    | 24 | `in_min_us u16`, `in_p95_us u16`, `in_max_us u16` | the IN interval spread over the window of the median (256 intervals up to 20 ms, 50 µs bins, 0 until 64 are in); `in_max_us` is the larger of the window's maximum and the longest interval above 20 ms (a stall) since the last restart |
-    | 30 | `in_slow u16` | intervals longer than 1.5 × the median since the last restart (a missed poll), stalls above 20 ms included |
+    | 24 | `in_min_us u16`, `in_p95_us u16`, `in_max_us u16` | the IN interval spread: `in_p95_us` over the window of the median (the last 256 intervals up to 20 ms, 50 µs bins, 0 until 64 are in); `in_min_us` and `in_max_us` over every interval since the last restart (raw µs, stalls above 20 ms included; Story 2.5 D35), so a slow interval always lies within them |
+    | 30 | `in_slow u16` | intervals longer than 1.5 × the median since the last restart (a missed poll), stalls above 20 ms included, counted once a median is published |
     | 32 | `seq_retries u16` | published-state reads that needed more than one try |
     | 34 | `seq_fallbacks u8` | published-state reads that returned NEUTRAL after 3 tries (saturates at 255) |
     | 35 | `stack_used_max u16` | the core 1 stack high-water mark, bytes (painted stack, scanned 8 words per pass) |

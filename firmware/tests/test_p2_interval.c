@@ -47,7 +47,7 @@ static void test_spread(ocb_p2 *p)
     fx_init(p);
     ocb_p2_interval_note(p, g_t);
     train(p, 8000, 63);
-    spread_is(p, 0u, 0u, 0u, "under 64 samples");
+    spread_is(p, 8000u, 0u, 8000u, "under 64 samples: no p95 yet, min and max since the restart");
     train(p, 8000, 237);
     spread_is(p, 8000u, 8000u, 8000u, "steady 8000");
     OCB_CHECK(ocb_p2_interval_slow(p) == 0u, "steady: slow %u", ocb_p2_interval_slow(p));
@@ -96,7 +96,9 @@ static void test_spread(ocb_p2 *p)
     train(p, 15000, 1);
     spread_is(p, 8000u, 8000u, 15000u, "outlier in the window");
     train(p, 8000, 256);
-    spread_is(p, 8000u, 8000u, 8000u, "outlier left the window");
+    /* D35: p95 is the window's, min and max cover the same span as slow
+     * (since the restart), so the outlier stays the maximum. */
+    spread_is(p, 8000u, 8000u, 15000u, "outlier left the window, still the maximum since the restart");
     OCB_CHECK(ocb_p2_interval_slow(p) == 1u, "slow is since the restart, not the window: %u",
               ocb_p2_interval_slow(p));
 
@@ -122,7 +124,7 @@ static void test_spread(ocb_p2 *p)
     /* Restart zeroes all. */
     ocb_p2_restart(p);
     spread_is(p, 0u, 0u, 0u, "after restart");
-    OCB_CHECK(p->iv.long_max_us == 0u, "restart: the stall max not cleared");
+    OCB_CHECK(p->iv.run_max_us == 0u && p->iv.run_min_us == 0u, "restart: the span not cleared");
     OCB_CHECK(ocb_p2_interval_slow(p) == 0u, "restart: slow %u", ocb_p2_interval_slow(p));
 
     /* slow saturates. */
@@ -133,6 +135,30 @@ static void test_spread(ocb_p2 *p)
     g_t += 19000u;
     ocb_p2_interval_note(p, g_t);
     OCB_CHECK(ocb_p2_interval_slow(p) == UINT32_MAX, "slow saturates");
+}
+
+/* Story 2.5 D35, bench H.18: "IN max 8000, slow 5" was possible because
+ * max covered the last 256 intervals and slow the whole time since the
+ * restart. Now a slow interval is always within [min, max]. */
+static void test_slow_within_span(ocb_p2 *p)
+{
+    fx_init(p);
+    ocb_p2_interval_note(p, g_t);
+    train(p, 8000, 300);
+    for (int i = 0; i < 5; i++) {
+        train(p, 8000, 50);
+        train(p, 16000, 1); /* a missed poll */
+        train(p, 4000, 1);  /* the next one catches up */
+    }
+    train(p, 8000, 300); /* every slow interval has left the window */
+    OCB_CHECK(ocb_p2_interval_slow(p) == 5u, "slow %u", ocb_p2_interval_slow(p));
+    spread_is(p, 4000u, 8000u, 16000u, "the bench shape: max and min keep the 5 missed polls");
+    OCB_CHECK(p->iv.max_us == 8000u, "the window alone shows 8000 (the bench's in_max_us)");
+    /* Raw microseconds, not bin centres. */
+    train(p, 8013, 1);
+    OCB_CHECK(ocb_p2_interval_max_us(p) == 16000u && ocb_p2_interval_min_us(p) == 4000u, "raw values kept");
+    train(p, 3999, 1);
+    OCB_CHECK(ocb_p2_interval_min_us(p) == 3999u, "raw min %u", ocb_p2_interval_min_us(p));
 }
 
 int main(void)
@@ -257,6 +283,7 @@ int main(void)
     OCB_CHECK(p.iv.ops_median <= 401u, "idle tick");
 
     test_spread(&p);
+    test_slow_within_span(&p);
 
     return ocb_test_failures() == 0 ? 0 : 1;
 }

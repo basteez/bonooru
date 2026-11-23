@@ -3,9 +3,10 @@
  *
  * Median IN interval (story 2.3 D13, AC5b): the time between two IN
  * completions, measured on core 0, published as INFO.report_period_us.
- * Story 2.5 D12 adds the spread of the same window (minimum, 95th
- * percentile, maximum) and the count of slow intervals (above 1.5 x the
- * median), for the jitter measurement of issue #21.
+ * Story 2.5 D12, D35 add the jitter of issue #21: the 95th percentile of
+ * the same window, and over one span (every interval since the restart
+ * while a median is published) the minimum, the maximum and the count of
+ * slow intervals (above 1.5 x the median).
  *
  * Structure: a histogram of 401 bins of 50 us (bin k holds intervals in
  * [50k - 25, 50k + 25) us, so k * 50 is the bin's centre) and a ring of the
@@ -44,19 +45,24 @@ void ocb_p2_interval_note(ocb_p2 *p, uint64_t now_us)
      * 64-bit clocks; a backwards step gives a huge value and is dropped. */
     const uint32_t dt = now - iv->last_us;
     iv->last_us = now;
-    if (dt > OCB_P2_IV_MAX_US) {
-        /* Not in the window (the median must not move), but a stall while
-         * a median is published is a result: slow, and the true maximum
-         * (review fix). A backwards step (dt >= 2^31) is no interval. */
-        if (iv->median_us != 0u && dt < 0x80000000u) {
-            if (iv->slow != UINT32_MAX) {
-                iv->slow++;
-            }
-            if (dt > iv->long_max_us) {
-                iv->long_max_us = dt;
-            }
+    /* Story 2.5 D35: min and max over every interval since the restart
+     * (stalls above 20 ms too), slow over those since the median is
+     * published: slow is a subset of the min..max span. A backwards step
+     * (dt >= 2^31) is no interval. */
+    if (dt < 0x80000000u) {
+        if (iv->run_min_us == 0u || dt < iv->run_min_us) {
+            iv->run_min_us = dt;
         }
-        return;
+        if (dt > iv->run_max_us) {
+            iv->run_max_us = dt;
+        }
+        /* 2 dt > 3 median, no division (dt < 2^31, median <= 20000). */
+        if (iv->median_us != 0u && (uint64_t)dt * 2u > (uint64_t)iv->median_us * 3u && iv->slow != UINT32_MAX) {
+            iv->slow++;
+        }
+    }
+    if (dt > OCB_P2_IV_MAX_US) {
+        return; /* not in the window: the median must not move */
     }
     const uint16_t bin = (uint16_t)((dt + OCB_P2_IV_BIN_US / 2u) / OCB_P2_IV_BIN_US);
     if (iv->count >= OCB_P2_IV_WINDOW) {
@@ -66,10 +72,6 @@ void ocb_p2_interval_note(ocb_p2 *p, uint64_t now_us)
         }
     } else {
         iv->count++;
-    }
-    /* Story 2.5 D12: 2 dt > 3 median, no division. */
-    if (iv->median_us != 0u && dt * 2u > iv->median_us * 3u && iv->slow != UINT32_MAX) {
-        iv->slow++;
     }
     iv->ring[iv->ring_head] = bin;
     iv->ring_head = (uint16_t)((iv->ring_head + 1u) % OCB_P2_IV_WINDOW);
@@ -136,7 +138,7 @@ uint32_t ocb_p2_report_period_us(const ocb_p2 *p)
 
 uint32_t ocb_p2_interval_min_us(const ocb_p2 *p)
 {
-    return p->iv.min_us;
+    return p->iv.run_min_us;
 }
 
 uint32_t ocb_p2_interval_p95_us(const ocb_p2 *p)
@@ -146,7 +148,7 @@ uint32_t ocb_p2_interval_p95_us(const ocb_p2 *p)
 
 uint32_t ocb_p2_interval_max_us(const ocb_p2 *p)
 {
-    return p->iv.long_max_us > p->iv.max_us ? p->iv.long_max_us : p->iv.max_us;
+    return p->iv.run_max_us;
 }
 
 uint32_t ocb_p2_interval_slow(const ocb_p2 *p)

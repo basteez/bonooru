@@ -962,6 +962,15 @@ def soak(port, cycles, events, seed=1, corrupt=0.0, drop=0.0, garbage=False, pac
             out("cycle %d: no INFO" % cycle)
             failures += 1
             continue
+        if cycle == 0:
+            # Story 2.5 D38: the soak needs an empty queue after HELLO; the
+            # timeline flavours load their melody there.
+            st0 = _status_now(port, 0.3)
+            if st0 is not None and st0["free"] != info["queue_cap"]:
+                out("FAIL the queue is not empty after HELLO (free %d of %d): a fw-debug-timeline or hang build "
+                    "loads its melody at HELLO; the soak needs fw-debug or fw-debug-o3" % (
+                        st0["free"], info["queue_cap"]))
+                return False, totals
         t_list = [(i + 1) * 1000 for i in range(events)]
         sender = GbnSender(port.write, port.now, t_list, hello_seq=hello_seq, impair=impair, pacer=pacer,
                            max_inflight=max_inflight if max_inflight and max_inflight > 0 else None, baud=baud)
@@ -1122,15 +1131,21 @@ class P2Log:
         return [(kd, i) for rt, kd, i in self.records if rt >= t]
 
 
+def _say(text):
+    """Every line at once, also through a pipe (story 2.5 D37: selfplay as
+    the --driver of listen_trial.py prompts the owner mid-run)."""
+    print(text, flush=True)
+
+
 class Link:
     """One open session for a whole bench step (story 2.7 D16): app seq
     numbering, every frame received recorded (STATUS, EVENT, ACK, NAK), and
     small request / wait helpers. Frames are written unpaced: the steps send
     a few frames at a time, each waiting for its reply."""
 
-    def __init__(self, port, out=print, trace=None):
+    def __init__(self, port, out=None, trace=None):
         self.port = port
-        self.out = out
+        self.out = out if out is not None else _say
         self.trace_path = trace  # --trace FILE: every frame sent and received
         self.trace = []          # ["  t.tttttt TX|RX ..."], kept in memory, written by close()
         self.seq = 0
@@ -1878,6 +1893,9 @@ def cmd_p2check(port, args):
     period = info["report_period_us"] if info else 0
     lo, hi = P2_PERIOD_RANGE_US
     c.check(info is not None and lo <= period <= hi, "INFO report_period_us %d (want %d..%d)" % (period, lo, hi))
+    # Story 2.5 D36: on the Mac, macOS completes the handshake itself (2000 us).
+    c.check(info is not None and console_period_ok(period), "the host polls like the Switch 2 (%d +- %d us; the Mac "
+            "gives 2000: is the controller still on the Mac?)" % (CONSOLE_PERIOD_US, CONSOLE_PERIOD_TOL_US))
     seq = link.p2log.since(t0)
     c.check(any(k == 0x06 for k, _ in seq), "the P2 log shows the handshake (HANDSHAKE record)")
     c.note("console sequence (%d records%s): %s" % (len(seq), (", %d lost" % link.p2log.gaps)
@@ -2151,6 +2169,67 @@ def _start_timed(link, lead_us, tries=3):
     return None, None, None
 
 
+CONSOLE_PERIOD_US = 8000      # the Switch 2 polls the wired Pro Controller every 8 ms (Story 2.3 H.15)
+CONSOLE_PERIOD_TOL_US = 1000  # story 2.5 D36: 7000..9000 is the console; the Mac's own handshake gives 2000
+SETTLE_ENTER_S = 300.0        # selfplay: time for the owner to dismiss the controller screen
+
+
+def console_period_ok(period_us):
+    """D36: the IN period is the console's (8000 us), not the Mac's 2000."""
+    return abs(period_us - CONSOLE_PERIOD_US) <= CONSOLE_PERIOD_TOL_US
+
+
+def mac_has_controller():
+    """D36: 057E:2009 on this Mac's USB (hidapi), True / False, or None
+    when hidapi is not installed (the check is then skipped)."""
+    try:
+        import hid  # noqa: PLC0415 (bench-machine dependency, optional here)
+    except ImportError:
+        return None
+    try:
+        return bool(hid.enumerate(0x057E, 0x2009))
+    except (IOError, OSError, ValueError):
+        return None
+
+
+def stdin_has_line():
+    """D37: a line is waiting on stdin (non-blocking; POSIX select). EOF or
+    a closed stdin counts as a line, so a non-interactive run never hangs."""
+    import select  # noqa: PLC0415
+    try:
+        r, _, _ = select.select([sys.stdin], [], [], 0)
+    except (OSError, ValueError):
+        return True
+    if not r:
+        return False
+    sys.stdin.readline()
+    return True
+
+
+def _settle_after_first_input(link, c, args):
+    """D37: after the first input the Switch may show its controller
+    connection screen. Interactive (default): one prompt, then wait for
+    Enter while the link stays alive (PINGs, heartbeat); --settle-s N:
+    wait N s, no prompt (the --driver use)."""
+    if args.settle_s is not None:
+        if args.settle_s > 0:
+            link.log("settling %.1f s after the first input (--settle-s)" % args.settle_s)
+        end = link.port.now() + args.settle_s
+        while link.port.now() < end:
+            link.wait(min(0.2, max(0.0, end - link.port.now())))
+            link.send(PING)
+        return True
+    link.out(">>> If the Switch shows the controller connection screen: dismiss it with the Joy-Con, reopen "
+             "the ocarina (free play), then press Enter here. Waiting up to %.0f s." % SETTLE_ENTER_S)
+    end = link.port.now() + SETTLE_ENTER_S
+    while link.port.now() < end:
+        if stdin_has_line():
+            return c.check(True, "the owner pressed Enter: the ocarina is open")
+        link.wait(0.2)
+        link.send(PING)
+    return c.check(False, "no Enter within %.0f s" % SETTLE_ENTER_S)
+
+
 def cmd_selfplay(port, args):
     """H.18: the built-in melody of a fw-debug-timeline controller plays on
     the console from the controller's own clock; the firmware's self-timing
@@ -2164,6 +2243,13 @@ def cmd_selfplay(port, args):
     n_notes, n_events, end_us = tl
     if getattr(args, "hb_enabled", True):
         port.hb_start(_hb_period(args))
+    if not getattr(args, "any_host", False):
+        on_mac = mac_has_controller()
+        if not c.check(on_mac is not True, "the controller is not on this Mac's USB (057E:2009 %s)" % (
+                "absent" if on_mac is False else "not checked: hidapi not installed")):
+            link.out("UNPLUG THE CONTROLLER FROM THE MAC FIRST: macOS completes the Pro Controller handshake itself "
+                     "and selfplay would play to the Mac (or pass --any-host on purpose)")
+            return c.finish()
     link.out(">>> PLUG THE CONTROLLER INTO THE SWITCH TOP USB-C PORT; the game must be in ocarina free play "
              "(open it with the Joy-Con first). Waiting up to %.0f s." % args.wait_s)
     t0 = port.now()
@@ -2187,6 +2273,11 @@ def cmd_selfplay(port, args):
         link.wait(0.5)
     if not c.check(period > 0, "INFO report_period_us %d (the console's median IN interval)" % period):
         return c.finish()
+    if not getattr(args, "any_host", False) and not c.check(
+            console_period_ok(period), "the host polls like the Switch 2: report_period_us %d (want %d +- %d; the Mac "
+            "gives 2000: unplug the controller from the Mac and plug it into the console)" % (
+                period, CONSOLE_PERIOD_US, CONSOLE_PERIOD_TOL_US)):
+        return c.finish()
     cap = info["queue_cap"]
     if args.first_input == "hat-down":
         acks = _direct_presses(link, press_state(hat="down"), FIRST_INPUT_PRESSES, FIRST_INPUT_HOLD_MS,
@@ -2194,6 +2285,8 @@ def cmd_selfplay(port, args):
         c.check(acks == 2 * FIRST_INPUT_PRESSES, "first input: D-pad down x%d in DIRECT (%d of %d SET_STATE ACKed; "
                 "the console shows a wired controller only after its first input)" % (
                     FIRST_INPUT_PRESSES, acks, 2 * FIRST_INPUT_PRESSES))
+        if not _settle_after_first_input(link, c, args):
+            return c.finish()
     lead_us = int(args.lead_ms) * 1000
     passes = 0
     for i in range(1, args.runs + 1):
@@ -2497,6 +2590,11 @@ def main(argv=None):
     p.add_argument("--first-input", choices=("hat-down", "none"), default="hat-down",
                    help="D-pad down x3 in DIRECT before the first run (never A; default %(default)s)")
     p.add_argument("--runs", type=positive_int_arg, default=1, help="STOP, START repeated (default %(default)s)")
+    p.add_argument("--settle-s", type=seconds_arg, default=None,
+                   help="after the first input wait N s instead of prompting for Enter (the --driver use of "
+                        "listen_trial.py; default: prompt)")
+    p.add_argument("--any-host", action="store_true",
+                   help="skip the console checks (report period 8000 +- 1000 us, not on the Mac): p2_probe.py stall")
     p.add_argument("--timeline", default=TIMELINE_DEFAULT,
                    help="the expected-notes file of the table (default firmware/tests/testtl_expected.txt)")
     p = sub.add_parser("hangcheck", help="H.2a/H.2b (story 2.5): after a liveness reboot, the boot cause in STATUS v4")

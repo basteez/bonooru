@@ -1627,3 +1627,17 @@ def test_driver_without_t0_fails_the_run(monkeypatch, tmp_path, capsys):
     lines = [(1.0, "FAIL console_ready 1 for 2 s in a row within 120 s of the prompt\n")]
     assert _live_driver(monkeypatch, tmp_path, lines, melody_recording(presses[:3])) == 1
     assert "printed no T0_HOST_MONO= line" in capsys.readouterr().err
+
+
+def test_driver_runs_unbuffered(monkeypatch):
+    """Story 2.5 D37: the driver's prompts must show at once through the pipe."""
+    seen = {}
+
+    def fake(cmd, stderr_too=False, env=None):
+        seen.update(cmd=cmd, stderr_too=stderr_too, env=env)
+        return 0, [], False
+
+    monkeypatch.setattr(lt, "run_streaming", fake)
+    monkeypatch.setenv("P", "/dev/cu.x")
+    assert lt.run_driver('python3 link_probe.py --port "$P" selfplay') == (0, [], False)
+    assert seen["cmd"][3] == "/dev/cu.x" and seen["stderr_too"] and seen["env"]["PYTHONUNBUFFERED"] == "1"

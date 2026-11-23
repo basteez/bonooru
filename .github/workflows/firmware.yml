@@ -101,11 +101,11 @@ jobs:
       # Story 2.5 D9: the bench flavours (one UF2 per hardware check) and the
       # XIP variant of the RAM gate's self-test (D2); compile only, 0 warnings
       # (our sources build with -Werror).
-      - name: Build the Story 2.5 flavours (timeline, hang core 0, hang core 1, XIP)
+      - name: Build the Story 2.5 flavours (debug -O3, timeline, hang core 0, hang core 1, XIP)
         working-directory: firmware
         run: |
           set -o pipefail
-          for p in fw-debug-timeline fw-debug-hang0 fw-debug-hang1 fw-release-xip; do
+          for p in fw-debug-o3 fw-debug-timeline fw-debug-hang0 fw-debug-hang1 fw-release-xip; do
             cmake --preset "$p"
             cmake --build --preset "$p" 2>&1 | tee "${RUNNER_TEMP}/build-$p.log"
             if grep -qi 'warning' "${RUNNER_TEMP}/build-$p.log"; then
@@ -148,6 +148,7 @@ jobs:
           firmware/tools/check-release-nolog.sh firmware/build/fw-release/controller/controller.elf
           firmware/tools/check-release-nolog.sh firmware/build/fw-release-xip/controller/controller.elf
           firmware/tools/check-release-nolog.sh --expect-present firmware/build/fw-debug/controller/controller.elf
+          firmware/tools/check-release-nolog.sh --expect-present firmware/build/fw-debug-o3/controller/controller.elf
           firmware/tools/check-release-nolog.sh --expect-present=dbglog,testtl firmware/build/fw-debug-timeline/controller/controller.elf
           firmware/tools/check-release-nolog.sh --expect-present=dbglog,testtl,hang firmware/build/fw-debug-hang0/controller/controller.elf
           firmware/tools/check-release-nolog.sh --expect-present=dbglog,testtl,hang firmware/build/fw-debug-hang1/controller/controller.elf
@@ -157,7 +158,7 @@ jobs:
       - name: Cross-core barrier is a real DMB (story 2.5 D5)
         run: |
           firmware/tools/check-barrier.sh --self-test
-          for p in fw-release fw-debug fw-debug-timeline fw-debug-hang0 fw-debug-hang1 fw-release-xip; do
+          for p in fw-release fw-debug fw-debug-o3 fw-debug-timeline fw-debug-hang0 fw-debug-hang1 fw-release-xip; do
             firmware/tools/check-barrier.sh "firmware/build/$p/controller/controller.elf"
           done
 
@@ -165,7 +166,7 @@ jobs:
       # proves the gate can tell the two apart.
       - name: Controller hot path runs from RAM (story 2.5 D2)
         run: |
-          for p in fw-release fw-debug fw-debug-timeline fw-debug-hang0 fw-debug-hang1; do
+          for p in fw-release fw-debug fw-debug-o3 fw-debug-timeline fw-debug-hang0 fw-debug-hang1; do
             firmware/tools/check-ram-hot-path.sh "firmware/build/$p/controller/controller.elf"
           done
           firmware/tools/check-ram-hot-path.sh --expect-flash firmware/build/fw-release-xip/controller/controller.elf
@@ -173,7 +174,7 @@ jobs:
       # Story 2.5 D15 (issue #21): the static core 1 chain stays <= 1536 bytes.
       - name: Core 1 stack, static bound (story 2.5 D15)
         run: |
-          for p in fw-release fw-debug fw-debug-timeline; do
+          for p in fw-release fw-debug fw-debug-o3 fw-debug-timeline; do
             firmware/tools/check-stack.sh "firmware/build/$p"
           done
 

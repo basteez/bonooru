@@ -824,7 +824,8 @@ def cmd_args(**kw):
              max_inflight=probe.MAX_INFLIGHT, hb_enabled=True, hb_period_ms=probe.HEARTBEAT_PERIOD_MS,
              seconds=2.0, expect_fresh=False, expect_ready="auto", keepalive_seconds=2.0, rounds=3, mode="idle",
              no_heartbeat=False, meter_seconds=1.0, count=5, trace=None, wait_s=10.0, step_s=10.0, dock=False,
-             lead_ms=300, first_input="hat-down", runs=1, timeline=None, expect="core0", reboots_before=None)
+             lead_ms=300, first_input="hat-down", runs=1, timeline=None, expect="core0", reboots_before=None,
+             settle_s=0.0, any_host=False)
     a.update(kw)
     return argparse.Namespace(**a)
 
@@ -1218,7 +1219,7 @@ class ConsoleModel:
     way platform/usb_p2.c does for the real console. `sequence` is the
     handshake it logs at each connect; `period_us` what core 0 measures."""
 
-    def __init__(self, lib, sequence=None, period_us=1000, in_every_s=0.001):
+    def __init__(self, lib, sequence=None, period_us=8000, in_every_s=0.001):
         self.lib = lib
         self.plugged = False
         self.awake = True
@@ -1303,10 +1304,18 @@ class P2BenchSteps(unittest.TestCase):
         port, console = self.port_with_console()
         rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=10.0)
         self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
-        self.assertIn("H.15 median IN interval: 1000 us", text)
+        self.assertIn("H.15 median IN interval: 8000 us", text)
         self.assertIn("usb 80 05, usb 80 01, usb 80 02, sub 03, usb 80 04, HANDSHAKE", text)
         self.assertIn("sub 01, arg 04, sub 21, arg 21, sub 30", text)
         self.assertNotIn("refused by the profile", text)
+
+    def test_p2check_refuses_the_mac(self):
+        """Story 2.5 D36: macOS completes the handshake itself and polls at
+        2000 us; p2check is for the console and says so."""
+        port, console = self.port_with_console(period_us=2000)
+        rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=10.0)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("the host polls like the Switch 2", last_line(text))
 
     def test_p2check_negative_controls(self):
         # The console never answers (setting OFF before the plug): no ready.
@@ -1435,6 +1444,9 @@ class SelfPlay(unittest.TestCase):
         if SIM_LIB is None:
             self.skipTest("no link simulation library")
         self.lib = load_sim()
+        saved = probe.mac_has_controller
+        probe.mac_has_controller = lambda: False
+        self.addCleanup(setattr, probe, "mac_has_controller", saved)
         self.expected = os.path.join(TMP_DIR or ".", "short_testtl_expected.txt")
         with open(self.expected, "w", encoding="utf-8") as f:
             f.write(SHORT_EXPECTED)
@@ -1461,6 +1473,59 @@ class SelfPlay(unittest.TestCase):
         # The host's estimate of t0 is close to the controller's (fake clock).
         t0s = [float(x) for x in re.findall(r"T0_HOST_MONO=([0-9.]+)", text)]
         self.assertEqual(len(t0s), 2)
+
+    def test_selfplay_console_checks(self):
+        """Story 2.5 D36: refused on the Mac (2000 us, or 057E:2009 in the
+        Mac's USB tree); --any-host (p2_probe.py stall) accepts it."""
+        port, console = self.port(period_us=2000, spread=(1950, 2000, 2050, 0))
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("the host polls like the Switch 2: report_period_us 2000", last_line(text))
+        port, console = self.port(period_us=2000, spread=(1950, 2000, 2050, 0))
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected,
+                           any_host=True)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        probe.mac_has_controller = lambda: True
+        port, console = self.port()
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("not on this Mac's USB", last_line(text))
+        self.assertIn("UNPLUG THE CONTROLLER FROM THE MAC FIRST", text)
+
+    def test_selfplay_waits_for_enter(self):
+        """Story 2.5 D37: after the first input, the prompt and the wait for
+        Enter (the link kept alive); no Enter: FAIL."""
+        saved = probe.stdin_has_line
+        self.addCleanup(setattr, probe, "stdin_has_line", saved)
+        calls = []
+
+        def enter_after_3_s():
+            calls.append(1)
+            return len(calls) > 15  # 15 polls of 0.2 s
+        probe.stdin_has_line = enter_after_3_s
+        port, console = self.port()
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected,
+                           settle_s=None)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("dismiss it with the Joy-Con, reopen the ocarina", text)
+        self.assertIn("the owner pressed Enter", text)
+        self.assertEqual(self.lib.sim_counter(7) & 0xFF, 1, "only the END abort (no app timeout while waiting)")
+        probe.stdin_has_line = lambda: False
+        port, console = self.port()
+        rc, text = run_cmd(port, probe.cmd_selfplay, user=ConsoleUser(port, console), timeline=self.expected,
+                           settle_s=None)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("no Enter within 300 s", last_line(text))
+
+    def test_soak_refuses_a_loaded_queue(self):
+        """Story 2.5 D38: the soak on a timeline build fails at once, with the build to use."""
+        port = Bridge2wiCCPort(self.lib)
+        self.lib.sim_timeline(1)
+        out = []
+        with fake_time(port):
+            ok, _ = probe.soak(port, 2, 50, out=out.append)
+        self.assertFalse(ok)
+        self.assertIn("the soak needs fw-debug or fw-debug-o3", "\n".join(out))
 
     def test_selfplay_real_melody(self):
         port, console = self.port(timeline=1, cls=CoarsePort)

@@ -730,7 +730,8 @@ def _run_stall(backend, args, out, child):
     if args.drive:
         if not check(bool(args.port), "--drive needs --port \"$P\" (the bridge's serial port)"):
             return finish()
-        child.proc = backend.spawn(_link_probe_argv(args, "selfplay", "--wait-s", "%d" % args.wait_s))
+        child.proc = backend.spawn(_link_probe_argv(args, "selfplay", "--wait-s", "%d" % args.wait_s, "--any-host",
+                                                     "--settle-s", "0"))
         out(">>> STREAM ON. link_probe.py selfplay started on %s; waiting up to %.0f s for the first note." % (
             args.port, args.wait_s))
     else:
