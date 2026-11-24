@@ -56,7 +56,7 @@ proptest! {
     fn c2_cobs_round_trip(x in cobs_input()) {
         let enc = cobs::encode(&x);
         prop_assert!(!enc.contains(&0));
-        prop_assert!(enc.len() <= x.len() + x.len().div_ceil(254) + 1);
+        prop_assert!(enc.len() <= x.len() + x.len() / 254 + 1);
         prop_assert_eq!(cobs::decode(&enc).unwrap(), x);
     }
 

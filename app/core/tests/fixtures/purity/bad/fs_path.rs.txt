@@ -1,2 +1,2 @@
-// Bad fixture: fs
+// expect: fs
 pub fn f() { let _ = std::fs::read("x"); }

@@ -1,2 +1,2 @@
-// Bad fixture: ffi
+// expect: extern
 extern "C" { fn abs(x: i32) -> i32; }

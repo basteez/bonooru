@@ -12,13 +12,13 @@
 use std::fmt;
 
 use super::consts::{
-    BODY_LEN_STATUS, EVT_LATE, EVT_LINK_LOST, EVT_NONE, EVT_PLAYBACK_DONE, EVT_UNDERRUN,
-    EVT_USB_SUSPENDED, HID_PROFILE_P1, HID_PROFILE_P2, HID_PROFILE_P3, HID_PROFILE_UNKNOWN,
-    MAX_BODY, MODE_DIRECT, MODE_IDLE, MODE_PLAYING, MSG_ACK, MSG_EVENT, MSG_HEARTBEAT, MSG_HELLO,
-    MSG_INFO, MSG_NAK, MSG_PING, MSG_QUEUE_EVENT, MSG_SET_STATE, MSG_START, MSG_STATUS, MSG_STOP,
-    NAK_ABORTED, NAK_BAD_STATE, NAK_BUSY, NAK_CRC, NAK_FULL, NAK_NO_LINK, NAK_NOT_READY, NAK_ORDER,
-    NAK_SEMANTIC_MAX, NAK_SEMANTIC_MIN, NAK_SEQ, NAK_TRANSPORT_MAX, NAK_TRANSPORT_MIN,
-    NAK_UNKNOWN_TYPE, NAK_VERSION,
+    BODY_LEN_INFO, BODY_LEN_QUEUE_EVENT, BODY_LEN_STATUS, EVT_LATE, EVT_LINK_LOST, EVT_NONE,
+    EVT_PLAYBACK_DONE, EVT_UNDERRUN, EVT_USB_SUSPENDED, HID_PROFILE_P1, HID_PROFILE_P2,
+    HID_PROFILE_P3, HID_PROFILE_UNKNOWN, MAX_BODY, MODE_DIRECT, MODE_IDLE, MODE_PLAYING, MSG_ACK,
+    MSG_EVENT, MSG_HEARTBEAT, MSG_HELLO, MSG_INFO, MSG_NAK, MSG_PING, MSG_QUEUE_EVENT,
+    MSG_SET_STATE, MSG_START, MSG_STATUS, MSG_STOP, NAK_ABORTED, NAK_BAD_STATE, NAK_BUSY, NAK_CRC,
+    NAK_FULL, NAK_NO_LINK, NAK_NOT_READY, NAK_ORDER, NAK_SEMANTIC_MAX, NAK_SEMANTIC_MIN, NAK_SEQ,
+    NAK_TRANSPORT_MAX, NAK_TRANSPORT_MIN, NAK_UNKNOWN_TYPE, NAK_VERSION,
 };
 use super::frame::{FrameError, encode_frame};
 use super::state::State;
@@ -39,7 +39,7 @@ impl fmt::Display for MsgError {
         match self {
             Self::BodyLen => f.write_str("message body has the wrong length"),
             Self::UnknownType(t) => write!(f, "unknown message type 0x{t:02x}"),
-            Self::TooLong => f.write_str("message body longer than 255 bytes"),
+            Self::TooLong => write!(f, "message body longer than {MAX_BODY} bytes"),
         }
     }
 }
@@ -226,7 +226,7 @@ impl Info {
     /// Body bytes.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut b = Vec::with_capacity(14);
+        let mut b = Vec::with_capacity(BODY_LEN_INFO);
         b.push(self.proto_ver);
         b.extend_from_slice(&self.fw_ver);
         b.extend_from_slice(&self.bridge_ver);
@@ -289,7 +289,7 @@ impl QueueEvent {
     /// Body bytes.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut b = Vec::with_capacity(12);
+        let mut b = Vec::with_capacity(BODY_LEN_QUEUE_EVENT);
         b.extend_from_slice(&self.t_us.to_le_bytes());
         b.extend_from_slice(&self.state.to_bytes());
         b

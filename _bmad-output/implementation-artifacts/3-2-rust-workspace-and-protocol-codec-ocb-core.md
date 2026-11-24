@@ -79,6 +79,29 @@ No bench part: this story is host-only (no H-rows, no hardware, no retro action 
   - [x] 10.2 `firmware/common/proto/vectors/README.md`: the first paragraph already names "the app's Rust codec tests (Story 3.2)": add the test path `app/core/tests/vectors.rs` and that adding a vector file also means adding it to the Rust list.
   - [x] 10.3 Dev Agent Record: decisions, red proofs, CI run link, file list.
 
+### Review Findings
+
+Code review 2026-11-24 (gds-code-review: Blind Hunter, Edge Case Hunter, Acceptance Auditor). The Edge Case Hunter compared the Rust codec with the C reference on about 100 000 generated inputs (COBS, `decode_frame` on both sides, the splitter's events and counters, the message length rules) and found **no difference**; every finding is in the test gates, the build script or the docs. Classification per the owner's rule: IMPORTANT findings are fixed; MINOR findings are fixed when cheap, otherwise recorded here.
+
+- [x] [Review][Patch][IMPORTANT] **I-1 Purity gate bypassable** (blind+edge+auditor) — `use std::{fs, io}`, `use std as s`, `std :: fs`, a path split over two lines, `use std::time::{Instant}`, `std::os::unix::net`, `eprint!`, `include!`, `option_env!` all passed C.4. Fixed: the scan now runs on a token stream (identifiers, `::`, single characters) with three rules: banned identifiers, banned macros, and `std`/`core`/`alloc` paths limited to an allow-list of modules (`use std as …` and `use std;` refused). [app/core/tests/purity.rs]
+- [x] [Review][Patch][IMPORTANT] **I-2 Manifest check bypassable** (blind+edge) — `[dependencies] # x`, `[ dependencies ]`, `["dependencies"]` and a dotted `dependencies.crc` key escaped; `egui` was matched as a substring anywhere (false red on a description). Fixed: headers normalised (comment, spaces and quotes dropped), dotted keys checked, banned crates looked for only as dependency keys or tables (dev and build included). [app/core/tests/purity.rs]
+- [x] [Review][Patch][IMPORTANT] **I-3 Fixture self-test did not prove each rule** (blind+auditor) — it only checked "some hit" and a file count. Fixed: each fixture names the hit it must produce (`// expect: …`, 34 fixtures), and every word and macro rule must be proven by a fixture. [app/core/tests/purity.rs, tests/fixtures/purity/bad/]
+- [x] [Review][Patch][IMPORTANT] **I-4 Vector parser laxer than F.9** (edge+blind+auditor) — a malformed `seq` became 0 (`unwrap_or([0])`), non-ASCII and control characters passed, constants accepted spaces, state and message `fields` were compared as maps (any order), error cases accepted stray fields, message `wire` was never decoded back. Fixed to F.9's strictness: printable ASCII only, `seq` exactly one byte, constants 2 to 8 hex digits, `fields` compared in wire order and full width, error cases limited to `type`/`body`/`err`, `wire` decoded on its receiving side (APP for ≥ 0x80). [app/core/tests/vectors.rs]
+- [x] [Review][Patch][IMPORTANT] **I-5 Red-proof tests could pass for the wrong reason** (auditor) — loose needles (`"crc16.txt:"`), and the unknown-field case could fire only the duplicate-case rule. Fixed: exact messages with file, line and case; the unknown field is inserted inside its case; 8 new red tests (unlisted file, bad `seq`, non-ASCII, spaced constant, state and message field order, stray field in an error case). [app/core/tests/vectors.rs]
+- [x] [Review][Patch][MINOR] **M-1 Version rule differed from `ocb_version.cmake`** (edge+auditor) — Rust re-formatted the numbers (`v01.2.3` → `1.2.3`, CMake keeps `01.2.3`), treated N `00` as 0 and trimmed leading whitespace. Fixed: the captured text is kept, N is compared with `"0"`, only trailing whitespace is stripped; new unit cases. The > 255 fallback stays (D5: versions are `[u8; 3]` on the wire). [app/core/src/version_parse.rs]
+- [x] [Review][Patch][MINOR] **M-2 `build.rs` rerun triggers** (blind+edge+auditor) — missed commits on a branch and every change in a git worktree. Fixed: the git dirs come from `git rev-parse --git-dir` / `--git-common-dir`; `HEAD`, `logs/HEAD`, `refs/heads`, `refs/tags`, `packed-refs` and `index` are watched. The wrong comment "CI always builds fresh" (rust-cache restores `target/`) is gone. [app/core/build.rs]
+- [x] [Review][Patch][MINOR] **M-3 COBS bound in C.2 one byte too loose** (blind+edge) — now `n + n/254 + 1`, and C.1 checks the same bound on every `cobs.txt` encoding. [app/core/tests/props.rs, tests/vectors.rs]
+- [x] [Review][Patch][MINOR] **M-4 Wire numbers as literals in `msgs.rs`** (auditor) — `with_capacity(14/12)` and "255" now use `BODY_LEN_INFO`, `BODY_LEN_QUEUE_EVENT`, `MAX_BODY`. [app/core/src/protocol/msgs.rs]
+- [x] [Review][Patch][MINOR] **M-5 Vectors README overstated F.9** (auditor) — reworded: F.9 checks the file count, the Rust test any unlisted `.txt`. [firmware/common/proto/vectors/README.md]
+- [x] [Review][Patch][MINOR] **M-6 No CI run link in the Dev Agent Record** (auditor) — added (run 45360817145 and the post-review run). [this file]
+- [x] [Review][Patch][MINOR] **M-7 `broken_copy` would panic on a subdirectory in `vectors/`** (blind) — copies files only. [app/core/tests/vectors.rs]
+- [ ] [Review][Minor][recorded] **M-8 `Unknown(known)` values compare unequal** (blind) — `NakReason::Unknown(0x01)` can be built by hand and differs from `NakReason::Crc` though both encode to `01`. `from_u8` never produces it; Story 3.3 decodes through `from_u8` only. Not fixed (a private constructor or a normalising `PartialEq` adds API weight for no current caller).
+- [ ] [Review][Minor][recorded] **M-9 C.5 passes on the fallback version** (blind) — the repo has no `v*` tag yet, so CI cannot require a real version today. The job summary shows the version per OS. Revisit at the first release tag (M8/M9).
+- [ ] [Review][Minor][recorded] **M-10 A prerelease tag (`v1.2.3-rc1`) gives `0.0.0-dev`** (blind) — the `--match` glob accepts it and the parser rejects it, the same as `ocb_version.cmake`. Both codebases agree; the release process uses `vX.Y.Z` tags only (AD-14).
+- [ ] [Review][Minor][recorded] **M-11 `-dirty` can lag in local builds** (blind+edge) — an edit to a tracked file that is not staged does not trigger `build.rs`. Watching every source file is not worth it; CI never builds from a dirty tree.
+- [ ] [Review][Minor][recorded] **M-12 `.gitattributes` covers `vectors/*.txt` only at the top level** (blind) — matches the README rule "one file per area" (no subfolders).
+- [ ] [Review][Minor][recorded] **M-13 STOP and PING are unit variants, `Status::encode` returns `Result`** (auditor) — deviations from the letter of Task 2.7, recorded as D18 and D19 below.
+
 ## Dev Notes
 
 ### What exists today (read before writing)
@@ -224,7 +247,8 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 
 ### Debug Log References
 
-- `cargo test` (macOS arm64, rustc 1.100.0): 27 tests in 5 targets, all pass (lib 4, `props` 11, `purity` 4, `vectors` 7, `version` 1). `c1_conformance_vectors` prints `vectors: 239 cases in 7 files ok (proto_version 01)`.
+- CI, `app` workflow run 45360817145 (commit 2977c15, 2026-11-24): app core ubuntu-24.04, windows-latest and macos-latest all **success**; `firmware` run 45360816808 success.
+- `cargo test` (macOS arm64, rustc 1.100.0), before the review: 27 tests in 5 targets, all pass (lib 4, `props` 11, `purity` 4, `vectors` 7, `version` 1). `c1_conformance_vectors` prints `vectors: 239 cases in 7 files ok (proto_version 01)`.
 - `cargo clippy --all-targets -- -D warnings`: clean. `cargo fmt --all --check`: clean.
 - `cargo deny --locked check licenses` (cargo-deny 0.22.0): `licenses ok`, with proptest's tree included; no licence outside the NFR-07 list was needed (Task 8.2: nothing to flag).
 - Red proofs (each run once, then reverted; outputs checked in the terminal):
@@ -244,7 +268,10 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 - **D14. `MsgError::TooLong`** added for the STATUS `extra` limit (encode side); `Message::encode_frame` maps a frame-level `BodyTooLong` to it.
 - **D15. `version_parse` is compiled into the library only under `cfg(test)`**; `build.rs` includes the same file through `#[path]`. The runtime crate exposes only `version::APP_VERSION` and `APP_VERSION_TRIPLE` (parsed by a `const fn` from the `build.rs` env values). The print-the-version test lives in `tests/version.rs` because the purity gate bans `println!` in `src/`.
 - **D16. Clippy panic lints allowed per test file** (`#![allow(clippy::unwrap_used, …)]` at the top of each `tests/*.rs`) and the in-module unit tests use `assert!` only; no `clippy.toml`.
-- **D17. Purity gate token matching on identifier boundaries**, so `#![forbid(unsafe_code)]` is not a hit for `unsafe` and `reprint!` is not a hit for `print!`; checked by `c4_good_fixture_passes`.
+- **D17. Purity gate matching on identifier boundaries** (superseded by the token-stream scan of review fix I-1, which keeps the property), so `#![forbid(unsafe_code)]` is not a hit for `unsafe` and `reprint!` is not a hit for `print!`; checked by `c4_good_fixture_passes`.
+- **D18. STOP and PING have no body struct**: they are `Message::Stop` / `Message::Ping`, decoded through `Message::decode` with the exact empty-body rule. A unit struct with `encode() -> Vec::new()` would add two types for nothing (review M-13).
+- **D19. `Status::encode` returns `Result<Vec<u8>, MsgError>`**: STATUS is the only message whose body length depends on data (`extra`), so it is the only encoder that can refuse (`TooLong`, D14); the others return `Vec<u8>` (review M-13).
+- **D20. Code review fixes (2026-11-24)**: I-1 to I-5 and M-1 to M-7 fixed, M-8 to M-13 recorded (Review Findings above). Tests after the fixes: 34 (lib 4, `props` 11, `purity` 4, `vectors` 14, `version` 1); C.1 still 239 cases in 7 files.
 
 ### Completion Notes List
 
@@ -281,7 +308,7 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 - `app/core/tests/purity.rs` (new)
 - `app/core/tests/version.rs` (new)
 - `app/core/tests/fixtures/purity/good.rs.txt` (new)
-- `app/core/tests/fixtures/purity/bad/*.rs.txt` (new, 18 files)
+- `app/core/tests/fixtures/purity/bad/*.rs.txt` (new, 34 files)
 - `docs/test-plan.md` (modified: C.1 to C.5)
 - `firmware/common/proto/vectors/README.md` (modified: Rust test path and list)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` (modified)
@@ -290,3 +317,4 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 ## Change Log
 
 - 2026-11-24: Story 3.2 implemented (workspace, `ocb-core` protocol codec, C.1 to C.5, app CI, licence gate). Status → review.
+- 2026-11-24: Code review: 5 IMPORTANT and 7 MINOR findings fixed, 6 MINOR recorded (Review Findings). Status → done after the post-review CI run.

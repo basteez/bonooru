@@ -36,16 +36,36 @@ fn main() {
     println!("cargo:rustc-env=OCB_APP_VERSION_MINOR={y}");
     println!("cargo:rustc-env=OCB_APP_VERSION_PATCH={z}");
 
-    // Best effort: rebuild when HEAD or the tags move (CI always builds fresh).
-    for p in [
-        ".git/HEAD",
-        ".git/refs/tags",
-        ".git/packed-refs",
-        ".git/index",
-    ] {
-        let path = repo.join(p);
-        if path.exists() {
-            println!("cargo:rerun-if-changed={}", path.display());
+    // Best effort: rebuild when HEAD, a branch, the tags or the index move.
+    // `git rev-parse` finds the real git dirs, also in a worktree (where
+    // `.git` is a file). `logs/HEAD` changes on every commit and checkout.
+    // Editing a tracked file without staging it is not seen, so `-dirty` can
+    // lag locally; CI is not affected because it never builds from a dirty tree.
+    for flag in ["--git-dir", "--git-common-dir"] {
+        let Some(dir) = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-parse", flag])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+        else {
+            continue;
+        };
+        let dir = repo.join(dir.trim_end());
+        for p in [
+            "HEAD",
+            "logs/HEAD",
+            "refs/heads",
+            "refs/tags",
+            "packed-refs",
+            "index",
+        ] {
+            let path = dir.join(p);
+            if path.exists() {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
         }
     }
     println!("cargo:rerun-if-changed=build.rs");

@@ -29,9 +29,11 @@ fn digits(s: &str) -> Option<&str> {
 }
 
 /// Parses one `git describe` output line; `None` input means git failed.
+/// Like CMake's `OUTPUT_STRIP_TRAILING_WHITESPACE`, only trailing
+/// whitespace is removed.
 #[must_use]
 pub fn parse_describe(describe: Option<&str>) -> ParsedVersion {
-    parse_inner(describe.map(str::trim)).unwrap_or_else(fallback)
+    parse_inner(describe.map(str::trim_end)).unwrap_or_else(fallback)
 }
 
 fn parse_inner(describe: Option<&str>) -> Option<ParsedVersion> {
@@ -49,16 +51,19 @@ fn parse_inner(describe: Option<&str>) -> Option<ParsedVersion> {
     let (xyz, n) = rest.rsplit_once('-')?;
     let n = digits(n)?;
     let mut parts = xyz.split('.');
+    let mut text = [""; 3];
     let mut triple = [0u8; 3];
-    for slot in &mut triple {
-        *slot = digits(parts.next()?)?.parse::<u8>().ok()?;
+    for (slot, num) in text.iter_mut().zip(triple.iter_mut()) {
+        *slot = digits(parts.next()?)?;
+        *num = slot.parse::<u8>().ok()?;
     }
     if parts.next().is_some() {
         return None;
     }
-    let [x, y, z] = triple;
+    // The captured text, as ocb_version.cmake does (`v01.2.3` stays `01.2.3`).
+    let [x, y, z] = text;
     let mut string = format!("{x}.{y}.{z}");
-    if n.bytes().any(|b| b != b'0') {
+    if n != "0" {
         string.push_str(&format!("-{n}-{hash}"));
     }
     if dirty {
@@ -92,6 +97,9 @@ mod tests {
             ("0.2.3-12-g0f-dirty".into(), [0, 2, 3])
         );
         assert_eq!(p("v255.0.10-0-gdead\n"), ("255.0.10".into(), [255, 0, 10]));
+        // Same strings as ocb_version.cmake: captured text, N compared to "0".
+        assert_eq!(p("v01.2.3-0-gabc"), ("01.2.3".into(), [1, 2, 3]));
+        assert_eq!(p("v1.2.3-00-gabc"), ("1.2.3-00-gabc".into(), [1, 2, 3]));
     }
 
     #[test]
@@ -109,6 +117,8 @@ mod tests {
             "v1.2.3",
             "b5e0da0",
             "v1.-2.3-0-gabc",
+            " v1.2.3-0-gabc",
+            "v1.2.3-rc1-0-gabc",
         ] {
             assert_eq!(p(bad), (FALLBACK.into(), [0, 0, 0]), "{bad:?}");
         }

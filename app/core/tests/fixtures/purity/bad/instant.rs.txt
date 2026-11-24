@@ -1,2 +1,0 @@
-// Bad fixture: instant
-pub fn f() { let _ = std::time::Instant::now(); }

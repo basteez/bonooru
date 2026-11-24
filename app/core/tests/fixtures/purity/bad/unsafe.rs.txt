@@ -1,2 +1,2 @@
-// Bad fixture: unsafe
+// expect: unsafe
 pub fn f() { unsafe {} }

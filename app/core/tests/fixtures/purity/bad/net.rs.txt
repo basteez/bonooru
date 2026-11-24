@@ -1,2 +1,2 @@
-// Bad fixture: net
+// expect: net
 use std::net::TcpStream;

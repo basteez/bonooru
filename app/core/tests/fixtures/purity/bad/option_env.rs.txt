@@ -1,0 +1,2 @@
+// expect: option_env!
+const X: Option<&str> = option_env!("X");

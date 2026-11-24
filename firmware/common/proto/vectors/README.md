@@ -12,8 +12,8 @@ in `constants.txt`; those two win over `docs/link-protocol.md` on a disagreement
 
 One file per area. The list is fixed: adding an area means adding its file **and** its
 entry in `kFiles[]` in `firmware/tests/test_vectors.c` and in `FILES` in
-`app/core/tests/vectors.rs` (both tests also fail if the `.txt` files here differ from
-their list).
+`app/core/tests/vectors.rs` (F.9 also fails if the number of `.txt` files here differs
+from its list; the Rust test fails on any `.txt` file not on its list).
 
 | File | What it pins |
 |---|---|

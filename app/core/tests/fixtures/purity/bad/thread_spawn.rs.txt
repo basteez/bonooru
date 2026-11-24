@@ -1,0 +1,2 @@
+// expect: spawn
+use crate::x as y; pub fn f() { y::spawn(|| ()); }

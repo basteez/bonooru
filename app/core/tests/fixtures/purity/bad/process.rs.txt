@@ -1,2 +1,2 @@
-// Bad fixture: process
+// expect: process
 pub fn f() { std::process::exit(1); }

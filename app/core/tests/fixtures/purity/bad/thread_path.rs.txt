@@ -1,2 +1,2 @@
-// Bad fixture: thread
+// expect: thread
 pub fn f() { std::thread::spawn(|| ()); }

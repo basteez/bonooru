@@ -1,2 +1,2 @@
-// Bad fixture: env
+// expect: env
 pub fn f() { let _ = std::env::var("X"); }

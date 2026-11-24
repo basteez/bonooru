@@ -1,2 +1,2 @@
-// Bad fixture: print
+// expect: print!
 pub fn f() { print!("x"); }

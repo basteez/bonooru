@@ -1,2 +1,0 @@
-// Bad fixture: io
-use std::io::Write;

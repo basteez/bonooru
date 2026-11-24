@@ -1,0 +1,2 @@
+// expect: core::time
+use core::time::Duration;

@@ -1,2 +1,2 @@
-// Bad fixture: println
+// expect: println!
 pub fn f() { println!("x"); }

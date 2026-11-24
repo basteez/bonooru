@@ -1,0 +1,2 @@
+// expect: std::fs
+use std :: fs;

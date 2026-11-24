@@ -1,2 +1,2 @@
-// Bad fixture: include_str
+// expect: include_str!
 static S: &str = include_str!("x");

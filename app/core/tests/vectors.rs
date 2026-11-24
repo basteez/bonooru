@@ -92,11 +92,16 @@ fn read_kv(report: &mut Report, dir: &Path, file: &str) -> Option<Vec<Kv>> {
     let mut header_seen = false;
     for (i, raw) in text.split('\n').enumerate() {
         let line = i + 1;
-        if raw.contains('\t') || raw.contains('\r') {
-            report.fail(file, line, "", "tab or carriage return (README rule 1)");
+        if let Some(bad) = raw.chars().find(|c| !(' '..='~').contains(c)) {
+            report.fail(
+                file,
+                line,
+                "",
+                format!("character {bad:?} outside printable ASCII (README rule 1)"),
+            );
             continue;
         }
-        let t = raw.trim();
+        let t = raw.trim_matches(' ');
         if t.is_empty() || t.starts_with('#') {
             continue;
         }
@@ -104,7 +109,10 @@ fn read_kv(report: &mut Report, dir: &Path, file: &str) -> Option<Vec<Kv>> {
             report.fail(file, line, "", "not `key: value`");
             continue;
         };
-        let (key, value) = (k.trim().to_owned(), v.trim().to_owned());
+        let (key, value) = (
+            k.trim_matches(' ').to_owned(),
+            v.trim_matches(' ').to_owned(),
+        );
         if value.contains('#') {
             report.fail(file, line, "", "`#` inside a value");
             continue;
@@ -232,19 +240,25 @@ fn rx_side(report: &mut Report, file: &str, c: &Case) -> Option<RxSide> {
     }
 }
 
-/// `name=hex` pairs (README rule 6).
-fn parse_fields(s: &str) -> Option<BTreeMap<String, Vec<u8>>> {
-    let mut m = BTreeMap::new();
+/// `name=hex` pairs in order (README rule 6): values are hex without
+/// spaces, names unique.
+fn parse_fields(s: &str) -> Option<FieldList> {
+    let mut out: FieldList = Vec::new();
     if s.is_empty() {
-        return Some(m);
+        return Some(out);
     }
     for tok in s.split(' ') {
         let (k, v) = tok.split_once('=')?;
-        if k.is_empty() || v.is_empty() || m.insert(k.to_owned(), parse_hex(v)?).is_some() {
+        if k.is_empty() || v.is_empty() || out.iter().any(|(n, _)| n == k) {
             return None;
         }
+        out.push((k.to_owned(), parse_hex(v)?));
     }
-    Some(m)
+    Some(out)
+}
+
+fn to_map(list: &FieldList) -> Fields {
+    list.iter().cloned().collect()
 }
 
 // ------------------------------------------------------------------ areas
@@ -267,7 +281,10 @@ fn area_constants(report: &mut Report, file: &str, kvs: Vec<Kv>) -> usize {
             report.fail(file, kv.line, &kv.key, "duplicate constant");
             continue;
         }
-        let Some(bytes) = parse_hex(&kv.value).filter(|b| !b.is_empty() && b.len() <= 4) else {
+        let digits_ok = (2..=8).contains(&kv.value.len())
+            && kv.value.len() % 2 == 0
+            && kv.value.bytes().all(|b| b.is_ascii_hexdigit());
+        let Some(bytes) = parse_hex(&kv.value).filter(|_| digits_ok) else {
             report.fail(file, kv.line, &kv.key, "bad hex number");
             continue;
         };
@@ -302,6 +319,9 @@ fn area_cobs(report: &mut Report, file: &str, cases: &[Case]) {
                     continue;
                 };
                 let got = cobs::encode(&raw);
+                if enc.len() > raw.len() + raw.len() / 254 + 1 {
+                    report.fail(file, c.line, &c.name, "enc longer than the COBS bound");
+                }
                 if got != enc {
                     report.fail(
                         file,
@@ -424,11 +444,13 @@ fn area_frames(report: &mut Report, file: &str, cases: &[Case]) {
 // full width, arrays and the state are in wire order (README rule 6).
 
 type Fields = BTreeMap<String, Vec<u8>>;
+type FieldList = Vec<(String, Vec<u8>)>;
 
-fn fields_of(m: &Message) -> Fields {
-    let mut f = Fields::new();
+/// The fields of a message in wire order (the order the vectors use).
+fn fields_of(m: &Message) -> FieldList {
+    let mut f = FieldList::new();
     let mut put = |k: &str, v: &[u8]| {
-        f.insert(k.to_owned(), v.to_vec());
+        f.push((k.to_owned(), v.to_vec()));
     };
     match m {
         Message::Hello(h) => put("proto_ver", &[h.proto_ver]),
@@ -579,6 +601,18 @@ fn area_messages(report: &mut Report, file: &str, cases: &[Case]) {
             continue;
         };
         if let Some(err) = c.get("err") {
+            if let Some(extra) = c
+                .fields
+                .keys()
+                .find(|k| !["type", "body", "err"].contains(&k.as_str()))
+            {
+                report.fail(
+                    file,
+                    c.line,
+                    &c.name,
+                    format!("error case with field `{extra}`"),
+                );
+            }
             if err != "BODY_LEN" {
                 report.fail(file, c.line, &c.name, format!("bad err `{err}`"));
             } else if Message::decode(ty, &body) != Err(MsgError::BodyLen) {
@@ -586,9 +620,11 @@ fn area_messages(report: &mut Report, file: &str, cases: &[Case]) {
             }
             continue;
         }
-        let Some([seq]) =
-            need_hex(report, file, c, "seq").map(|s| <[u8; 1]>::try_from(s).unwrap_or([0]))
-        else {
+        let Some(seq) = need_hex(report, file, c, "seq") else {
+            continue;
+        };
+        let [seq] = seq[..] else {
+            report.fail(file, c.line, &c.name, "seq must be one byte");
             continue;
         };
         let Some(wire) = need_hex(report, file, c, "wire") else {
@@ -621,7 +657,7 @@ fn area_messages(report: &mut Report, file: &str, cases: &[Case]) {
             Err(e) => report.fail(file, c.line, &c.name, format!("decode: {e}")),
         }
         // encode(fields) + trailing == body
-        match message_from_fields(ty, &fields) {
+        match message_from_fields(ty, &to_map(&fields)) {
             Some(m) => match m.encode_body() {
                 Ok(mut enc) => {
                     enc.extend_from_slice(&trailing);
@@ -649,6 +685,21 @@ fn area_messages(report: &mut Report, file: &str, cases: &[Case]) {
                 &c.name,
                 format!("frame: {other:?}, expected {}", hex(&want)),
             ),
+        }
+        // decode_frame(wire) on the receiving side == (type, seq, body)
+        let side = if ty >= consts::TYPE_CTRL_MIN {
+            RxSide::App
+        } else {
+            RxSide::Controller
+        };
+        match decode_frame(side, &wire) {
+            Ok(f)
+                if f == (Frame {
+                    ty,
+                    seq,
+                    body: body.clone(),
+                }) => {}
+            other => report.fail(file, c.line, &c.name, format!("wire decode: {other:?}")),
         }
         ok_types.insert(ty);
     }
@@ -750,19 +801,30 @@ fn area_state(report: &mut Report, file: &str, cases: &[Case]) {
             report.fail(file, c.line, &c.name, "missing or bad `fields`");
             continue;
         };
-        let keys: Vec<&str> = f.keys().map(String::as_str).collect();
-        let mut want_keys = vec!["buttons", "flags", "hat", "lx", "ly", "rx", "ry"];
-        want_keys.sort_unstable();
-        let fields_state = (keys == want_keys)
+        const ORDER: [(&str, usize); 7] = [
+            ("buttons", 2),
+            ("hat", 1),
+            ("lx", 1),
+            ("ly", 1),
+            ("rx", 1),
+            ("ry", 1),
+            ("flags", 1),
+        ];
+        let shape_ok = f.len() == ORDER.len()
+            && f.iter()
+                .zip(ORDER)
+                .all(|((n, v), (w, len))| n == w && v.len() == len);
+        let m = to_map(&f);
+        let fields_state = shape_ok
             .then(|| -> Option<State> {
                 Some(State {
-                    buttons: u16_of(&f, "buttons")?,
-                    hat: u8_of(&f, "hat")?,
-                    lx: u8_of(&f, "lx")?,
-                    ly: u8_of(&f, "ly")?,
-                    rx: u8_of(&f, "rx")?,
-                    ry: u8_of(&f, "ry")?,
-                    flags: u8_of(&f, "flags")?,
+                    buttons: u16_of(&m, "buttons")?,
+                    hat: u8_of(&m, "hat")?,
+                    lx: u8_of(&m, "lx")?,
+                    ly: u8_of(&m, "ly")?,
+                    rx: u8_of(&m, "rx")?,
+                    ry: u8_of(&m, "ry")?,
+                    flags: u8_of(&m, "flags")?,
                 })
             })
             .flatten();
@@ -771,7 +833,7 @@ fn area_state(report: &mut Report, file: &str, cases: &[Case]) {
                 file,
                 c.line,
                 &c.name,
-                "fields must be buttons hat lx ly rx ry flags",
+                "fields must be buttons hat lx ly rx ry flags, in order and full width",
             );
             continue;
         };
@@ -882,7 +944,9 @@ fn broken_copy(tag: &str, file: &str, edit: impl Fn(&str) -> String) -> PathBuf 
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     for e in fs::read_dir(vectors_dir()).unwrap().flatten() {
-        fs::copy(e.path(), dir.join(e.file_name())).unwrap();
+        if e.path().is_file() {
+            fs::copy(e.path(), dir.join(e.file_name())).unwrap();
+        }
     }
     let p = dir.join(file);
     let text = fs::read_to_string(&p).unwrap();
@@ -907,7 +971,7 @@ fn c1_red_wrong_crc_vector() {
     let d = broken_copy("crc", "crc16.txt", |t| {
         t.replace("check.crc: b1 29", "check.crc: b1 28")
     });
-    expect_failure(&d, "crc16.txt:");
+    expect_failure(&d, "crc16.txt:9: check: crc got b1 29 expected b1 28");
 }
 
 #[test]
@@ -935,23 +999,82 @@ fn c1_red_constant_missing() {
 }
 
 #[test]
-fn c1_red_unknown_field_and_extra_file() {
-    let d = broken_copy("field", "cobs.txt", |t| format!("{t}\nempty.extra: 00\n"));
+fn c1_red_unknown_field() {
+    // Right after the case's last line, so only the unknown-field rule fires.
+    let d = broken_copy("field", "cobs.txt", |t| {
+        t.replacen("empty.enc: 01\n", "empty.enc: 01\nempty.extra: 00\n", 1)
+    });
+    expect_failure(&d, "cobs.txt:11: empty: unknown field `extra`");
+}
+
+#[test]
+fn c1_red_unlisted_file() {
+    let d = broken_copy("file", "cobs.txt", |t| format!("{t}\n"));
     fs::write(d.join("new_area.txt"), "proto_version: 01\n").unwrap();
-    let r = run(&d);
-    let _ = fs::remove_dir_all(&d);
-    assert!(
-        r.failures.iter().any(|f| f.contains("new_area.txt")),
-        "{:#?}",
-        r.failures
+    expect_failure(
+        &d,
+        "new_area.txt:0: -: vector file not in the Rust test's list",
     );
-    assert!(
-        r.failures
-            .iter()
-            .any(|f| f.contains("unknown field `extra`") || f.contains("duplicate case name")),
-        "{:#?}",
-        r.failures
-    );
+}
+
+#[test]
+fn c1_red_bad_seq() {
+    let d = broken_copy("seq", "messages.txt", |t| {
+        t.replacen("hello.seq: 00", "hello.seq: 00 00", 1)
+    });
+    expect_failure(&d, "hello: seq must be one byte");
+}
+
+#[test]
+fn c1_red_non_ascii() {
+    let d = broken_copy("ascii", "cobs.txt", |t| {
+        t.replacen("one_zero.enc: 01 01", "one_zero.enc: 01 01\u{a0}", 1)
+    });
+    expect_failure(&d, "outside printable ASCII");
+}
+
+#[test]
+fn c1_red_spaced_constant() {
+    let d = broken_copy("cspace", "constants.txt", |t| {
+        t.replacen("MAX_RAW_FRAME: 0104", "MAX_RAW_FRAME: 01 04", 1)
+    });
+    expect_failure(&d, "MAX_RAW_FRAME: bad hex number");
+}
+
+#[test]
+fn c1_red_state_field_order() {
+    let d = broken_copy("sorder", "state.txt", |t| {
+        t.replacen(
+            "neutral.fields: buttons=0000 hat=08 lx=80 ly=80 rx=80 ry=80 flags=00",
+            "neutral.fields: flags=00 ry=80 rx=80 ly=80 lx=80 hat=08 buttons=0000",
+            1,
+        )
+    });
+    expect_failure(&d, "neutral: fields must be buttons hat lx ly rx ry flags");
+}
+
+#[test]
+fn c1_red_message_field_order() {
+    let d = broken_copy("morder", "messages.txt", |t| {
+        t.replacen(
+            "nak_seq.fields: reason=02 expected=05 got=07",
+            "nak_seq.fields: got=07 expected=05 reason=02",
+            1,
+        )
+    });
+    expect_failure(&d, "nak_seq: decode fields");
+}
+
+#[test]
+fn c1_red_error_case_with_extra_field() {
+    let d = broken_copy("errx", "messages.txt", |t| {
+        t.replacen(
+            "set_state_short.err: BODY_LEN",
+            "set_state_short.err: BODY_LEN\nset_state_short.seq: 00",
+            1,
+        )
+    });
+    expect_failure(&d, "set_state_short: error case with field `seq`");
 }
 
 #[test]
@@ -962,5 +1085,5 @@ fn c1_red_wrong_message_wire() {
             "hello.wire: 02 01 05 01 01 64 d0",
         )
     });
-    expect_failure(&d, "messages.txt:");
+    expect_failure(&d, "messages.txt:11: hello: frame:");
 }
