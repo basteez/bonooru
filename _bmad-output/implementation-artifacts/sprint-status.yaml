@@ -58,7 +58,7 @@ development_status:
   3-1-bridge-firmware-frame-aware-pipe-and-heartbeat: done
   3-2-rust-workspace-and-protocol-codec-ocb-core: done
   3-3-sans-io-link-session: done
-  3-4-dev-tool-plays-a-melody-end-to-end: backlog
+  3-4-dev-tool-plays-a-melody-end-to-end: done
   3-5-hardware-fail-safe-and-console_ready-checks: backlog
   epic-3-retrospective: optional
 

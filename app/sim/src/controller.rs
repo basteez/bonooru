@@ -12,8 +12,8 @@ use ocb_core::protocol::consts::{
     STATUS_PERIOD_MS, T_US_LIMIT, TYPE_APP_MAX, TYPE_APP_MIN,
 };
 use ocb_core::protocol::{
-    Ack, Event, EventCode, HidProfile, Info, Message, Mode, Nak, NakReason, QueueEvent, RxEvent,
-    RxSide, Splitter, State, Status, encode_frame,
+    Ack, Event, EventCode, HidProfile, Info, Message, Mode, NEUTRAL, Nak, NakReason, QueueEvent,
+    RxEvent, RxSide, Splitter, State, Status, encode_frame,
 };
 
 /// How the fake controller is set up.
@@ -63,6 +63,8 @@ pub struct ControllerLog {
     pub naks: Vec<(u8, u8, u8)>,
     /// STOPs executed.
     pub stops: u32,
+    /// `lead_us` of every START accepted.
+    pub starts: Vec<u32>,
     /// HELLOs answered.
     pub hellos: u32,
     /// PINGs ACKed.
@@ -115,6 +117,9 @@ pub struct FakeController {
     link_ok: bool,
     console_ready: bool,
     inject: Option<(u8, NakReason)>,
+    debug_extra: Option<Vec<u8>>,
+    table_on_sync: Option<Vec<(u32, State)>>,
+    published: State,
     // timing
     last_status: Option<u64>,
     status_after_ack: bool,
@@ -153,6 +158,9 @@ impl FakeController {
             link_ok: true,
             console_ready: true,
             inject: None,
+            debug_extra: None,
+            table_on_sync: None,
+            published: NEUTRAL,
             last_status: None,
             status_after_ack: false,
             last_app_frame: 0,
@@ -218,6 +226,27 @@ impl FakeController {
     /// The next EVENT is sent by the core but lost on the wire.
     pub fn lose_next_event(&mut self) {
         self.lose_next_event = true;
+    }
+
+    /// Debug counters: when set, every STATUS carries these bytes as its
+    /// `extra` tail (the debug layout of `docs/link-protocol.md`); `None`
+    /// (the default) sends a release-style STATUS.
+    pub fn set_debug_extra(&mut self, extra: Option<Vec<u8>>) {
+        self.debug_extra = extra;
+    }
+
+    /// Models the `fw-debug-timeline` build (Story 2.5 D10, D38): after
+    /// every HELLO and STOP the queue holds this table (ending in END), so
+    /// every app `QUEUE_EVENT` gets `NAK BAD_STATE`.
+    pub fn set_table_on_sync(&mut self, table: Option<Vec<(u32, State)>>) {
+        self.table_on_sync = table;
+    }
+
+    /// The state the controller publishes to the console now (NEUTRAL in
+    /// IDLE, the DIRECT state, or the last applied event).
+    #[must_use]
+    pub fn published(&self) -> State {
+        self.published
     }
 
     /// The next frame of type `ty` the core would handle gets this NAK.
@@ -291,6 +320,15 @@ impl FakeController {
         self.queue.clear();
         self.end_queued = false;
         self.last_t = None;
+        self.published = NEUTRAL;
+    }
+
+    fn load_table(&mut self) {
+        if let Some(t) = &self.table_on_sync {
+            self.queue = t.iter().copied().collect();
+            self.end_queued = t.last().is_some_and(|e| e.1.has_end());
+            self.last_t = t.last().map(|e| e.0);
+        }
     }
 
     fn abort(&mut self, event: Option<EventCode>) {
@@ -380,6 +418,7 @@ impl FakeController {
         }
         if ty == MSG_STOP {
             self.sync(seq);
+            self.load_table();
             self.log.stops += 1;
             self.reply(&Reply::Ack(seq));
             return;
@@ -389,6 +428,9 @@ impl FakeController {
             let ok = body.first() == Some(&PROTO_VERSION) && self.cfg.proto_ver == PROTO_VERSION;
             self.sync(seq);
             self.session_open = ok;
+            if ok {
+                self.load_table();
+            }
             self.info();
             return;
         }
@@ -477,6 +519,7 @@ impl FakeController {
                         return nak(NakReason::BadState);
                     }
                     self.mode = Mode::Direct;
+                    self.published = m.state;
                     self.log.direct.push(m.state);
                     Reply::Ack(seq)
                 } else {
@@ -487,7 +530,9 @@ impl FakeController {
                         return nak(NakReason::BadState);
                     }
                     self.mode = Mode::Playing;
+                    self.published = NEUTRAL;
                     self.t0 = now_us + u64::from(m.lead_us);
+                    self.log.starts.push(m.lead_us);
                     Reply::Ack(seq)
                 }
             }
@@ -543,7 +588,7 @@ impl FakeController {
             abort_count: self.abort_count,
             last_event: self.last_event,
             flags,
-            extra: Vec::new(),
+            extra: self.debug_extra.clone().unwrap_or_default(),
         };
         if let Ok(body) = st.encode() {
             self.send(MSG_STATUS, &body);
@@ -570,6 +615,7 @@ impl FakeController {
                     self.abort(Some(EventCode::Late));
                 } else {
                     self.queue.pop_front();
+                    self.published = State { flags: 0, ..s };
                     self.log.applied.push((t, s));
                     if s.has_end() {
                         self.abort(Some(EventCode::PlaybackDone));

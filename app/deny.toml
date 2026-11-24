@@ -20,6 +20,10 @@ allow = [
     "ISC",
     "Zlib",
     "MPL-2.0",
+    # Owner decision 2026-11-24 (Story 3.4, NFR-07): Unicode-3.0 is a
+    # permissive OSI licence; it reaches the graph through `unicode-ident`
+    # (proc-macro2, used by serialport's thiserror and later by egui).
+    "Unicode-3.0",
 ]
 confidence-threshold = 0.93
 # The list is the policy, not the current graph.

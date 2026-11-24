@@ -157,6 +157,13 @@ impl Session {
         self.send.unacked()
     }
 
+    /// QUEUE_EVENTs queued with `queue_event` and not yet handed to
+    /// `poll_transmit` (a streamer keeps its backlog bounded with it).
+    #[must_use]
+    pub fn events_unsent(&self) -> usize {
+        self.send.qe_len()
+    }
+
     /// The send counters.
     #[must_use]
     pub fn send_stats(&self) -> SendStats {
