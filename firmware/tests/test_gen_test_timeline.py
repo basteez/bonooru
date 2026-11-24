@@ -5,6 +5,9 @@ Run by ctest as `python3 -I test_gen_test_timeline.py FW_DIR` (testtl_drift):
   1. drift: tools/gen_test_timeline.py regenerates testtl_data.c and
      testtl_expected.txt from the committed trial file into a temporary
      directory; both equal the committed files byte for byte;
+  1b. the same for the ocb-dev CSV (story 3.4, app/tools/ocb-dev/timelines/
+     ode-to-joy-90bpm.csv): equal to a fresh generation, its events equal
+     to the C table's, `# start_lead_us: 500000`;
   2. the source trial file's header says it is generated from the Story 1.5
      profile, and the generated table has the hand-counted 158 events and 62
      notes, the last event NEUTRAL|END;
@@ -34,8 +37,9 @@ def check(cond, what):
 def gen(src, out_dir):
     out_c = os.path.join(out_dir, "testtl_data.c")
     out_e = os.path.join(out_dir, "testtl_expected.txt")
+    out_v = os.path.join(out_dir, "timeline.csv")
     p = subprocess.run([sys.executable, "-I", os.path.join(FW, "tools", "gen_test_timeline.py"),
-                        "--src", src, "--out-c", out_c, "--out-expected", out_e],
+                        "--src", src, "--out-c", out_c, "--out-expected", out_e, "--out-csv", out_v],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
     return p.returncode, p.stdout + p.stderr, out_c, out_e
 
@@ -46,7 +50,8 @@ def read(path):
 
 
 HEADER = ("# Story 1.6 walking skeleton: test.\n"
-          "# Melody: x.melody; profile: app/profiles/oot-switch2-1.1.1.toml.\n")
+          "# Melody: x.melody; profile: app/profiles/oot-switch2-1.1.1.toml.\n"
+          "# Profile values used: frame_rate 60, start_lead_ms 500.\n")
 
 
 def bad(tmp, name, body, needle):
@@ -90,6 +95,25 @@ def main():
             notes = [ln for ln in read(out_e).decode("utf-8").splitlines() if ln and not ln.startswith("#")]
             check(len(notes) == 62, "expected notes %d, wanted 62" % len(notes))
             check(notes and notes[0] == "01 B5 30 500000", "first note %r" % (notes[0] if notes else None))
+            # 1b: the ocb-dev CSV (story 3.4).
+            csv_path = os.path.join(tmp, "timeline.csv")
+            committed = os.path.join(repo, "app", "tools", "ocb-dev", "timelines", "ode-to-joy-90bpm.csv")
+            check(os.path.exists(committed) and read(csv_path) == read(committed),
+                  "drift: app/tools/ocb-dev/timelines/ode-to-joy-90bpm.csv differs from a fresh generation")
+            lines = read(csv_path).decode("utf-8").splitlines()
+            check("# start_lead_us: 500000" in lines, "CSV: no '# start_lead_us: 500000'")
+            body = [ln for ln in lines if ln and not ln.startswith("#")]
+            check(body[:1] == ["t_us,state"], "CSV: header")
+            csv_rows = body[1:]
+            check(len(csv_rows) == len(rows), "CSV rows %d, C rows %d" % (len(csv_rows), len(rows)))
+            for crow, vrow in zip(rows, csv_rows):
+                nums = crow.strip().lstrip("{").split("}}")[0].replace("{", "").replace("u", "").split(",")
+                t, b, hat, lx, ly, rx, ry, fl = [int(x.strip(), 0) for x in nums]
+                want = "%d,%02x%02x%02x%02x%02x%02x%02x%02x" % (t, b & 0xFF, b >> 8, hat, lx, ly, rx, ry, fl)
+                if vrow != want:
+                    check(False, "CSV row %r != C row %r" % (vrow, want))
+                    break
+            check(csv_rows and csv_rows[-1] == "44166667,0000088080808001", "CSV: last row not NEUTRAL|END")
 
         bad(tmp, "button_b", HEADER + "0f\n30f B - -\n60f - - -\n", "allow-list")
         bad(tmp, "button_zl", HEADER + "0f\n30f Y+ZL - -\n60f - - -\n", "allow-list")
@@ -100,6 +124,8 @@ def main():
         bad(tmp, "too_many", HEADER + "".join("%df Y - -\n" % (2 * i) for i in range(400)) + "900f - - -\n",
             "more than 400")
         bad(tmp, "too_late", HEADER + "0f\n128850f - - -\n", "below 2^31")
+        bad(tmp, "no_lead", HEADER.replace("start_lead_ms 500", "x") + "0f\n30f Y - -\n60f - - -\n",
+            "start_lead_ms")
 
         good = os.path.join(tmp, "good.txt")
         with open(good, "w", encoding="utf-8") as f:

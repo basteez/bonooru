@@ -1,0 +1,21 @@
+[package]
+name = "ocb-dev"
+description = "Dev-only bench tool (Story 3.4): streams a timeline through the bridge; never shipped to users (FR-15 is the GUI app)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ocb-core = { path = "../../core" }
+# Default features off: `libudev` only serves port enumeration on Linux,
+# which this tool never does (Story 3.4 D2).
+serialport = { version = "=4.10.1", default-features = false }
+ctrlc = "=3.5.3"
+
+[dev-dependencies]
+ocb-sim = { path = "../../sim" }
+
+[lints]
+workspace = true

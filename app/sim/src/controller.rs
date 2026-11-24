@@ -63,6 +63,8 @@ pub struct ControllerLog {
     pub naks: Vec<(u8, u8, u8)>,
     /// STOPs executed.
     pub stops: u32,
+    /// `lead_us` of every START accepted.
+    pub starts: Vec<u32>,
     /// HELLOs answered.
     pub hellos: u32,
     /// PINGs ACKed.
@@ -115,6 +117,7 @@ pub struct FakeController {
     link_ok: bool,
     console_ready: bool,
     inject: Option<(u8, NakReason)>,
+    debug_extra: Option<Vec<u8>>,
     // timing
     last_status: Option<u64>,
     status_after_ack: bool,
@@ -153,6 +156,7 @@ impl FakeController {
             link_ok: true,
             console_ready: true,
             inject: None,
+            debug_extra: None,
             last_status: None,
             status_after_ack: false,
             last_app_frame: 0,
@@ -218,6 +222,13 @@ impl FakeController {
     /// The next EVENT is sent by the core but lost on the wire.
     pub fn lose_next_event(&mut self) {
         self.lose_next_event = true;
+    }
+
+    /// Debug counters: when set, every STATUS carries these bytes as its
+    /// `extra` tail (the debug layout of `docs/link-protocol.md`); `None`
+    /// (the default) sends a release-style STATUS.
+    pub fn set_debug_extra(&mut self, extra: Option<Vec<u8>>) {
+        self.debug_extra = extra;
     }
 
     /// The next frame of type `ty` the core would handle gets this NAK.
@@ -488,6 +499,7 @@ impl FakeController {
                     }
                     self.mode = Mode::Playing;
                     self.t0 = now_us + u64::from(m.lead_us);
+                    self.log.starts.push(m.lead_us);
                     Reply::Ack(seq)
                 }
             }
@@ -543,7 +555,7 @@ impl FakeController {
             abort_count: self.abort_count,
             last_event: self.last_event,
             flags,
-            extra: Vec::new(),
+            extra: self.debug_extra.clone().unwrap_or_default(),
         };
         if let Ok(body) = st.encode() {
             self.send(MSG_STATUS, &body);

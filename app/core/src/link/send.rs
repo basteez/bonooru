@@ -173,6 +173,12 @@ impl SendBuffer {
         self.sent.len() + self.ctl.len() + self.qe.len()
     }
 
+    /// QUEUE_EVENTs pushed and not sent yet.
+    #[must_use]
+    pub fn qe_len(&self) -> usize {
+        self.qe.len()
+    }
+
     /// Nothing pushed and unacknowledged.
     #[must_use]
     pub fn is_empty(&self) -> bool {
