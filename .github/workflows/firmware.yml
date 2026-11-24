@@ -139,6 +139,9 @@ jobs:
       - name: Controller P2 profile is pico-sdk and TinyUSB free (AD-2)
         run: firmware/tools/check-p2-pure.sh
 
+      - name: Bridge core is pico-sdk and TinyUSB free (AD-2, Story 3.1)
+        run: firmware/tools/check-bridge-pure.sh
+
       # Story 2.3 AC5a: the P2 debug log exists in debug builds only. The
       # debug ELF must contain it, so a rename cannot make the gate vacuous.
       # Story 2.5 Task 8.3: nor the test melody or the hang injectors; the
