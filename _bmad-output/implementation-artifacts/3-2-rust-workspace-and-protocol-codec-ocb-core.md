@@ -4,7 +4,7 @@ baseline_commit: b5e0da02888fcbde32109924b23cdc1bf3556fe9
 
 # Story 3.2: Rust workspace and protocol codec (`ocb-core`)
 
-Status: review
+Status: done
 
 <!-- Ultimate context engine analysis completed - comprehensive developer guide created (gds-create-story, 2026-11-24) -->
 
@@ -248,6 +248,7 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 ### Debug Log References
 
 - CI, `app` workflow run 45360817145 (commit 2977c15, 2026-11-24): app core ubuntu-24.04, windows-latest and macos-latest all **success**; `firmware` run 45360816808 success.
+- CI after the review fixes, commit 21c4f3c: `app` run 45362316404 (ubuntu-24.04, windows-latest, macos-latest all **success**), `firmware` run 45362316420 success. PR #31.
 - `cargo test` (macOS arm64, rustc 1.100.0), before the review: 27 tests in 5 targets, all pass (lib 4, `props` 11, `purity` 4, `vectors` 7, `version` 1). `c1_conformance_vectors` prints `vectors: 239 cases in 7 files ok (proto_version 01)`.
 - `cargo clippy --all-targets -- -D warnings`: clean. `cargo fmt --all --check`: clean.
 - `cargo deny --locked check licenses` (cargo-deny 0.22.0): `licenses ok`, with proptest's tree included; no licence outside the NFR-07 list was needed (Task 8.2: nothing to flag).
