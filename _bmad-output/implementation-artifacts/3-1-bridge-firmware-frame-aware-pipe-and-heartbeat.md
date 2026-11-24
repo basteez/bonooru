@@ -4,7 +4,7 @@ baseline_commit: ce79ac91c8efee181196d32fc17af7527d4dbf1f
 
 # Story 3.1: Bridge firmware: frame-aware pipe and heartbeat
 
-Status: in-progress
+Status: done
 
 <!-- Ultimate context engine analysis completed - comprehensive developer guide created (gds-create-story, 2026-11-24) -->
 
@@ -226,6 +226,17 @@ Tools: `firmware/tools/link_probe.py` (changed: `--bridge own`, `bridgeup`, `bri
 - **H.23.** Needs console_ready 1: the controller's USB-C on the Mac (as in H.22) and `p2_probe.py handshake --hold 60` in the same shell line; `bridgedtr` waits up to 10 s for console_ready. If macOS asks for Input Monitoring, the owner allows it once (Story 2.3 H.14). Expected PASS: abort within 200 ms of the DTR drop, NAK ABORTED, recovery.
 - **H.1 (Story 3.1 part).** Owner: power orders (unplug / replug USB-C of one board, then the other), 5 times each way; agent runs `bridgeup --seconds 5 --expect-ready no` after each (port re-listed). Owner, with the controller unplugged and the bridge plugged: multimeter on the controller's 3V3 and GP1 (pulses of 5 ms every 500 ms read as ≈ 0.03 V average on a DC meter). The bridge-unpowered measurement belongs to Story 3.5's AC.
 
+### Bench results (2026-11-24; numbers checked against the session logs)
+
+Rig: bridge fw-release `69f4d2c` (version 0.0.0), controller fw-debug from Epic 2 (not reflashed, controller code unchanged), labelled cable, macOS (Darwin 27.2), DT-830B. Full rows in `docs/test-plan.md` (H.21–H.23, H.1, own-bridge rig block).
+
+- **H.21 PASS.** Flash id `0x53032847189C2E9C`; ioreg 2E8A:000A, bcdDevice 0x0100, `Bonooru` / `Bonooru Bridge`, serial = flash id; LED blue about 1 Hz (owner); 1200 baud → RPI-RP2 in 1.60 s (Python start included), reflashed; 9600 / 115200 / 460800 → port stays.
+- **H.22 PASS.** 20 s hold: 400 STATUS, `link_ok` 1 from the bridge's heartbeat at 0.014 s, `bridge_ver` 0.0.0. Impaired soak 20000 events once and in order (resends 41, rewinds 1814, transport NAKs 1814, semantic 0); clean and `--no-pace` soaks 0 NAKs; 300 s hold 5999 STATUS; `watchdog_trips` 0 throughout, `dropped_bytes` 1 = the boot break.
+- **H.23 PASS.** DTR drop in DIRECT → abort seen 50 ms later, no `LINK_LOST`, `NAK ABORTED`, recovery; the same with `p2_probe.py handshake --hold 60` alongside (p2_probe PASS, 38164 reports).
+- **H.1 (Story 3.1 part) PASS.** Bridge first: link_ok 1 after 1, 108, 0, 25, 0 ms from the controller's enumeration; controller first: 39, 43, 43, 36, 34 ms from the bridge's port appearing; `bridgeup --seconds 5` PASS 10/10; no deadlock. Controller unplugged, bridge probing: controller 3V3 0 V, GP1 0.08–0.14 V fluctuating (5 ms pulses read by a slow meter); no back-powering, 1 kΩ series resistors not needed. The bridge-unpowered GP1 measurement stays with Story 3.5.
+- **Deviation from the Task 9.4 review (H-row command, not an AC).** The review assumed `console_ready` 0 with the controller on the Mac; macOS 27.2 completes the Pro Controller handshake by itself, so STATUS shows `console_ready` 1 with no probe running. The first `bridgeup --expect-ready no` printed one FAIL (`SET_STATE ACK, START BAD_STATE`, the correct replies for a ready console); H.22 and H.1 now use `--expect-ready auto`, recorded in the test plan. H.23 needs no `p2_probe.py` on this host.
+- Link-up times are measured from USB enumeration (scratch helper `powerup_timer.py`, not in the repo), not from power-up: the bridge probes and the controller's UART run before either enumerates.
+
 ### Decisions made during implementation (D1 to D13 followed; additions below)
 
 - **D14. At most 16 bytes ahead in the UART software ring** (`OCB_BRIDGE_UART_AHEAD_MAX`). With the 128-byte ring and the 32-byte FIFO full, a due heartbeat could wait one maximum frame (5.7 ms) plus 160 bytes (3.5 ms): a gap up to about 29 ms, over 27. With 16 + 32 bytes ahead the bound is about 26.8 ms; F.7 measures 23.1 ms and fails at 28.8 ms with 128.
@@ -240,6 +251,7 @@ Tools: `firmware/tools/link_probe.py` (changed: `--bridge own`, `bridgeup`, `bri
 - AC1, AC5: CDC ACM with 2E8A:000A, "Bonooru Bridge", serial from the flash unique ID; 1200-baud touch from `pico_usb_reset`, no own line-coding callback (F.40); LED blue 1 Hz kept. Bench: H.21.
 - AC2: framer with one frame in flight plus one queued, overlong and partial-run rules (F.8). AC3: heartbeat from a 20 ms hardware alarm, ahead of the queued frame, gaps ≤ 27 ms (F.7). AC4: UART → PC best effort (F.41). AC6: probe state machine (F.39) and both power-up orders in the dry run (F.42). Bench: H.22, H.23, H.1.
 - Task 9.4: bench tool and H-row review recorded above, before any bench result.
+- Bench 2026-11-24: H.21, H.22, H.23 and H.1 (Story 3.1 part) PASS; results above and in `docs/test-plan.md`.
 
 ### File List
 
@@ -264,3 +276,4 @@ Tools: `firmware/tools/link_probe.py` (changed: `--bridge own`, `bridgeup`, `bri
 
 - 2026-11-24: Story 3.1 implemented (bridge firmware, host tests F.7, F.8, F.39–F.42, bench tool `--bridge own`). Bench part pending.
 - 2026-11-24: Code review: 11 IMPORTANT and 2 MINOR fixed, 6 MINOR recorded (Review Findings); Task 9.4 review recorded.
+- 2026-11-24: Bench: H.21, H.22, H.23, H.1 (3.1 part) PASS; H.22 and H.1 commands use `--expect-ready auto` (macOS completes the handshake). Status done.
