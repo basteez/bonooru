@@ -28,12 +28,17 @@ static uint32_t rnd(void)
 }
 
 /* A linked bridge (RX high long enough on a fake clock). */
+/* A linked bridge (RX high long enough on a fake clock); the resync 0x00
+ * every link-up starts with is taken off the wire here. */
 static void link_up(ocb_bridge *b)
 {
     ocb_bridge_init(b, kVer);
     ocb_bridge_step(b, 0, true);
     ocb_bridge_step(b, 1000, true);
     OCB_CHECK(ocb_bridge_probe_linked(&b->probe), "bridge linked for the test");
+    uint8_t d[4];
+    const size_t n = ocb_bridge_uart_out(b, d, sizeof d, 0);
+    OCB_CHECK(n == 1u && d[0] == 0u, "link-up starts with a lone 00 (%zu bytes)", n);
 }
 
 /* Everything the bridge would write to the UART now (ring empty each call). */
@@ -179,6 +184,7 @@ static void dtr_fall_and_unmount_drop_only_the_partial(void)
         ocb_bridge_cdc_in(&b, f2, n2 - 2u);       /* partial */
         if (which == 0) {
             ocb_bridge_set_dtr(&b, false);
+            ocb_bridge_cut_partial(&b); /* the platform, once the PC's bytes are fed */
         } else {
             ocb_bridge_cdc_unmount(&b);
         }
@@ -197,6 +203,21 @@ static void dtr_fall_and_unmount_drop_only_the_partial(void)
         OCB_CHECK_MEM(out, n1, f1, n1, which == 0 ? "f1 after DTR fall" : "f1 after unmount");
         OCB_CHECK(got == n1 + 2u, "only the 2-byte tail run follows, got %zu", got);
         OCB_CHECK(b.framer.stats.partial_discards == 1u, "partial discarded once");
+    }
+    /* A DTR fall alone drops nothing: the platform cuts only once the
+     * bytes sent before the fall are fed. */
+    {
+        ocb_bridge c;
+        link_up(&c);
+        ocb_bridge_set_dtr(&c, true);
+        uint8_t g[8];
+        const size_t ng = frame_of(OCB_MSG_PING, 3, NULL, 0, g);
+        ocb_bridge_cdc_in(&c, g, ng - 1u);
+        ocb_bridge_set_dtr(&c, false);
+        ocb_bridge_cdc_in(&c, &g[ng - 1u], 1u);
+        uint8_t o[16];
+        const size_t got = drain_uart(&c, o, sizeof o);
+        OCB_CHECK_MEM(o, got, g, ng, "a frame completed after the fall still goes out");
     }
     /* DTR staying high, or rising, drops nothing. */
     ocb_bridge b;
@@ -242,7 +263,8 @@ static void nothing_while_probing(void)
     ocb_bridge_step(&b, 10, true);
     ocb_bridge_step(&b, 1010, true);
     const size_t got = drain_uart(&b, out, sizeof out);
-    OCB_CHECK_MEM(out, got, f, n, "queued frame sent once linked");
+    OCB_CHECK(got == n + 1u && out[0] == 0u, "a lone 00 first (resync)");
+    OCB_CHECK_MEM(&out[1], got - 1u, f, n, "queued frame sent once linked");
 }
 
 static void uart_ahead_limit(void)
@@ -255,9 +277,9 @@ static void uart_ahead_limit(void)
     const size_t n = frame_of(OCB_MSG_QUEUE_EVENT, 1, body, sizeof body, f);
     ocb_bridge_cdc_in(&b, f, n);
     uint8_t out[OCB_MAX_WIRE_FRAME];
-    OCB_CHECK(ocb_bridge_uart_out(&b, out, sizeof out, 0) == 16u, "at most 16 bytes ahead");
-    OCB_CHECK(ocb_bridge_uart_out(&b, out, sizeof out, 10) == 6u, "tops up to 16");
-    OCB_CHECK(ocb_bridge_uart_out(&b, out, sizeof out, 16) == 0u, "nothing when 16 wait");
+    OCB_CHECK(ocb_bridge_uart_out(&b, out, sizeof out, 0) == 8u, "at most 8 bytes ahead");
+    OCB_CHECK(ocb_bridge_uart_out(&b, out, sizeof out, 5) == 3u, "tops up to 8");
+    OCB_CHECK(ocb_bridge_uart_out(&b, out, sizeof out, 8) == 0u, "nothing when 8 wait");
 }
 
 int main(void)

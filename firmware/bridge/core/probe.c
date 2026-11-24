@@ -25,16 +25,22 @@ void ocb_bridge_probe_frame(ocb_bridge_probe *p)
     p->frame_seen = true;
 }
 
+void ocb_bridge_probe_activity(ocb_bridge_probe *p)
+{
+    p->activity = true;
+}
+
 bool ocb_bridge_probe_linked(const ocb_bridge_probe *p)
 {
     return p->state == OCB_BRIDGE_LINKED;
 }
 
+/* A link loss: TX high-Z at once, the next pulse after the release time. */
 static void enter_probing(ocb_bridge_probe *p, uint64_t now_us)
 {
     p->state = OCB_BRIDGE_PROBING;
     p->pulsing = false;
-    p->next_pulse_us = now_us; /* probe again at once */
+    p->next_pulse_us = now_us + OCB_BRIDGE_PROBE_RELEASE_US;
     p->high_valid = false;
     p->low_valid = false;
 }
@@ -54,15 +60,19 @@ bool ocb_bridge_probe_step(ocb_bridge_probe *p, uint64_t now_us, bool rx_high)
         p->next_pulse_us = now_us;
     }
     const bool brk = p->break_seen;
-    const bool frame = p->frame_seen;
+    const bool frame = p->frame_seen && !brk; /* a break in the same step wins */
+    const bool active = p->activity;
     p->break_seen = false;
     p->frame_seen = false;
+    p->activity = false;
 
     if (p->state == OCB_BRIDGE_LINKED) {
         if (brk) {
             p->losses++;
             enter_probing(p, now_us);
-        } else if (rx_high) {
+            return false;
+        }
+        if (rx_high || active) {
             p->low_valid = false;
         } else {
             if (!p->low_valid) {
@@ -72,11 +82,10 @@ bool ocb_bridge_probe_step(ocb_bridge_probe *p, uint64_t now_us, bool rx_high)
             if (now_us - p->low_since_us > OCB_BRIDGE_RX_LOW_US) {
                 p->losses++;
                 enter_probing(p, now_us);
+                return false;
             }
         }
-        if (p->state == OCB_BRIDGE_LINKED) {
-            return true;
-        }
+        return true;
     }
 
     /* PROBING. A valid frame, or RX high long enough, shows the controller. */
@@ -84,7 +93,7 @@ bool ocb_bridge_probe_step(ocb_bridge_probe *p, uint64_t now_us, bool rx_high)
         enter_linked(p);
         return true;
     }
-    if (rx_high) {
+    if (rx_high && !brk) {
         if (!p->high_valid) {
             p->high_valid = true;
             p->high_since_us = now_us;

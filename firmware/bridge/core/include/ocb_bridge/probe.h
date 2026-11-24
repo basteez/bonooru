@@ -5,8 +5,10 @@
  * show the controller it drives TX idle-high for OCB_BRIDGE_PROBE_PULSE_US
  * every OCB_BRIDGE_PROBE_PERIOD_US and is high-Z in between; RX high for
  * OCB_BRIDGE_RX_HIGH_US (or a valid frame) means the controller drives its
- * TX: LINKED, TX stays enabled. A break, or RX low for more than
- * OCB_BRIDGE_RX_LOW_US, is a link loss: back to PROBING, TX high-Z at once.
+ * TX: LINKED, TX stays enabled. A break, or RX low with no character for
+ * more than OCB_BRIDGE_RX_LOW_US, is a link loss: back to PROBING, TX high-Z
+ * at once and for OCB_BRIDGE_PROBE_RELEASE_US before the next pulse. A break
+ * in a step wins over a valid frame in the same step.
  * Pure C, fake clock: the platform samples the RX pad once per pass.
  */
 #ifndef OCB_BRIDGE_PROBE_H
@@ -29,6 +31,7 @@ typedef struct {
     uint64_t low_since_us;
     bool break_seen;
     bool frame_seen;
+    bool activity;      /* a character was received since the last step */
     uint32_t pulses;    /* probe pulses started */
     uint32_t link_ups;  /* PROBING -> LINKED */
     uint32_t losses;    /* LINKED -> PROBING */
@@ -41,6 +44,9 @@ void ocb_bridge_probe_break(ocb_bridge_probe *p);
 
 /* A valid frame from the controller was received. */
 void ocb_bridge_probe_frame(ocb_bridge_probe *p);
+
+/* Any character (clean or not) was received: the line is alive. */
+void ocb_bridge_probe_activity(ocb_bridge_probe *p);
 
 /* One pass at `now_us` with the RX pad level; returns whether TX must be
  * enabled (driven) after this pass. */

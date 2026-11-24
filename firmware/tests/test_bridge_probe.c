@@ -126,9 +126,34 @@ static void loss_rules(void)
     }
     OCB_CHECK(ocb_bridge_probe_linked(&p), "linked");
     ocb_bridge_probe_break(&p);
-    ocb_bridge_probe_step(&p, 2000, true);
+    OCB_CHECK(!ocb_bridge_probe_step(&p, 2000, true), "break: TX high-Z at once");
     OCB_CHECK(!ocb_bridge_probe_linked(&p), "break: probing");
     OCB_CHECK(p.losses == 1u, "one loss");
+    /* High-Z for the whole release time (RX low: the controller released),
+     * then the next pulse. */
+    bool driven = false;
+    uint64_t first = 0;
+    for (uint64_t t = 2001; t < 2000 + OCB_BRIDGE_PROBE_RELEASE_US + 10u; t++) {
+        if (ocb_bridge_probe_step(&p, t, false) && !driven) {
+            driven = true;
+            first = t;
+        }
+    }
+    OCB_CHECK(driven && first == 2000u + OCB_BRIDGE_PROBE_RELEASE_US, "next pulse after %u us, at %llu",
+              (unsigned)OCB_BRIDGE_PROBE_RELEASE_US, (unsigned long long)first);
+
+    /* A break and a valid frame in the same step: the break wins. */
+    {
+        ocb_bridge_probe q;
+        ocb_bridge_probe_init(&q);
+        for (uint64_t t = 0; t <= 1000; t++) {
+            ocb_bridge_probe_step(&q, t, true);
+        }
+        ocb_bridge_probe_frame(&q);
+        ocb_bridge_probe_break(&q);
+        OCB_CHECK(!ocb_bridge_probe_step(&q, 1100, true), "break + frame: TX high-Z");
+        OCB_CHECK(!ocb_bridge_probe_linked(&q), "break + frame: probing");
+    }
 
     /* RX low: exactly 2000 us keeps the link, 2001 us loses it. */
     for (uint64_t low = 2000; low <= 2001; low++) {
@@ -145,6 +170,20 @@ static void loss_rules(void)
         } else {
             OCB_CHECK(!ocb_bridge_probe_linked(&q), "low for 2001 us: lost");
         }
+    }
+    /* Low samples while characters arrive (data bits, a slow pass) never
+     * trip it: received characters reset the low timer. */
+    {
+        ocb_bridge_probe a;
+        ocb_bridge_probe_init(&a);
+        for (uint64_t t = 0; t <= 1000; t++) {
+            ocb_bridge_probe_step(&a, t, true);
+        }
+        for (uint64_t t = 3000; t < 3000 + 200000; t += 2500) { /* one pass per 2.5 ms */
+            ocb_bridge_probe_activity(&a);
+            ocb_bridge_probe_step(&a, t, false);
+        }
+        OCB_CHECK(ocb_bridge_probe_linked(&a), "low samples 2.5 ms apart with traffic: still linked");
     }
     /* Short low glitches (data 0x00 characters) never trip it. */
     ocb_bridge_probe r;

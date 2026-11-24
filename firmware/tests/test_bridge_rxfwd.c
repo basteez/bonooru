@@ -35,7 +35,7 @@ static void clean_bytes_in_order_and_errors(void)
               r.stats.err_bytes, r.stats.breaks);
 }
 
-static void short_cdc_space_drops(void)
+static void short_cdc_space_waits(void)
 {
     ocb_bridge_rxfwd r;
     ocb_bridge_rxfwd_init(&r);
@@ -46,12 +46,12 @@ static void short_cdc_space_drops(void)
     uint8_t out[128];
     size_t n = ocb_bridge_rxfwd_take(&r, out, 30);
     OCB_CHECK(n == 30u && out[0] == 0u && out[29] == 29u, "the first 30 bytes");
-    OCB_CHECK(r.stats.cdc_drops == 70u, "70 dropped, got %u", r.stats.cdc_drops);
+    OCB_CHECK(r.stats.cdc_drops == 0u, "the rest waits, nothing dropped");
     n = ocb_bridge_rxfwd_take(&r, out, sizeof out);
-    OCB_CHECK(n == 0u, "nothing left: never waits for space");
+    OCB_CHECK(n == 70u && out[0] == 30u && out[69] == 99u, "the other 70 on the next pass, in order");
     ocb_bridge_rxfwd_push(&r, 0x42u, &b);
     n = ocb_bridge_rxfwd_take(&r, out, 0);
-    OCB_CHECK(n == 0u && r.stats.cdc_drops == 71u, "space 0: dropped");
+    OCB_CHECK(n == 0u && r.stats.cdc_drops == 0u, "space 0: kept, never waited for");
 }
 
 static void ring_overflow_counted(void)
@@ -62,7 +62,7 @@ static void ring_overflow_counted(void)
     for (uint32_t i = 0; i < OCB_BRIDGE_RXFWD_CAP + 10u; i++) {
         ocb_bridge_rxfwd_push(&r, (uint16_t)(i & 0xFFu), &b);
     }
-    OCB_CHECK(r.stats.ring_drops == 10u, "10 ring drops, got %u", r.stats.ring_drops);
+    OCB_CHECK(r.stats.cdc_drops == 10u, "10 dropped (ring full), got %u", r.stats.cdc_drops);
     static uint8_t out[OCB_BRIDGE_RXFWD_CAP];
     const size_t n = ocb_bridge_rxfwd_take(&r, out, sizeof out);
     OCB_CHECK(n == OCB_BRIDGE_RXFWD_CAP && out[0] == 0u, "the first CAP bytes kept");
@@ -89,7 +89,7 @@ static void bridge_breaks_reach_the_probe(void)
 int main(void)
 {
     clean_bytes_in_order_and_errors();
-    short_cdc_space_drops();
+    short_cdc_space_waits();
     ring_overflow_counted();
     bridge_breaks_reach_the_probe();
     if (ocb_test_failures() != 0) {

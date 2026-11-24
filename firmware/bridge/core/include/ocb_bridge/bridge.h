@@ -42,6 +42,8 @@ typedef struct {
     bool inflight_hb;
     uint8_t ver[3];
     bool dtr;
+    bool dtr_fell; /* DTR fell since the last heartbeat: the next one says 0 */
+    bool need_delim; /* a lone 0x00 goes first after a link-up (resync) */
     uint8_t hb_seq;
     uint32_t hb_ticks_seen;
     bool hb_due;
@@ -55,8 +57,14 @@ void ocb_bridge_init(ocb_bridge *b, const uint8_t ver[3]);
 /* PC -> bridge bytes; returns how many were consumed (keep the rest). */
 size_t ocb_bridge_cdc_in(ocb_bridge *b, const uint8_t *data, size_t n);
 
-/* The CDC DTR line; a falling edge drops the partial frame. */
+/* The CDC DTR line. A fall is latched until the next heartbeat, so even a
+ * fall shorter than one period reaches the controller as DTR 0. Dropping
+ * the partial frame is the platform's call (ocb_bridge_cut_partial), once
+ * everything the PC sent before the fall has been fed (review fix I-5). */
 void ocb_bridge_set_dtr(ocb_bridge *b, bool dtr);
+
+/* Drops the partial run (the bytes after the last delimiter fed). */
+void ocb_bridge_cut_partial(ocb_bridge *b);
 
 /* CDC unmounted: drops the partial frame, DTR off. */
 void ocb_bridge_cdc_unmount(ocb_bridge *b);

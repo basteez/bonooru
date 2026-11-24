@@ -1539,9 +1539,13 @@ def cmd_bridgedtr(port, args):
     link.delimiter()
     if not c.check(link.hello() is not None, "INFO received"):
         return c.finish()
-    st = link.next_status(1.0, lambda s: (s["flags"] & STATUS_LINK_OK) and (s["flags"] & STATUS_CONSOLE_READY))
-    if not c.check(st is not None, "STATUS link_ok 1 and console_ready 1"):
+    st = link.next_status(1.0, lambda s: s["flags"] & STATUS_LINK_OK)
+    if not c.check(st is not None, "STATUS link_ok 1 from the bridge's own heartbeat"):
         c.note("last STATUS: %s" % _status_str(link.status))
+        return c.finish()
+    # The host's P2 handshake (p2_probe.py, started in the same shell line)
+    # can take a few seconds: wait like `direct` does (review fix of 3.1).
+    if not _need_ready(link, c, 10.0):
         return c.finish()
     c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed (clean start)")
     c.check(link.request_reliable(SET_STATE, NEUTRAL) == "ACK", "SET_STATE ACKed: DIRECT")
@@ -1572,6 +1576,9 @@ def cmd_bridgedtr(port, args):
     c.check(st is not None and st["flags"] & STATUS_LINK_OK, "link_ok still 1")
     c.check(link.request_reliable(SET_STATE, NEUTRAL) == "ABORTED", "SET_STATE after the abort: NAK ABORTED")
     port.set_dtr(True)
+    # The controller learns DTR 1 from the next heartbeats (every 20 ms):
+    # wait three periods before going on.
+    link.wait(0.08)
     c.check(link.request_reliable(STOP) == "ACK", "DTR back, STOP ACKed (latch cleared)")
     c.check(link.request_reliable(SET_STATE, NEUTRAL) == "ACK", "SET_STATE ACKed again")
     c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed")

@@ -216,7 +216,7 @@ static void missed_ticks_give_one_heartbeat(void)
     ocb_bridge_hb_ticks(&b, 5); /* five ticks at once */
     uint8_t out[64];
     size_t n = drain(&b, out, sizeof out);
-    OCB_CHECK(n == 11u, "one heartbeat frame (11 bytes on the wire), got %zu", n);
+    OCB_CHECK(n == 12u && out[0] == 0u, "the resync 00, then one heartbeat (11 bytes), got %zu", n);
     ocb_bridge_hb_ticks(&b, 5); /* no change: nothing */
     OCB_CHECK(drain(&b, out, sizeof out) == 0u, "no new tick, no heartbeat");
     ocb_bridge_hb_ticks(&b, 6);
@@ -245,7 +245,7 @@ static void none_while_probing(void)
     /* Link-up: the dropped ticks do not come back as a stale heartbeat. */
     ocb_bridge_step(&b, 10, true);
     ocb_bridge_step(&b, 1010, true);
-    OCB_CHECK(drain(&b, out, sizeof out) == 0u, "no stale heartbeat at link-up");
+    OCB_CHECK(drain(&b, out, sizeof out) == 1u && out[0] == 0u, "no stale heartbeat at link-up (only the 00)");
     ocb_bridge_hb_ticks(&b, 3);
     OCB_CHECK(drain(&b, out, sizeof out) == 11u, "the next tick sends one");
 }
@@ -262,6 +262,7 @@ static void heartbeat_goes_before_the_queued_frame(void)
     const size_t n2 = ocb_frame_encode(OCB_MSG_PING, 2, NULL, 0, f2, sizeof f2);
     ocb_bridge_cdc_in(&b, f1, n1);
     uint8_t out[64];
+    OCB_CHECK(ocb_bridge_uart_out(&b, out, 1, 0) == 1u && out[0] == 0u, "resync 00");
     size_t got = ocb_bridge_uart_out(&b, out, 2, 0); /* f1 in flight, 2 bytes out */
     ocb_bridge_cdc_in(&b, f2, n2);                   /* f2 queued */
     ocb_bridge_hb_ticks(&b, 1);                      /* heartbeat due */
@@ -274,9 +275,57 @@ static void heartbeat_goes_before_the_queued_frame(void)
     OCB_CHECK_MEM(&out[n1 + 11u], n2, f2, n2, "f2 last");
 }
 
+static void a_short_dtr_fall_reaches_the_next_heartbeat(void)
+{
+    ocb_bridge b;
+    ocb_bridge_init(&b, kVer);
+    ocb_bridge_step(&b, 0, true);
+    ocb_bridge_step(&b, 1000, true);
+    uint8_t out[64];
+    (void)drain(&b, out, sizeof out); /* the resync 00 */
+    ocb_bridge_set_dtr(&b, true);
+    ocb_bridge_set_dtr(&b, false); /* closed ... */
+    ocb_bridge_set_dtr(&b, true);  /* ... and reopened within one period */
+    ocb_bridge_hb_ticks(&b, 1);
+    size_t n = drain(&b, out, sizeof out);
+    OCB_CHECK(n == 11u && out[9] != 0u, "heartbeat");
+    ocb_rx rx;
+    ocb_rx_init(&rx, OCB_RX_CONTROLLER);
+    ocb_frame f;
+    for (size_t i = 0; i < n; i++) {
+        (void)ocb_rx_push(&rx, out[i], &f);
+    }
+    OCB_CHECK(f.body[3] == 0u, "the latched fall: DTR 0 in this heartbeat");
+    ocb_bridge_hb_ticks(&b, 2);
+    n = drain(&b, out, sizeof out);
+    ocb_rx_init(&rx, OCB_RX_CONTROLLER);
+    for (size_t i = 0; i < n; i++) {
+        (void)ocb_rx_push(&rx, out[i], &f);
+    }
+    OCB_CHECK(f.body[3] == OCB_HB_FLAG_DTR, "then DTR 1 again");
+}
+
+static void a_resync_zero_after_every_link_up(void)
+{
+    ocb_bridge b;
+    ocb_bridge_init(&b, kVer);
+    uint8_t out[64];
+    uint64_t t = 0;
+    for (int c = 0; c < 3; c++) {
+        ocb_bridge_step(&b, t, true);
+        ocb_bridge_step(&b, t + 1000u, true);
+        OCB_CHECK(ocb_bridge_uart_out(&b, out, sizeof out, 0) == 1u && out[0] == 0u, "cycle %d: 00 first", c);
+        ocb_bridge_uart_rx(&b, 0x400u);
+        ocb_bridge_step(&b, t + 1100u, false);
+        t += 20000u;
+    }
+}
+
 int main(void)
 {
     burst_gaps_all_phases();
+    a_short_dtr_fall_reaches_the_next_heartbeat();
+    a_resync_zero_after_every_link_up();
     missed_ticks_give_one_heartbeat();
     none_while_probing();
     heartbeat_goes_before_the_queued_frame();

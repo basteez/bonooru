@@ -11,7 +11,8 @@
 #      an argument, allocates nothing and does no I/O (USB, UART and alarm glue
 #      live in bridge/platform);
 #  (c) a CMakeLists.txt in the tree must not link or name an SDK, hardware
-#      or board library (pico_*, hardware_*, ocb_hw) outside a # comment;
+#      or board library (pico_*, hardware_*, tinyusb*, cmsis*, ocb_hw,
+#      ocb_link, ocb_core) outside a # comment;
 #      ocb_proto is allowed.
 # The banned identifier list (banned_word_re) is identical to the one in
 # check-core-pure.sh; tests/bridge_pure_selftest.sh fails if they drift.
@@ -52,7 +53,7 @@ nb='(^|[^A-Za-z0-9_])'
 banned_word_re="${nb}(malloc|calloc|realloc|free[[:space:]]*\\(|[a-z]*printf|time_us|get_absolute_time|clock_gettime|gettimeofday|sleep_|busy_wait|multicore_|mutex_|spin_lock|__not_in_flash_func|stdio_|(puts|putchar)([^A-Za-z0-9_]|\$))"
 # CMake: an SDK, hardware or board library named on a non-comment line.
 cmake_comment_re='^[0-9]+:[[:space:]]*#'
-cmake_banned_re="${nb}(pico_|hardware_|ocb_hw)"
+cmake_banned_re="${nb}(pico_|hardware_|ocb_hw|tinyusb|ocb_link|ocb_core|cmsis)"
 
 found=0
 count=0

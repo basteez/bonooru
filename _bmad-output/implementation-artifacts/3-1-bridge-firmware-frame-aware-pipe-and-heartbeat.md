@@ -70,11 +70,35 @@ so that the controller has a reliable link and a fail-safe signal independent of
   - [x] 8.4 `docs/test-plan.md`: fill F.7 and F.8 (real test names), add F.39, F.40, F.41, F.42 (bench dry run), H.21–H.23, and the bridge rig block (labelled cable, retro action 6; 2wiCC_Comms v1.1 fallback).
   - [x] 8.5 `docs/link-protocol.md`: a "Rules the bridge applies (Story 3.1)" section (empty run forwarded, heartbeat dropped while probing, probe values, link-loss rule, RX error bytes, counters). No wire value changes; vectors unchanged.
   - [x] 8.6 `firmware/bridge/README.md`: what the bridge does now.
-- [ ] **Task 9: Bench tools, review and dry run (retro action #27) — F.42**
+- [x] **Task 9: Bench tools, review and dry run (retro action #27) — F.42**
   - [x] 9.1 `firmware/tools/link_probe.py`: a global `--bridge {emulated,own}` (default `emulated`, today's behaviour). With `own`: never send emulated heartbeats (whatever `--heartbeat` says, with a warning), drive the real CDC DTR line (`serial.dtr`) where the emulated DTR flag was used (`direct`'s DTR step), and expect `INFO.bridge_ver` = `--expect-bridge-ver X.Y.Z` (default: the version `git describe` gives, same rule as the firmware) instead of `0.0.1`.
   - [x] 9.2 A host model of the own bridge for the dry run: `ocb_bridge_sim` (MODULE library built from `bridge/core` + a shim, like `ocb_link_sim`), loaded with ctypes in `link_probe_selftest`: probe → fake CDC → bridge core → fake UART at 460800 → `ocb_link_sim` (the real controller link) and back, fake clock, the bridge's 20 ms ticks.
   - [x] 9.3 F.42 dry run: `linkup --seconds 20 --expect-ready no`, `soak --cycles 40 --events 500` (with and without impairments), `direct` (DTR step through the modelled DTR), `breaks`-like link loss (the model drops the controller's TX: the bridge sees a break, re-probes, the controller trips and recovers) all PASS through the own-bridge model with `--bridge own`; the same commands with the bridge's heartbeat removed in the model must FAIL (red proof that the probe no longer relies on its own heartbeat).
-  - [ ] 9.4 Review of the bench tools and of every H-row command the session uses (H.21–H.23, H.1), recorded in the Dev Agent Record **before** the first bench result (retro action #27): what each command does, what it needs from the owner, expected output.
+  - [x] 9.4 Review of the bench tools and of every H-row command the session uses (H.21–H.23, H.1), recorded in the Dev Agent Record **before** the first bench result (retro action #27): what each command does, what it needs from the owner, expected output.
+
+### Review Findings
+
+Code review 2026-11-24 (gds-code-review: Blind Hunter, Edge Case Hunter, Acceptance Auditor; the Edge Case Hunter verified its main findings with C experiments against the real `bridge/core` sources). The framer, the heartbeat frame, the descriptors, the RX ring barriers and the 1200-baud path were found correct. Owner's rule: IMPORTANT fixed, MINOR fixed when cheap, else recorded.
+
+- [x] [Review][Patch][IMPORTANT] **I-1 A link loss kept TX driven and sent the cut frame's leftovers** (all three; verified) — `enter_probing` started the next pulse in the same step, so TX never went high-Z and the UART ring was never emptied. Fixed: a loss returns TX high-Z at once (the platform's `tx_enable(false)` empties the ring) and the next pulse waits `OCB_BRIDGE_PROBE_RELEASE_US` (10 ms) so the controller sees a break and releases. F.39 checks TX and the 10 ms. [probe.c, config.h]
+- [x] [Review][Patch][IMPORTANT] **I-2 No resync after a cut** (blind) — after a relink the next frame landed on the controller's partial run. Fixed: every link-up starts with a lone `0x00`. [bridge.c]
+- [x] [Review][Patch][IMPORTANT] **I-3 A break and a valid frame in the same pass left the bridge linked** (edge; verified) — fixed: the break wins. [probe.c]
+- [x] [Review][Patch][IMPORTANT] **I-4 The bridge's view of the controller's run was not reset on an error character** (edge; verified) — fixed: any FE/PE/OE/BE value resets the splitter, as the controller's receiver does. [bridge.c]
+- [x] [Review][Patch][IMPORTANT] **I-5 DTR fall cut the wrong run** (auditor+edge+blind) — the staging buffer and the framer's run were dropped at once, though they hold what the PC sent before the fall, and TinyUSB's RX FIFO kept the real tail. Fixed: the platform keeps forwarding everything received before the fall and cuts the partial run once all of it is fed; a reopen first lets the app's opening `0x00` end it. Unmount still drops at once (TinyUSB resets its FIFOs). [platform/main.c, bridge.h/.c]
+- [x] [Review][Patch][IMPORTANT] **I-6 USB suspend read as DTR 0; a DTR fall shorter than 20 ms was invisible** (edge) — DTR now comes from `tud_cdc_get_line_state()`; a fall is latched into the next heartbeat. [platform/main.c, bridge.c]
+- [x] [Review][Patch][IMPORTANT] **I-7 The UART → PC ring dropped whatever did not fit in one pass** (blind) — fixed: leftovers wait; a byte is dropped only when the 512-byte ring is full. [rxfwd.c]
+- [x] [Review][Patch][IMPORTANT] **I-8 The RX-low link-loss rule aliased on data bits** (blind+auditor) — the pad is sampled once per pass; fixed: received characters reset the low timer. [probe.c]
+- [x] [Review][Patch][IMPORTANT] **I-9 Heartbeat margin 0.25 ms, no build guard** (blind+edge) — `OCB_BRIDGE_UART_AHEAD_MAX` 8 (worst delay about 6.6 ms) and a compile-time check in `bridge.c` (red: 64 fails to build). F.7 still 17.4 to 23.1 ms. [config.h, bridge.c]
+- [x] [Review][Patch][IMPORTANT] **I-10 Bench tool gaps (retro #27 class)** (auditor+blind) — `bridgedtr` waited 1 s for console_ready (the P2 handshake takes longer) → now 10 s with the hint, like `direct`; it now waits 80 ms after raising DTR before STOP (the controller learns DTR from the next heartbeats). The dry run now also goes through `main()` (guards, `--expect-bridge-ver`, `--heartbeat` warning). [link_probe.py, test_link_probe.py]
+- [x] [Review][Patch][IMPORTANT] **I-11 The Python model was kinder than the hardware** (all three) — the bridge's RX now reads low while controller characters are on the wire, a break and the last data arrive in the same pass; red control "bridge heartbeat removed" added for `bridgedtr`; the link-loss case asserts the controller's watchdog trip. [test_link_probe.py]
+- [x] [Review][Patch][MINOR] **M-1 Purity gate CMake rule missed `tinyusb*`, `ocb_link`, `ocb_core`, `cmsis`** — added, with two bad fixtures (16 now). [check-bridge-pure.sh]
+- [x] [Review][Patch][MINOR] **M-2 No ELF check for the 1200-baud touch** — CI step: `tud_cdc_line_coding_cb` from `pico_usb_reset/usb_reset.c` in the fw-release and fw-debug bridge ELFs. [firmware.yml]
+- [ ] [Review][Minor][recorded] **M-3 `bridge_ver` 0.0.0 proves little while there is no `v*` tag** — H.22's real proof is link_ok 1 from the bridge's heartbeat; the version check becomes meaningful with the first tag.
+- [ ] [Review][Minor][recorded] **M-4 A queued app frame survives a long probing period** and goes out after relink; the resync `0x00` now precedes it, and the controller refuses it if the session or link state no longer fits (`NAK NO_LINK` / `VERSION`). Holding app data until the first heartbeat is a possible later refinement.
+- [ ] [Review][Minor][recorded] **M-5 "One in flight plus one queued" counts bridge slots**: up to 8 + 32 bytes of the previous frame may still be in the UART ring and FIFO.
+- [ ] [Review][Minor][recorded] **M-6 F.7's skip check tolerates one heartbeat at the very end of a burst** (`hbs + 1 >= expected`): the gap check covers every heartbeat but the last.
+- [ ] [Review][Minor][recorded] **M-7 VID:PID 2E8A:000A is the generic Pico pair** (AD-13, Q1): discovery confirms by product string, as designed.
+- [ ] [Review][Minor][recorded] **M-8 `fw_version_triple` reads the checkout's version, not the flashed binary's** — the bench builds and flashes from the same checkout; pass `--expect-bridge-ver` otherwise.
 
 ## Dev Notes
 
@@ -193,6 +217,15 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 - F.42 sample (`bridgeup --seconds 2` through the model): link_ok 1 at 53 ms, INFO `bridge_ver` 0.3.1, hold 2 s with 40 STATUS, 103 bridge heartbeats in 2.06 s, one probe pulse, one link-up.
 - Firmware builds: fw-release, fw-debug, fw-debug-o3, fw-debug-timeline, fw-debug-hang0, fw-debug-hang1, fw-release-xip: 0 warnings, 0 errors. `bridge.elf`: `tud_cdc_line_coding_cb` is the weak symbol from `pico_usb_reset/usb_reset.c:147`; `check-pins.sh` ok; `check-bridge-pure.sh` ok (12 files).
 
+### Bench tool and H-row review (Task 9.4, retro action #27; written before any bench result)
+
+Tools: `firmware/tools/link_probe.py` (changed: `--bridge own`, `bridgeup`, `bridgedtr`), `firmware/tools/p2_probe.py` (unchanged since Story 2.5, used by H.23 for console_ready), picotool 2.3.1 (`firmware/.tools/picotool-2.3.1/picotool/picotool`), a bench venv with pyserial 3.5 and hidapi in the session scratchpad. Dry run: F.42 (9 tests, through `main()` too) against the bridge's real core and the controller's real link.
+
+- **H.21.** Owner, once: hold BOOT on the bridge Zero and plug it in with the labelled cable (it runs 2wiCC_Comms, which has no reset path). Agent: `picotool info -d` (flash ID), `picotool load -x firmware/build/fw-release/bridge/bridge.uf2`, `system_profiler SPUSBDataType` and `ioreg -p IOUSB -l` (VID, PID, product, manufacturer, serial = flash ID), `ls /dev/cu.usbmodem*`. Owner: look at the LED (blue, ~1 Hz). Agent: open at 1200 baud with pyserial → RPI-RP2 within 2 s (`picotool info` sees it), reflash; open at 9600 / 115200 / 460800 → the port stays. Risk: the port name changes after every reboot; re-list it.
+- **H.22.** Controller Zero on fw-debug: it has no touch, so flashing it needs BOOT held by the owner (one action), then plugged into the Mac; wiring of H.4 unchanged. Agent: `bridgeup --seconds 20 --expect-ready no`; `--seed 1 soak --cycles 40 --events 500 --corrupt 0.02 --drop 0.02 --garbage`; clean soak; `--no-pace` soak; `bridgeup --seconds 300 --expect-ready no`. Expected: PASS each; `bridge_ver` 0.0.0 (no tag, M-3). Needs nothing from the owner.
+- **H.23.** Needs console_ready 1: the controller's USB-C on the Mac (as in H.22) and `p2_probe.py handshake --hold 60` in the same shell line; `bridgedtr` waits up to 10 s for console_ready. If macOS asks for Input Monitoring, the owner allows it once (Story 2.3 H.14). Expected PASS: abort within 200 ms of the DTR drop, NAK ABORTED, recovery.
+- **H.1 (Story 3.1 part).** Owner: power orders (unplug / replug USB-C of one board, then the other), 5 times each way; agent runs `bridgeup --seconds 5 --expect-ready no` after each (port re-listed). Owner, with the controller unplugged and the bridge plugged: multimeter on the controller's 3V3 and GP1 (pulses of 5 ms every 500 ms read as ≈ 0.03 V average on a DC meter). The bridge-unpowered measurement belongs to Story 3.5's AC.
+
 ### Decisions made during implementation (D1 to D13 followed; additions below)
 
 - **D14. At most 16 bytes ahead in the UART software ring** (`OCB_BRIDGE_UART_AHEAD_MAX`). With the 128-byte ring and the 32-byte FIFO full, a due heartbeat could wait one maximum frame (5.7 ms) plus 160 bytes (3.5 ms): a gap up to about 29 ms, over 27. With 16 + 32 bytes ahead the bound is about 26.8 ms; F.7 measures 23.1 ms and fails at 28.8 ms with 128.
@@ -206,7 +239,7 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 
 - AC1, AC5: CDC ACM with 2E8A:000A, "Bonooru Bridge", serial from the flash unique ID; 1200-baud touch from `pico_usb_reset`, no own line-coding callback (F.40); LED blue 1 Hz kept. Bench: H.21.
 - AC2: framer with one frame in flight plus one queued, overlong and partial-run rules (F.8). AC3: heartbeat from a 20 ms hardware alarm, ahead of the queued frame, gaps ≤ 27 ms (F.7). AC4: UART → PC best effort (F.41). AC6: probe state machine (F.39) and both power-up orders in the dry run (F.42). Bench: H.22, H.23, H.1.
-- Task 9.4 (review of the bench tools and H-row commands before the bench) is done after the code review, before the first bench result.
+- Task 9.4: bench tool and H-row review recorded above, before any bench result.
 
 ### File List
 
@@ -230,3 +263,4 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 ## Change Log
 
 - 2026-11-24: Story 3.1 implemented (bridge firmware, host tests F.7, F.8, F.39–F.42, bench tool `--bridge own`). Bench part pending.
+- 2026-11-24: Code review: 11 IMPORTANT and 2 MINOR fixed, 6 MINOR recorded (Review Findings); Task 9.4 review recorded.

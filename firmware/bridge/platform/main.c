@@ -97,6 +97,7 @@ int main(void)
     static uint8_t buf[OCB_MAX_WIRE_FRAME];
     bool tx_enabled = false;
     bool mounted = false;
+    bool cut_pending = false;
     bool led_on = false;
     uint64_t led_edge = 0;
 
@@ -104,17 +105,26 @@ int main(void)
         tud_task();
         const uint64_t now = time_us_64();
 
-        /* USB state: unmount and DTR falls drop the partial frame (and what
-         * was read but not consumed: it belongs to that frame). */
+        /* USB state. Unmount: TinyUSB resets its FIFOs, so the partial frame
+         * and what was read but not taken are dropped at once. */
         const bool m = tud_mounted();
         if (mounted && !m) {
             ocb_bridge_cdc_unmount(&s_bridge);
             st_len = st_pos = 0;
+            cut_pending = false;
         }
         mounted = m;
-        const bool dtr = m && tud_cdc_connected();
+        /* DTR from the line state itself (tud_cdc_connected() also reads 0
+         * while the bus is suspended, which is not a DTR fall). */
+        const bool dtr = m && (tud_cdc_get_line_state() & 0x01u) != 0u;
         if (s_bridge.dtr && !dtr) {
-            st_len = st_pos = 0;
+            /* Everything the PC sent before the fall is still forwarded; the
+             * partial run left once it is all fed is the one to drop. */
+            cut_pending = true;
+        } else if (!s_bridge.dtr && dtr) {
+            /* Reopened before the drain finished: the app's opening 0x00
+             * (AD-7) ends whatever run is left. */
+            cut_pending = false;
         }
         ocb_bridge_set_dtr(&s_bridge, dtr);
 
@@ -126,6 +136,10 @@ int main(void)
         }
         if (st_pos < st_len) {
             st_pos += ocb_bridge_cdc_in(&s_bridge, &staging[st_pos], st_len - st_pos);
+        }
+        if (cut_pending && st_pos == st_len && tud_cdc_available() == 0u) {
+            ocb_bridge_cut_partial(&s_bridge);
+            cut_pending = false;
         }
 
         ocb_bridge_hb_ticks(&s_bridge, s_hb_ticks);

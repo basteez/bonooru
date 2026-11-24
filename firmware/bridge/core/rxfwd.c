@@ -29,7 +29,7 @@ int ocb_bridge_rxfwd_push(ocb_bridge_rxfwd *r, uint16_t dr, uint8_t *byte)
     const uint8_t b = (uint8_t)(dr & 0xFFu);
     *byte = b;
     if (r->head - r->tail >= OCB_BRIDGE_RXFWD_CAP) {
-        r->stats.ring_drops++;
+        r->stats.cdc_drops++; /* no CDC space for this long: dropped */
         return 1;
     }
     r->buf[r->head & RXFWD_MASK] = b;
@@ -44,9 +44,8 @@ size_t ocb_bridge_rxfwd_take(ocb_bridge_rxfwd *r, uint8_t *out, size_t space)
         out[n++] = r->buf[r->tail & RXFWD_MASK];
         r->tail++;
     }
-    const uint32_t left = r->head - r->tail;
-    r->stats.cdc_drops += left;
-    r->tail = r->head;
+    /* What did not fit waits for the next pass; bytes are dropped (and
+     * counted as cdc_drops) only when the ring is full (review fix I-7). */
     r->stats.forwarded += (uint32_t)n;
     return n;
 }

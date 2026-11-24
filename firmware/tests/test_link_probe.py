@@ -663,6 +663,7 @@ class Bridge2wiCCPort:
             self.ctrl_tx += self.buf.raw[:k]
         self.credit_rev += self.UART_BYTES_PER_TICK
         n = min(int(self.credit_rev), len(self.ctrl_tx))
+        self.rx_busy = n > 0
         if n > 0:
             self.host_in += self.ctrl_tx[:n]
             del self.ctrl_tx[:n]
@@ -1717,6 +1718,7 @@ class OwnBridgePort:
         self.credit_rev = 0.0
         self.prev_bridge_line = False
         self.prev_ctrl_line = False
+        self.rx_busy = False
         self.bridge_tx_ticks = 0    # ticks with the bridge's TX driven (probe duty)
         self.ticks = 0
         self.rx = probe.Splitter("APP")
@@ -1790,6 +1792,9 @@ class OwnBridgePort:
         if self.ctrl_powered and self.usb_ready:
             lib.sim_usb_ready(now)
         ctrl_line = bool(self.ctrl_powered and lib.sim_counter(9) != 0 and self.rev_plugged)
+        # The bridge samples its RX pad once per pass: while controller
+        # characters are on the wire it reads data bits (low), not idle-high.
+        rx_sample = ctrl_line and not self.rx_busy
         bridge_line = False
         if self.bridge_powered:
             # Host -> bridge (USB backpressure: only what the framer takes).
@@ -1801,7 +1806,7 @@ class OwnBridgePort:
                 b.bs_hb_ticks(int(self.clock.t / 0.020))
             if self.prev_ctrl_line and not ctrl_line:
                 b.bs_uart_rx(0x400)  # the line falls under the pull-down: a break
-            tx = b.bs_step(now, 1 if ctrl_line else 0) != 0
+            tx = b.bs_step(now, 1 if rx_sample else 0) != 0
             if tx:
                 self.bridge_tx_ticks += 1
             else:
@@ -1917,6 +1922,51 @@ class OwnBridge(unittest.TestCase):
         self.assertEqual(rc, 0, text[-800:])
         self.assertEqual(totals.get("naks"), 0, text[-800:])
 
+    def test_bridgedtr_red_without_the_bridge_heartbeat(self):
+        port = self.port(usb_ready=True)
+        port.bridge_hb = False
+        rc, text = run_cmd(port, probe.cmd_bridgedtr)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("link_ok 1 from the bridge's own heartbeat", last_line(text))
+
+    def test_main_with_bridge_own(self):
+        """The H-row command lines themselves, through main() (argparse,
+        the --bridge own guards, --expect-bridge-ver, no emulated heartbeat)."""
+        saved = probe.Port
+        port = self.port()
+        try:
+            probe.Port = lambda name, baud: port
+            out = io.StringIO()
+            with fake_time(port), contextlib.redirect_stdout(out):
+                rc = probe.main(["--port", "sim", "--bridge", "own", "--expect-bridge-ver", "0.3.1", "bridgeup",
+                                 "--seconds", "1", "--expect-ready", "no"])
+            self.assertEqual(rc, 0, out.getvalue())
+            self.assertEqual(last_line(out.getvalue()), "PASS")
+            # --heartbeat is ignored with a warning: the probe never writes one.
+            err = io.StringIO()
+            port2 = self.port()
+            probe.Port = lambda name, baud: port2
+            with fake_time(port2), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = probe.main(["--port", "sim", "--bridge", "own", "--heartbeat", "--expect-bridge-ver", "0.3.1",
+                                 "--seed", "1", "soak", "--cycles", "1", "--events", "50"])
+            self.assertEqual(rc, 0)
+            self.assertIn("--heartbeat ignored", err.getvalue())
+            self.assertGreater(self.blib.bs_counter(0), 0, "the bridge's own heartbeats carried the soak")
+        finally:
+            probe.Port = saved
+        for argv in (["bridgeup"], ["bridgedtr"]):
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+                probe.main(["--port", "sim"] + argv)
+            self.assertEqual(cm.exception.code, 2, argv)
+        for cmd in ("linkup", "silence", "direct", "playing", "breaks"):
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+                probe.main(["--port", "sim", "--bridge", "own", cmd])
+            self.assertEqual(cm.exception.code, 2, cmd)
+        for bad in ("1.2", "1.2.3.4", "256.0.0", "a.b.c"):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                probe.main(["--port", "sim", "--bridge", "own", "--expect-bridge-ver", bad, "bridgeup"])
+        self.assertEqual(probe.fw_version_triple(TMP_DIR or "/nonexistent"), (0, 0, 0), "no git: 0.0.0")
+
     def test_bridgedtr_passes_and_red_without_dtr(self):
         rc, text = run_cmd(self.port(usb_ready=True), probe.cmd_bridgedtr)
         self.assertEqual(rc, 0, text)
@@ -1938,6 +1988,7 @@ class OwnBridge(unittest.TestCase):
             port.sleep(1.5)
         self.assertGreater(self.blib.bs_counter(3), losses, "the bridge saw the loss")
         self.assertGreater(self.blib.bs_counter(2), ups, "and linked again")
+        self.assertGreaterEqual(self.lib.sim_counter(6), 1, "the controller's watchdog tripped (LINK_LOST)")
         # The controller latched (LINK_LOST): bridgeup's STOP clears it.
         rc, text = self.bridgeup(port, seconds=1.0)
         self.assertEqual(rc, 0, text)
