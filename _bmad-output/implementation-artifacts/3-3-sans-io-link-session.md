@@ -4,7 +4,7 @@ baseline_commit: 7b13971d93d867e66da5694026e4604af05aebfa
 
 # Story 3.3: Sans-IO link session
 
-Status: review
+Status: done
 
 <!-- Ultimate context engine analysis completed - comprehensive developer guide created (gds-create-story, 2026-11-24) -->
 
@@ -310,4 +310,4 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 ## Change Log
 
 - 2026-11-24: Story 3.3 implemented (`ocb-core::link` sans-IO session, `ocb-sim` fake controller and impaired channel, C.6 to C.11). Status → review.
-- 2026-11-24: Code review: 9 IMPORTANT and 7 MINOR findings fixed, 5 MINOR recorded (Review Findings); C.12 added. CI: `app` run 45372030897 green before the review.
+- 2026-11-24: Code review: 9 IMPORTANT and 7 MINOR findings fixed, 5 MINOR recorded (Review Findings); C.12 added. CI: `app` run 45372030897 green before the review; after the fixes `app` run 45374760449 (ubuntu-24.04, windows-latest, macos-latest all success) and `firmware` run 45374760429 success. Status → done.
