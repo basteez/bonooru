@@ -74,6 +74,19 @@ fn plays(io: &mut SimIo, clean: bool) {
     assert_eq!(io.ctrl.mode(), Mode::Idle, "STOP after PLAYBACK_DONE");
     assert!(!io.written_of(MSG_STOP).is_empty());
     assert!(owner.text().contains("PLAYBACK_DONE: 158 events"));
+    // The summary counts every frame of the run, across the session's
+    // STOPs (each STOP starts a new send buffer; found at the H.26 bench).
+    let text = owner.text();
+    let sent: u64 = text
+        .split("frames sent ")
+        .nth(1)
+        .and_then(|r| r.split(',').next())
+        .and_then(|n| n.parse().ok())
+        .expect("a frames sent count");
+    assert!(
+        sent >= 158 + 6 + 2,
+        "frames sent {sent}: events, presses, START and STOP"
+    );
     assert!(owner.text().contains("report_period_us 8000 (the console)"));
 }
 

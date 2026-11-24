@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ocb_core::link::{LinkEvent, Phase, Session, SessionConfig, StatusView};
+use ocb_core::link::{LinkEvent, Phase, SendStats, Session, SessionConfig, StatusView};
 use ocb_core::protocol::consts::HAT_DOWN;
 use ocb_core::protocol::{Info, Mode, NEUTRAL, NakReason, State};
 
@@ -167,6 +167,10 @@ struct Runner<'a, I: Io, O: Owner> {
     max_unsent_streaming: usize,
     started: bool,
     queued: u64,
+    /// Send counters of the session's earlier send buffers (each STOP
+    /// starts a new one, with its counters at zero).
+    stats_before: SendStats,
+    stats_last: SendStats,
 }
 
 /// Runs one piece. The port is already open with DTR asserted.
@@ -199,6 +203,8 @@ pub fn run<I: Io, O: Owner>(
         max_unsent_streaming: 0,
         started: false,
         queued: 0,
+        stats_before: SendStats::default(),
+        stats_last: SendStats::default(),
     };
     let res = r.go(piece);
     let (code, verdict) = match res {
@@ -267,7 +273,20 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         while let Some(e) = self.s.poll_event() {
             self.on_event(e, now);
         }
+        self.note_stats();
         Ok(())
+    }
+
+    /// Keeps the run's send counters across the session's buffer resets.
+    fn note_stats(&mut self) {
+        let st = self.s.send_stats();
+        let l = self.stats_last;
+        if st.sent < l.sent || st.resends < l.resends || st.rewinds < l.rewinds {
+            self.stats_before.sent += l.sent;
+            self.stats_before.resends += l.resends;
+            self.stats_before.rewinds += l.rewinds;
+        }
+        self.stats_last = st;
     }
 
     fn on_event(&mut self, e: LinkEvent, now: u64) {
@@ -699,8 +718,13 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
     // ------------------------------------------------------------ endings
 
     /// One line at the end of every run (Task 6.6).
-    fn summary(&self) -> String {
-        let st = self.s.send_stats();
+    fn summary(&mut self) -> String {
+        self.note_stats();
+        let st = SendStats {
+            sent: self.stats_before.sent + self.stats_last.sent,
+            resends: self.stats_before.resends + self.stats_last.resends,
+            rewinds: self.stats_before.rewinds + self.stats_last.rewinds,
+        };
         let debug = match (self.tap.first, self.tap.last) {
             (Some(a), Some(b)) => format!(
                 "; debug first: dropped_bytes={} watchdog_trips={} tx_dropped={}, last: dropped_bytes={} \

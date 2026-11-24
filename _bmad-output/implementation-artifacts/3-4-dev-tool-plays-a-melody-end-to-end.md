@@ -4,7 +4,7 @@ baseline_commit: 3dadb62
 
 # Story 3.4: Dev tool plays a melody end to end
 
-Status: review
+Status: done
 
 <!-- Ultimate context engine analysis completed - comprehensive developer guide created (gds-create-story, 2026-11-24) -->
 
@@ -64,7 +64,7 @@ so that I hear the full chain (PC → bridge → controller → Switch) play a m
   - [x] 9.2 `app/tools/ocb-dev/README.md`: what it is (dev-only), the two arguments, the CSV format, the soak mode, exit codes, the bench rows.
   - [x] 9.3 `.github/workflows/app.yml`: nothing to add unless the new crate needs it (it builds and tests with `--workspace`; serialport without `libudev` needs no apt package). Confirm on all 3 OS.
   - [x] 9.4 Bench tool and H-row review recorded in the Dev Agent Record **before** the first bench result (retro action #27): what each command does, what it needs from the owner, the expected output, the host (console or Mac) of each row. Remember the Story 3.1 bench lesson: macOS completes the Pro Controller handshake by itself (`console_ready` 1 on the Mac, Story 2.5 D36).
-  - [ ] 9.5 After the bench: results in `docs/test-plan.md` and here (numbers checked against the logs), the soak result in `_bmad-output/specs/spec-bonooru/roadmap.md` row M4 (append the result; do not change the M4 state, which also needs cross-OS discovery from Epic 4).
+  - [x] 9.5 After the bench: results in `docs/test-plan.md` and here (numbers checked against the logs), the soak result in `_bmad-output/specs/spec-bonooru/roadmap.md` row M4 (append the result; do not change the M4 state, which also needs cross-OS discovery from Epic 4).
 
 ### Review Findings
 
@@ -256,6 +256,20 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story, 2026-11-24.
 - `cargo deny` rejected `unicode-ident` (`(MIT OR Apache-2.0) AND Unicode-3.0`, reached through serialport → unescaper → thiserror-impl → proc-macro2). HALT per Task 3.2; owner decision: allow `Unicode-3.0` (D12).
 - Gates on the final tree: `cargo fmt --all --check`, `cargo test --locked --workspace` (all pass), `cargo clippy --locked --workspace --all-targets -- -D warnings` (clean), `cargo deny --locked check licenses` (ok), `ctest --preset host-tests` 44/44, F.38 ok.
 
+### Bench results (2026-11-24; numbers checked against the session logs)
+
+Rig: `ocb-dev` `cfe41cb` (release), bridge `69f4d2c` fw-release, controller fw-debug from Epic 2, macOS (Darwin 27.2), Switch 2 with OoT in ocarina free play. Full rows in `docs/test-plan.md` (H.24–H.27, `ocb-dev` bench rig).
+
+- **H.27 PASS.** `/dev/tty.usbmodem101` refused with the `/dev/cu.usbmodem101` name, exit 2.
+- **H.26 PASS (M4 exit).** The run, with the controller on the Mac (INFO `report_period_us` 2000):
+  - 600.7 s, 600 000 events, 11 400 018 bytes written (41.2 % of the line), 0 transport NAKs, `PLAYBACK_DONE`.
+  - The debug counters were unchanged from before START to after the STOP: `dropped_bytes` 1 = `rx_err_bytes` 1 (the boot break), every other counter 0.
+  - No byte was lost at 460800, so 921600 is not needed (roadmap M4 updated; its state is left TODO for the cross-OS discovery of Epic 4).
+  - `max_app_gap_ms` read 2050: the 2 s ready wait in IDLE, which is not a soak criterion.
+- **H.24 PASS (run 2).** Run 1 printed PASS but is not counted: the connection screen came back during the piece, because the owner's manual dismissal had given control back to the original Joy-Con. Run 2: INFO `report_period_us` 8000 (the console), 3 D-pad presses, no screen, START lead 500 000 µs, 158 events, `PLAYBACK_DONE`, PASS, no NAK. Owner: every note right.
+- **H.25 PASS.** The agent's first SIGINT hit its own wrapper shell, so the interrupt reached the tool about 20 s into the melody instead of 5 s. The tool printed `INTERRUPTED: STOP ACKed, controller mode Idle (neutral)` and exited 130. Owner: the melody stopped at once with no held note. A full run right after: PASS; owner: every note right.
+- **Found at the bench, fixed after it:** the `SUMMARY:` line printed `frames sent 0`. The session starts a new send buffer, with zeroed counters, at every STOP. The runner now adds the counters across those resets. A C.15 assertion failed on the old code (`frames sent 0`) and passes now. The verdicts were unaffected (they never used these counters).
+
 ### Decisions made during implementation (D1 to D11 followed; additions below)
 
 - **D12. `Unicode-3.0` allowed in `app/deny.toml`** (owner decision, 2026-11-24, NFR-07): a permissive OSI licence, reached through `unicode-ident`; egui will need it too.
@@ -280,7 +294,7 @@ Tools: `app/target/release/ocb-dev` (new; `cargo build --release -p ocb-dev` in 
 - AC2: D-pad down ×3 in DIRECT (150 ms held, 300 ms apart, no button), the prompt, PINGs by the session while waiting, START only after Enter. Dry run C.15; bench H.24.
 - AC3: Ctrl+C → STOP, wait for its ACK, mode IDLE printed, exit 130 (a second Ctrl+C exits at once). Dry run C.16; bench H.25.
 - AC4: `soak` = 10 minutes, 1 event/ms, harmless states, needs fw-debug's v2 debug counters; PASS only with 0 transport NAKs and six counters unchanged; the timeline build is named. Dry run C.17; bench H.26.
-- Task 9.5 (results, roadmap M4) waits for the bench.
+- Bench 2026-11-24: H.24, H.25, H.26, H.27 PASS; results above, in `docs/test-plan.md` and in roadmap M4.
 
 ### File List
 
@@ -291,6 +305,7 @@ Tools: `app/target/release/ocb-dev` (new; `cargo build --release -p ocb-dev` in 
 - `app/tools/ocb-dev/Cargo.toml`, `README.md`, `src/{main,lib,port_rule,runner,serial,soak,tap,timeline}.rs`, `tests/common/mod.rs`, `tests/{timeline,port_rule,melody,interrupt,soak}.rs`, `timelines/ode-to-joy-90bpm.csv` (new)
 - `firmware/tools/gen_test_timeline.py`, `firmware/tests/test_gen_test_timeline.py` (modified)
 - `docs/test-plan.md` (modified: F.38, C.13–C.17, H.24–H.27, `ocb-dev` bench rig)
+- `_bmad-output/specs/spec-bonooru/roadmap.md` (modified: M4 soak result)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`, this file
 
 ## Change Log
@@ -298,3 +313,4 @@ Tools: `app/target/release/ocb-dev` (new; `cargo build --release -p ocb-dev` in 
 - 2026-11-24: Story created (gds-create-story).
 - 2026-11-24: Story 3.4 implemented (`ocb-dev`, `events_unsent`, sim debug counters, CSV generator, C.13–C.17, F.38 extended); `Unicode-3.0` allowed (owner). Bench part pending.
 - 2026-11-24: Code review: 12 IMPORTANT and 7 MINOR fixed, 5 MINOR recorded (Review Findings); C.13, C.15–C.17 and H.25 rows updated.
+- 2026-11-24: Bench: H.24, H.25, H.26 (M4 soak, no byte lost at 460800), H.27 PASS; the `SUMMARY:` frame count fixed (found at H.26). Status done.
