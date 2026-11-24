@@ -1,0 +1,2 @@
+// expect: fs
+use std::{fs, fmt};

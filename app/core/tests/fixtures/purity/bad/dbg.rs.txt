@@ -1,0 +1,2 @@
+// expect: dbg!
+pub fn f() { dbg!(1); }

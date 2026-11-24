@@ -1,0 +1,5 @@
+# Rust toolchain pin (AD-18, Stack table of the architecture spine).
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

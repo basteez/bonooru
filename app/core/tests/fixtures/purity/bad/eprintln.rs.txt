@@ -1,0 +1,2 @@
+// expect: eprintln!
+pub fn f() { eprintln!("x"); }

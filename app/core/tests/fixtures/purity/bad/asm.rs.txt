@@ -1,0 +1,2 @@
+// expect: asm
+pub fn f() { asm!("nop"); }

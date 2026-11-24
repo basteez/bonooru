@@ -1,0 +1,2 @@
+// expect: mpsc
+use std::sync::{mpsc, Arc};

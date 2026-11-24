@@ -1,8 +1,9 @@
 # Conformance vectors
 
 Language-neutral test vectors for the Bonooru link protocol (AD-14). The firmware host
-test F.9 (`firmware/tests/test_vectors.c`) and the app's Rust codec tests (Story 3.2) read
-these files as shipped. **A wire change edits these files first**, then the code.
+test F.9 (`firmware/tests/test_vectors.c`) and the app's Rust codec test C.1
+(`app/core/tests/vectors.rs`, Story 3.2) read these files as shipped. **A wire change edits
+these files first**, then the code.
 
 Numeric values live in `firmware/common/proto/include/ocb_proto/consts.h` and are mirrored
 in `constants.txt`; those two win over `docs/link-protocol.md` on a disagreement.
@@ -10,8 +11,9 @@ in `constants.txt`; those two win over `docs/link-protocol.md` on a disagreement
 ## Files
 
 One file per area. The list is fixed: adding an area means adding its file **and** its
-entry in `kFiles[]` in `firmware/tests/test_vectors.c` (the test also fails if the number
-of `.txt` files here differs from that list).
+entry in `kFiles[]` in `firmware/tests/test_vectors.c` and in `FILES` in
+`app/core/tests/vectors.rs` (F.9 also fails if the number of `.txt` files here differs
+from its list; the Rust test fails on any `.txt` file not on its list).
 
 | File | What it pins |
 |---|---|

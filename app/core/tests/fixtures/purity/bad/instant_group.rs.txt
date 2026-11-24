@@ -1,0 +1,2 @@
+// expect: Instant
+use std::time::{Duration, Instant};

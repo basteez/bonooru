@@ -44,3 +44,6 @@ _bmad/
 
 # Firmware tools installed by firmware/tools/install-tools.sh
 firmware/.tools/
+
+# App (Cargo)
+app/target/

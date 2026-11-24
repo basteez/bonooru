@@ -1,0 +1,26 @@
+# Licence gate (AD-21, Story 3.2): `cargo deny check licenses`, run by CI on
+# ubuntu, windows and macos. The allow list is NFR-07 as amended 2026-11-19:
+# own code MIT; dependencies under permissive licences (MIT, BSD, Apache,
+# ISC, Zlib), or weak copyleft used unmodified (MPL-2.0 file-level; LGPL only
+# when dynamically linked, which a static Rust binary is not, so LGPL is not
+# listed). Dev-dependencies stay in the graph (stricter than needed).
+# OFL-1.1 and Ubuntu-font-1.0 join when egui and its default fonts arrive
+# (Epic 4, AD-18). Adding a licence here is an NFR-07 decision for the owner.
+
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+# The list is the policy, not the current graph.
+unused-allowed-license = "allow"

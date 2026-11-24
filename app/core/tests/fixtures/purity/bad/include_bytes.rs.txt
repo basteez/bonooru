@@ -1,0 +1,2 @@
+// expect: include_bytes!
+static B: &[u8] = include_bytes!("x");

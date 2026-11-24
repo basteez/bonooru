@@ -1,0 +1,4 @@
+// expect: thread
+use std::
+
+thread;

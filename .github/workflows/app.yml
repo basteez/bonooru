@@ -1,0 +1,78 @@
+# App CI (Story 3.2, AD-14, AD-18, AD-21): the Cargo workspace in app/ on the
+# three desktop OS. Gates: rustfmt, cargo test (the shared conformance
+# vectors, C.1 to C.5), clippy with -D warnings and the cargo-deny licence
+# check against the NFR-07 allow-list. No path filter, like firmware.yml: the
+# vectors are shared, so a firmware change must run the app job too.
+name: app
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: app core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags for the git describe version (AD-14)
+
+      # rustup reads app/rust-toolchain.toml; no `@stable` action, which would
+      # ignore the pin.
+      - name: Toolchain from rust-toolchain.toml (Rust 1.100.0)
+        run: |
+          rustup toolchain install
+          rustc --version
+          rustc --version | grep -q '^rustc 1\.100\.0 ' || { echo "::error::expected rustc 1.100.0"; exit 1; }
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app -> target
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Test (vectors, properties, purity, version)
+        run: cargo test --locked --workspace
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.22.0
+
+      - name: Licence gate (NFR-07, AD-21)
+        run: cargo deny --locked check licenses
+
+      - name: Job summary
+        run: |
+          version="$(cargo test --locked -q --test version -- --nocapture 2>/dev/null | sed -n 's/^OCB_APP_VERSION=//p')"
+          {
+            echo "## App core (${{ matrix.os }})"
+            echo
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| App version | \`${version}\` |"
+            echo "| rustc | \`$(rustc --version)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

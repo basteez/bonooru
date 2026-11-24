@@ -1,0 +1,2 @@
+// expect: print!
+pub fn f() { print!("x"); }

@@ -1,0 +1,2 @@
+// expect: File
+pub fn f(_: File) {}

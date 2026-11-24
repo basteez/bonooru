@@ -1,0 +1,2 @@
+// expect: io
+use std::{fmt, io};

@@ -1,0 +1,2 @@
+// expect: thread
+pub fn f() { std::thread::spawn(|| ()); }

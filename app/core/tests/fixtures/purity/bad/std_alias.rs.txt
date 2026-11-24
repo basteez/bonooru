@@ -1,0 +1,2 @@
+// expect: std as
+use std as s;

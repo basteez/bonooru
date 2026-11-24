@@ -1,0 +1,2 @@
+// expect: os
+use std::os::unix::net::UnixStream;
