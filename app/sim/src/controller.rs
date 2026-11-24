@@ -120,6 +120,7 @@ pub struct FakeController {
     debug_extra: Option<Vec<u8>>,
     table_on_sync: Option<Vec<(u32, State)>>,
     published: State,
+    link_losses: u16,
     // timing
     last_status: Option<u64>,
     status_after_ack: bool,
@@ -161,6 +162,7 @@ impl FakeController {
             debug_extra: None,
             table_on_sync: None,
             published: NEUTRAL,
+            link_losses: 0,
             last_status: None,
             status_after_ack: false,
             last_app_frame: 0,
@@ -209,6 +211,7 @@ impl FakeController {
     /// (only EVENTs leave until the TX release, Story 2.7).
     pub fn set_link_ok(&mut self, ok: bool) {
         if self.link_ok && !ok {
+            self.link_losses = self.link_losses.wrapping_add(1);
             self.tx_naks.clear();
             self.tx_info = None;
             self.tx_ack = None;
@@ -230,7 +233,10 @@ impl FakeController {
 
     /// Debug counters: when set, every STATUS carries these bytes as its
     /// `extra` tail (the debug layout of `docs/link-protocol.md`); `None`
-    /// (the default) sends a release-style STATUS.
+    /// (the default) sends a release-style STATUS. Like the firmware, every
+    /// link loss (`set_link_ok(false)`) adds one to `watchdog_trips`
+    /// (byte 2) and to `rx_be` (bytes 17-18, the break), on top of the
+    /// values given here.
     pub fn set_debug_extra(&mut self, extra: Option<Vec<u8>>) {
         self.debug_extra = extra;
     }
@@ -567,6 +573,21 @@ impl FakeController {
         }
     }
 
+    fn debug_tail(&self) -> Vec<u8> {
+        let mut t = self.debug_extra.clone().unwrap_or_default();
+        let n = self.link_losses;
+        if let Some(b) = t.get_mut(2) {
+            *b = b.wrapping_add(n.to_le_bytes()[0]);
+        }
+        if let (Some(&lo), Some(&hi)) = (t.get(17), t.get(18)) {
+            let be = u16::from_le_bytes([lo, hi]).wrapping_add(n).to_le_bytes();
+            if let Some(x) = t.get_mut(17..19) {
+                x.copy_from_slice(&be);
+            }
+        }
+        t
+    }
+
     fn status(&mut self, now_us: u64) {
         let now = if self.mode == Mode::Playing && now_us >= self.t0 {
             u32::try_from(now_us - self.t0).unwrap_or(u32::MAX)
@@ -588,7 +609,7 @@ impl FakeController {
             abort_count: self.abort_count,
             last_event: self.last_event,
             flags,
-            extra: self.debug_extra.clone().unwrap_or_default(),
+            extra: self.debug_tail(),
         };
         if let Ok(body) = st.encode() {
             self.send(MSG_STATUS, &body);

@@ -13,10 +13,15 @@ use ocb_dev::serial::SerialIo;
 use ocb_dev::soak::{SOAK_DURATION_US, SOAK_LEAD_US, SOAK_PERIOD_US};
 use ocb_dev::timeline;
 
-const USAGE: &str = "usage: ocb-dev <port> <timeline.csv | soak>
+const USAGE: &str = "usage: ocb-dev <port> <timeline.csv | soak | failsafe | watch>
   port      the bridge's serial port (macOS: /dev/cu.usbmodem…)
-  timeline  a t_us,state CSV (app/tools/ocb-dev/timelines/), or the word
-            `soak` for the 10-minute link soak (a file named soak: ./soak)
+  timeline  a t_us,state CSV (app/tools/ocb-dev/timelines/), or a keyword:
+            soak      the 10-minute link soak (Story 3.4, H.26)
+            failsafe  20 rounds of the melody, each ended by unplugging the
+                      bridge or pulling a UART wire (Story 3.5, A.3)
+            watch     records console_ready, silences and reboots until
+                      Ctrl+C, then judges H.3 (Story 3.5)
+            (a file with one of these names: ./soak, ./failsafe, ./watch)
 exit: 0 PASS, 1 FAIL, 2 usage or file error, 130 interrupted (Ctrl+C)";
 
 /// The terminal: lines to stdout, Enter from a stdin thread.
@@ -83,6 +88,12 @@ fn main() -> ExitCode {
             period_us: SOAK_PERIOD_US,
             lead_us: SOAK_LEAD_US,
         }
+    } else if what == "failsafe" {
+        Piece::Failsafe { rounds: 20 }
+    } else if what == "watch" {
+        Piece::Watch {
+            max_us: 30 * 60 * 1_000_000,
+        }
     } else {
         let text = match std::fs::read_to_string(what) {
             Ok(t) => t,
@@ -123,10 +134,11 @@ fn main() -> ExitCode {
     println!(
         "ocb-dev {} on {port}: {}",
         ocb_core::version::APP_VERSION,
-        if what == "soak" {
-            "soak, 10 minutes"
-        } else {
-            what.as_str()
+        match what.as_str() {
+            "soak" => "soak, 10 minutes",
+            "failsafe" => "failsafe, 20 rounds",
+            "watch" => "watch (H.3), until Ctrl+C",
+            other => other,
         }
     );
     let out = runner::run(

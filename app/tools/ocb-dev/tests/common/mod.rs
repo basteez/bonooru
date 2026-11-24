@@ -37,6 +37,30 @@ pub struct SimIo {
     pub hooks: Vec<(u64, Hook)>,
     /// From this time on the controller's bytes are lost (it went silent).
     pub silence_at: Option<u64>,
+    /// A.3: losses to make, one per round, 2 s after the piece starts
+    /// playing; the bridge or the wire comes back 1 s later.
+    pub loss_plan: Vec<Loss>,
+    /// The bridge is unplugged: the port fails.
+    pub unplugged: bool,
+    playing_since: Option<u64>,
+    restore_at: Option<(u64, Loss)>,
+    /// H.3: the console sleeps in this window (both directions silent,
+    /// the controller reboots at the end, `console_ready` 0 for 1.5 s).
+    pub sleep: Option<(u64, u64)>,
+    /// The debug tail given with `set_debug` (kept across a reboot).
+    pub debug_extra: Option<Vec<u8>>,
+    /// The controller's bytes are lost in this window (a STATUS gap).
+    pub down_gap: Option<(u64, u64)>,
+}
+
+/// How a failsafe round ends in the dry run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Loss {
+    Unplug,
+    Wire,
+    /// The bridge is unplugged but the controller never notices (a broken
+    /// watchdog): the round must fail.
+    UnplugUnnoticed,
 }
 
 impl SimIo {
@@ -51,6 +75,50 @@ impl SimIo {
             interrupt_at: None,
             hooks: Vec::new(),
             silence_at: None,
+            loss_plan: Vec::new(),
+            unplugged: false,
+            playing_since: None,
+            restore_at: None,
+            sleep: None,
+            debug_extra: None,
+            down_gap: None,
+        }
+    }
+
+    /// Sets the controller's debug tail (and keeps it across a reboot).
+    pub fn set_debug(&mut self, extra: Option<Vec<u8>>) {
+        self.debug_extra = extra.clone();
+        self.ctrl.set_debug_extra(extra);
+    }
+
+    /// A.3 in the dry run: 2 s into a playing piece, the next planned loss;
+    /// 1 s later the bridge (a fresh port) or the wire comes back.
+    fn losses(&mut self, now: u64) {
+        if let Some((t, kind)) = self.restore_at
+            && now >= t
+        {
+            self.restore_at = None;
+            if kind != Loss::Wire {
+                self.unplugged = false;
+                self.up = Channel::clean(100);
+                self.down = Channel::clean(100);
+            }
+            self.ctrl.set_link_ok(true);
+        }
+        if self.ctrl.mode() == ocb_core::protocol::Mode::Playing {
+            let since = *self.playing_since.get_or_insert(now);
+            if self.restore_at.is_none() && now >= since + 2_000_000 && !self.loss_plan.is_empty() {
+                let kind = self.loss_plan.remove(0);
+                if kind != Loss::Wire {
+                    self.unplugged = true;
+                }
+                if kind != Loss::UnplugUnnoticed {
+                    self.ctrl.set_link_ok(false);
+                }
+                self.restore_at = Some((now + 1_000_000, kind));
+            }
+        } else {
+            self.playing_since = None;
         }
     }
 
@@ -89,6 +157,37 @@ impl SimIo {
                 i += 1;
             }
         }
+        self.losses(now);
+        if let Some((a, b)) = self.sleep {
+            if now >= a && now < b {
+                let off = Impair {
+                    drop: 1.0,
+                    ..Impair::default()
+                };
+                self.up.set_impair(off);
+                self.down.set_impair(off);
+            } else if now >= b {
+                self.sleep = None;
+                self.up = Channel::clean(100);
+                self.down = Channel::clean(100);
+                let extra = self.debug_extra.clone();
+                self.ctrl.reboot();
+                self.ctrl.set_debug_extra(extra);
+                self.ctrl.set_console_ready(false);
+                self.hooks
+                    .push((now + 1_500_000, Box::new(|c| c.set_console_ready(true))));
+            }
+        }
+        if let Some((a, b)) = self.down_gap {
+            let drop = if now >= a && now < b { 1.0 } else { 0.0 };
+            self.down.set_impair(Impair {
+                drop,
+                ..Impair::default()
+            });
+            if now >= b {
+                self.down_gap = None;
+            }
+        }
         if self.silence_at.is_some_and(|t| now >= t) {
             self.down.set_impair(Impair {
                 drop: 1.0,
@@ -115,6 +214,9 @@ impl Io for SimIo {
         loop {
             let now = self.now.get();
             self.controller_pass(now);
+            if self.unplugged {
+                return Err("serial read: Device not configured".to_owned());
+            }
             let got = self.down.deliver(now);
             if !got.is_empty() {
                 buf.extend_from_slice(&got);
@@ -136,8 +238,26 @@ impl Io for SimIo {
         }
     }
 
+    fn reopen(&mut self) -> Result<bool, String> {
+        let now = self.now.get();
+        self.controller_pass(now);
+        Ok(!self.unplugged)
+    }
+
+    fn idle_until(&mut self, t_us: u64) {
+        while self.now.get() < t_us {
+            let now = self.now.get();
+            self.controller_pass(now);
+            let _ = self.down.deliver(now); // nobody listens: the port is gone
+            self.now.set((now + self.step_us).min(t_us));
+        }
+    }
+
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
         let now = self.now.get();
+        if self.unplugged {
+            return Err("serial write: Device not configured".to_owned());
+        }
         if let Some((&0, enc)) = bytes.split_last()
             && let Ok(f) = decode_frame(RxSide::Controller, enc)
         {
@@ -241,6 +361,17 @@ pub fn debug_tail(dropped: u16) -> Vec<u8> {
     let mut t = vec![0u8; 21];
     t[3..5].copy_from_slice(&dropped.to_le_bytes());
     t[7..9].copy_from_slice(&dropped.to_le_bytes());
+    t
+}
+
+/// A fw-debug-o3 style tail: v1 + v2, an empty P2 log window, and the v4
+/// block with `in_max_us` and `in_slow`.
+pub fn debug_tail_v4(in_max_us: u16, in_slow: u16) -> Vec<u8> {
+    let mut t = debug_tail(1);
+    t.resize(24 + 41, 0);
+    t[23] = 0; // p2_log_n
+    t[24 + 28..24 + 30].copy_from_slice(&in_max_us.to_le_bytes());
+    t[24 + 30..24 + 32].copy_from_slice(&in_slow.to_le_bytes());
     t
 }
 

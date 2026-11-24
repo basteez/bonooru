@@ -13,6 +13,7 @@ pub const BAUD: u32 = 460_800;
 
 /// An open serial port and the clock.
 pub struct SerialIo {
+    path: String,
     port: Box<dyn SerialPort>,
     t0: Instant,
     tmp: [u8; 4096],
@@ -29,6 +30,15 @@ impl std::fmt::Debug for SerialIo {
 impl SerialIo {
     /// Opens `path` and asserts DTR.
     pub fn open(path: &str) -> Result<Self, String> {
+        Ok(Self {
+            path: path.to_owned(),
+            port: Self::open_port(path)?,
+            t0: Instant::now(),
+            tmp: [0; 4096],
+        })
+    }
+
+    fn open_port(path: &str) -> Result<Box<dyn SerialPort>, String> {
         let mut port = serialport::new(path, BAUD)
             .data_bits(DataBits::Eight)
             .parity(Parity::None)
@@ -39,11 +49,7 @@ impl SerialIo {
             .map_err(|e| format!("{path}: {e}"))?;
         port.write_data_terminal_ready(true)
             .map_err(|e| format!("{path}: DTR: {e}"))?;
-        Ok(Self {
-            port,
-            t0: Instant::now(),
-            tmp: [0; 4096],
-        })
+        Ok(port)
     }
 }
 
@@ -73,6 +79,34 @@ impl Io for SerialIo {
         }
     }
 
+    fn reopen(&mut self) -> Result<bool, String> {
+        if !std::path::Path::new(&self.path).exists() {
+            // macOS names the port after the USB location, and the name
+            // changes with the plug order (Story 3.1 H.1: usbmodem101 or
+            // usbmodem1101). The controller has no CDC port, so a single
+            // `/dev/cu.usbmodem*` is the bridge.
+            match single_usbmodem(&self.path) {
+                Some(p) => self.path = p,
+                None => return Ok(false),
+            }
+        }
+        // The node can appear before it opens: a failed open is "not yet".
+        match Self::open_port(&self.path) {
+            Ok(p) => {
+                self.port = p;
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
+    }
+
+    fn idle_until(&mut self, t_us: u64) {
+        let now = self.now_us();
+        if t_us > now {
+            std::thread::sleep(Duration::from_micros(t_us - now));
+        }
+    }
+
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
         // The port timeout (1 ms) also bounds each write call: a full USB
         // buffer returns TimedOut, so retry until the whole chunk is out or
@@ -93,4 +127,22 @@ impl Io for SerialIo {
         }
         Ok(())
     }
+}
+
+/// The only `/dev/cu.usbmodem*` node, when `old` was one too.
+fn single_usbmodem(old: &str) -> Option<String> {
+    const PREFIX: &str = "cu.usbmodem";
+    if !old.starts_with("/dev/cu.usbmodem") {
+        return None;
+    }
+    let mut found = std::fs::read_dir("/dev")
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with(PREFIX));
+    let first = found.next()?;
+    if found.next().is_some() {
+        return None;
+    }
+    Some(format!("/dev/{first}"))
 }
