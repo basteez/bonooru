@@ -47,6 +47,7 @@ fn ctrl_c_mid_piece_stops_and_goes_neutral() {
         "STOP after Ctrl+C: {stops:?}"
     );
     assert_eq!(io.ctrl.mode(), Mode::Idle);
+    assert_eq!(io.ctrl.published(), ocb_core::protocol::NEUTRAL, "neutral");
     let applied = io.ctrl.log().applied.len();
     assert!(applied > 0 && applied < 158, "cut mid-piece: {applied}");
     assert!(
@@ -74,6 +75,7 @@ fn ctrl_c_at_the_prompt_stops_too() {
     assert!(io.written_of(MSG_START).is_empty(), "never started");
     assert!(io.written_of(MSG_STOP).iter().any(|&t| t >= 8_000_000));
     assert_eq!(io.ctrl.mode(), Mode::Idle, "DIRECT left for IDLE");
+    assert_eq!(io.ctrl.published(), ocb_core::protocol::NEUTRAL, "neutral");
     assert!(out.verdict.contains("(neutral)"), "{}", out.verdict);
 }
 
@@ -89,8 +91,12 @@ fn ctrl_c_before_the_session_opens() {
     let (out, _) = common::run(&mut io, melody(), None, flag);
     assert_eq!(out.code, EXIT_INTERRUPTED);
     assert!(
-        out.verdict.contains("before the session opened"),
+        out.verdict.contains("the session was not open"),
         "{}",
         out.verdict
+    );
+    assert!(
+        io.written_of(MSG_STOP).is_empty(),
+        "no STOP without a session"
     );
 }

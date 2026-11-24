@@ -111,11 +111,106 @@ fn prefill_respects_queue_cap_and_streams_on_credit() {
         .iter()
         .filter(|&&t| t <= start)
         .count();
-    assert!(
-        before <= 16,
-        "{before} QUEUE_EVENTs before START with a queue of 16"
+    assert_eq!(
+        before, 16,
+        "the prefill fills the queue of 16, START follows"
     );
     assert_eq!(io.ctrl.log().applied.len(), 158);
+}
+
+#[test]
+fn an_enter_before_the_prompt_does_not_start_the_piece() {
+    let mut io = SimIo::clean(ControllerConfig::default());
+    // Enter pressed while the D-pad presses run (before the prompt), then
+    // the real one 2 s after the prompt.
+    let (out, owner) = common::run_with(
+        &mut io,
+        melody(),
+        Some(2_000_000),
+        vec![2_500_000],
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert_eq!(out.code, EXIT_PASS, "{}\n{}", out.verdict, owner.text());
+    let prompt = owner.prompted_at.unwrap();
+    assert!(prompt > 2_500_000, "the early Enter came before the prompt");
+    let start = io.written_of(MSG_START)[0];
+    assert!(
+        start >= prompt + 2_000_000,
+        "START at {start}, prompt at {prompt}"
+    );
+}
+
+#[test]
+fn a_controller_that_goes_silent_fails_the_ready_wait() {
+    let mut io = SimIo::clean(ControllerConfig::default());
+    io.silence_at = Some(500_000);
+    let (out, _) = common::run(&mut io, melody(), Some(0), Arc::new(AtomicBool::new(false)));
+    assert_eq!(out.code, EXIT_FAIL);
+    assert!(out.verdict.contains("stopped answering"), "{}", out.verdict);
+    assert!(
+        io.written_of(MSG_SET_STATE).is_empty(),
+        "no input to a silent controller"
+    );
+}
+
+#[test]
+fn a_controller_that_goes_silent_mid_piece_fails_fast() {
+    let mut io = SimIo::clean(ControllerConfig::default());
+    io.silence_at = Some(10_000_000);
+    let (out, _) = common::run(
+        &mut io,
+        melody(),
+        Some(1_000_000),
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert_eq!(out.code, EXIT_FAIL);
+    assert!(out.verdict.contains("stopped answering"), "{}", out.verdict);
+    assert!(
+        io.now.get() < 13_100_000,
+        "1 s of silence plus the 2 s STOP wait, not the whole piece"
+    );
+}
+
+#[test]
+fn the_timeline_build_is_refused_before_any_event() {
+    let mut io = SimIo::clean(ControllerConfig::default());
+    let tl = parse(&common::melody_text()).unwrap();
+    io.ctrl.set_table_on_sync(Some(tl.events));
+    let (out, _) = common::run(&mut io, melody(), Some(0), Arc::new(AtomicBool::new(false)));
+    assert_eq!(out.code, EXIT_FAIL);
+    assert!(out.verdict.contains("built-in timeline"), "{}", out.verdict);
+    assert!(io.written_of(MSG_QUEUE_EVENT).is_empty());
+    assert!(io.written_of(MSG_SET_STATE).is_empty());
+}
+
+#[test]
+fn a_refusal_mid_piece_stops_and_clears_the_latch() {
+    let mut io = SimIo::clean(ControllerConfig {
+        queue_cap: 16,
+        ..ControllerConfig::default()
+    });
+    io.hooks.push((
+        12_000_000,
+        Box::new(|c| c.inject_nak(MSG_QUEUE_EVENT, ocb_core::protocol::NakReason::Order)),
+    ));
+    let (out, owner) = common::run(
+        &mut io,
+        melody(),
+        Some(1_000_000),
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert_eq!(out.code, EXIT_FAIL, "{}", owner.text());
+    assert!(out.verdict.contains("Nak(Order)"), "{}", out.verdict);
+    assert_eq!(io.ctrl.mode(), Mode::Idle);
+    assert!(
+        !io.ctrl.aborted(),
+        "the STOP after the abandon was ACKed (latch clear)"
+    );
+    assert_eq!(io.ctrl.published(), NEUTRAL);
+    assert!(
+        owner.text().contains("SUMMARY: "),
+        "a summary on failure too"
+    );
 }
 
 #[test]
@@ -151,7 +246,7 @@ fn console_never_ready_fails_after_120_s() {
         "{}",
         out.verdict
     );
-    assert!(owner.text().contains("WAITING: plug the controller"));
+    assert!(owner.text().contains("WAITING for console_ready"));
     assert!(
         io.written_of(MSG_SET_STATE).is_empty(),
         "no input before ready"

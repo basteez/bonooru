@@ -12,7 +12,6 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use ocb_core::protocol::NakReason;
 use ocb_core::protocol::consts::{MSG_QUEUE_EVENT, MSG_SET_STATE};
 use ocb_dev::runner::{EXIT_FAIL, EXIT_PASS, Outcome, Piece};
 use ocb_dev::soak::{SOAK_DURATION_US, SOAK_NUDGE_LX, SOAK_PERIOD_US, Soak};
@@ -70,11 +69,16 @@ fn soak_passes_on_clean_counters() {
     assert!(text.contains("SOAK: "), "{text}");
     assert!(text.contains("transport NAKs 0"), "{text}");
     assert!(
-        text.contains("debug first: max_app_gap_ms=0 watchdog_trips=0 dropped_bytes=1"),
+        text.contains("debug before: max_app_gap_ms=0 watchdog_trips=0 dropped_bytes=1"),
         "{text}"
     );
     // Bounded backlog: the prefill (queue_cap) then at most `backlog`.
     assert!(out.max_unsent <= 512, "max unsent {}", out.max_unsent);
+    assert!(
+        out.max_unsent_streaming > 0 && out.max_unsent_streaming <= 256,
+        "streaming backlog {}",
+        out.max_unsent_streaming
+    );
     assert_eq!(out.queued, 20_000);
 }
 
@@ -97,6 +101,32 @@ fn soak_fails_when_bytes_are_dropped() {
 }
 
 #[test]
+fn the_baseline_is_taken_right_before_the_soak() {
+    // Counters and a CRC NAK move while waiting for the console (a bounce,
+    // the boot): not the soak's.
+    let mut io = SimIo::clean(ControllerConfig::default());
+    io.ctrl.set_debug_extra(Some(common::debug_tail(1)));
+    io.hooks.push((
+        800_000,
+        Box::new(|c| c.set_debug_extra(Some(common::debug_tail(3)))),
+    ));
+    io.hooks
+        .push((900_000, Box::new(|c| c.inject_raw_nak(0x01, 1, 1))));
+    let (out, owner) = soak(&mut io);
+    assert_eq!(out.code, EXIT_PASS, "{}\n{}", out.verdict, owner.text());
+    assert!(
+        owner.text().contains("transport NAKs 0"),
+        "{}",
+        owner.text()
+    );
+    assert!(
+        owner.text().contains("NAKs Crcx1"),
+        "the summary still shows it: {}",
+        owner.text()
+    );
+}
+
+#[test]
 fn soak_needs_debug_counters() {
     let mut io = SimIo::clean(ControllerConfig::default());
     let (out, _) = soak(&mut io);
@@ -106,17 +136,23 @@ fn soak_needs_debug_counters() {
         "{}",
         out.verdict
     );
+    assert!(
+        io.written_of(MSG_QUEUE_EVENT).is_empty(),
+        "refused before START, not after 10 min"
+    );
     let mut io = SimIo::clean(ControllerConfig::default());
     io.ctrl.set_debug_extra(Some(vec![0; 7]));
     let (out, _) = soak(&mut io);
-    assert!(out.verdict.contains("v2 debug counters"), "{}", out.verdict);
+    assert!(out.verdict.contains("v2 counters"), "{}", out.verdict);
 }
 
 #[test]
 fn soak_refuses_the_timeline_build() {
     let mut io = SimIo::clean(ControllerConfig::default());
     io.ctrl.set_debug_extra(Some(common::debug_tail(1)));
-    io.ctrl.inject_nak(MSG_QUEUE_EVENT, NakReason::BadState);
+    // The real build: its table reloads at every HELLO and STOP.
+    io.ctrl
+        .set_table_on_sync(Some(Soak::new(2_000_000, 1_000).collect()));
     let (out, _) = soak(&mut io);
     assert_eq!(out.code, EXIT_FAIL);
     assert!(out.verdict.contains("built-in timeline"), "{}", out.verdict);

@@ -35,6 +35,8 @@ pub struct SimIo {
     pub interrupt_at: Option<(u64, Arc<AtomicBool>)>,
     /// Run these at their time (once).
     pub hooks: Vec<(u64, Hook)>,
+    /// From this time on the controller's bytes are lost (it went silent).
+    pub silence_at: Option<u64>,
 }
 
 impl SimIo {
@@ -48,6 +50,7 @@ impl SimIo {
             written: Vec::new(),
             interrupt_at: None,
             hooks: Vec::new(),
+            silence_at: None,
         }
     }
 
@@ -85,6 +88,12 @@ impl SimIo {
             } else {
                 i += 1;
             }
+        }
+        if self.silence_at.is_some_and(|t| now >= t) {
+            self.down.set_impair(Impair {
+                drop: 1.0,
+                ..Impair::default()
+            });
         }
         self.up.flush_hold(now);
         let up = self.up.deliver(now);
@@ -139,10 +148,13 @@ impl Io for SimIo {
     }
 }
 
-/// The owner at the bench: presses Enter at a set fake time.
+/// The owner at the bench: presses Enter (edge-triggered, like a line on
+/// stdin) at set fake times: `early` absolute times, and once
+/// `enter_after_prompt` after the prompt.
 pub struct ScriptedOwner {
     pub now: Rc<Cell<u64>>,
-    pub enter_at: Option<u64>,
+    pub enter_after_prompt: Option<u64>,
+    pub presses: Vec<u64>,
     pub lines: Vec<String>,
     pub prompted_at: Option<u64>,
 }
@@ -151,10 +163,18 @@ impl ScriptedOwner {
     pub fn new(now: Rc<Cell<u64>>, enter_after_prompt_us: Option<u64>) -> Self {
         Self {
             now,
-            enter_at: enter_after_prompt_us,
+            enter_after_prompt: enter_after_prompt_us,
+            presses: Vec::new(),
             lines: Vec::new(),
             prompted_at: None,
         }
+    }
+
+    fn take_due(&mut self) -> bool {
+        let now = self.now.get();
+        let before = self.presses.len();
+        self.presses.retain(|&t| t > now);
+        self.presses.len() != before
     }
 
     pub fn text(&self) -> String {
@@ -165,16 +185,21 @@ impl ScriptedOwner {
 impl Owner for ScriptedOwner {
     fn say(&mut self, line: &str) {
         if line.starts_with("PROMPT") {
-            self.prompted_at = Some(self.now.get());
+            let now = self.now.get();
+            self.prompted_at = Some(now);
+            if let Some(after) = self.enter_after_prompt {
+                self.presses.push(now + after);
+            }
         }
         self.lines.push(line.to_owned());
     }
 
     fn enter_pressed(&mut self) -> bool {
-        match (self.prompted_at, self.enter_at) {
-            (Some(p), Some(after)) => self.now.get() >= p + after,
-            _ => false,
-        }
+        self.take_due()
+    }
+
+    fn discard_input(&mut self) {
+        let _ = self.take_due();
     }
 }
 
@@ -186,7 +211,19 @@ pub fn run(
     enter_after_us: Option<u64>,
     interrupt: Arc<AtomicBool>,
 ) -> (Outcome, ScriptedOwner) {
+    run_with(io, piece, enter_after_us, Vec::new(), interrupt)
+}
+
+/// As `run`, with Enter also pressed at these absolute times.
+pub fn run_with(
+    io: &mut SimIo,
+    piece: Piece,
+    enter_after_us: Option<u64>,
+    early_presses: Vec<u64>,
+    interrupt: Arc<AtomicBool>,
+) -> (Outcome, ScriptedOwner) {
     let mut owner = ScriptedOwner::new(Rc::clone(&io.now), enter_after_us);
+    owner.presses = early_presses;
     let out = runner::run(
         io,
         &mut owner,

@@ -126,6 +126,10 @@ def main():
         bad(tmp, "too_late", HEADER + "0f\n128850f - - -\n", "below 2^31")
         bad(tmp, "no_lead", HEADER.replace("start_lead_ms 500", "x") + "0f\n30f Y - -\n60f - - -\n",
             "start_lead_ms")
+        bad(tmp, "lead_in_a_row_only", HEADER.replace("start_lead_ms 500", "x")
+            + "0f\n30f Y - - # start_lead_ms 500\n60f - - -\n", "start_lead_ms")
+        bad(tmp, "lead_not_integer", HEADER.replace("start_lead_ms 500", "start_lead_ms 500.5")
+            + "0f\n30f Y - -\n60f - - -\n", "start_lead_ms")
 
         good = os.path.join(tmp, "good.txt")
         with open(good, "w", encoding="utf-8") as f:

@@ -66,6 +66,48 @@ so that I hear the full chain (PC → bridge → controller → Switch) play a m
   - [x] 9.4 Bench tool and H-row review recorded in the Dev Agent Record **before** the first bench result (retro action #27): what each command does, what it needs from the owner, the expected output, the host (console or Mac) of each row. Remember the Story 3.1 bench lesson: macOS completes the Pro Controller handshake by itself (`console_ready` 1 on the Mac, Story 2.5 D36).
   - [ ] 9.5 After the bench: results in `docs/test-plan.md` and here (numbers checked against the logs), the soak result in `_bmad-output/specs/spec-bonooru/roadmap.md` row M4 (append the result; do not change the M4 state, which also needs cross-OS discovery from Epic 4).
 
+### Review Findings
+
+gds-code-review, 2026-11-24: three parallel reviewers (Blind Hunter, Edge Case Hunter, Acceptance Auditor). 12 IMPORTANT and 7 MINOR fixed, 5 MINOR recorded. One Blind Hunter claim (the CSV not committed) was wrong: the review diff excluded `timelines/`.
+
+IMPORTANT (all fixed, each with a test that fails on the old code):
+
+- **I-1 An Enter typed before the prompt started the piece** (all three). The stdin thread queues lines from launch, and the first `enter_pressed` took a stale one, so the melody could start on the connection screen. Fix: `Owner::discard_input` right before the PROMPT; the test owner is edge-triggered. Test: `an_enter_before_the_prompt_does_not_start_the_piece`.
+- **I-2 The soak baseline was the session's first STATUS, and NAKs were counted from port open** (Blind Hunter, Edge Case Hunter). A bounce or a CRC NAK while waiting for the console failed a clean soak. Fix: the baseline is the last STATUS before START and NAKs are counted from START; one more STATUS is read after the final STOP. Test: `the_baseline_is_taken_right_before_the_soak`.
+- **I-3 Any `NAK BAD_STATE` was reported as the timeline build** (all three); a START refusal sent the owner to reflash. Fix: the build is recognised by its signature, STATUS `free` < `queue_cap` in IDLE before anything was queued (checked after the ready wait, so no input is sent either); a BAD_STATE abandon only gets a hint. `ocb-sim` now models the real build (`set_table_on_sync`: the table reloads at HELLO and STOP). Tests: `the_timeline_build_is_refused_before_any_event`, `soak_refuses_the_timeline_build`.
+- **I-4 A controller that went silent passed the 2 s window and the first input** (Blind Hunter, Edge Case Hunter).
+  - Fix: "ready" also needs a STATUS within 150 ms. Every wait fails after 1 s with no STATUS ("stopped answering"), and `pump` wakes for that moment. The first-input SET_STATEs must all be ACKed.
+  - Tests: `a_controller_that_goes_silent_fails_the_ready_wait`, `…_mid_piece_fails_fast`.
+- **I-5 After a failure, a STOP the session had already started was not waited for** (Edge Case Hunter). This left the abort latch set. Fix: `stop_quietly` / `finish_stop` also handle `Phase::Stopping`. Test: `a_refusal_mid_piece_stops_and_clears_the_latch`.
+- **I-6 Task 6.6: the summary was printed only on success** (Acceptance Auditor). Fix: a `SUMMARY:` line ends every run. It shows events queued, `PLAYBACK_DONE`, frames sent, resends, rewinds, NAKs by reason, and the debug counters first and last.
+- **I-7 C.16 never checked that the console was neutral** (Acceptance Auditor). Fix: `FakeController::published()`, asserted NEUTRAL after Ctrl+C mid-piece and at the prompt, and after a refusal.
+- **I-8 A soak without debug counters failed only after 10 minutes** (Acceptance Auditor). Fix: checked before START (no QUEUE_EVENT is sent). Test: `soak_needs_debug_counters`.
+- **I-9 The README claimed a second Ctrl+C stops the controller through DTR** (Edge Case Hunter). DTR aborts DIRECT, not PLAYING, so a queued piece plays on. Fix: README and the handler comment say so. A STOP that is not ACKed now tells the owner to unplug the bridge.
+- **I-10 The parser accepted signs and spaces the format forbids** (Blind Hunter, Acceptance Auditor). Fix: digits only for `t_us`, hex digits only for `state`; tests.
+- **I-11 The generator took `start_lead_ms` from anywhere, and `500.5` as 500** (all three). Fix: comment lines only, integer only; two F.38 refusals added.
+- **I-12 Docs** (Acceptance Auditor).
+  - The ready-wait hint told the soak to plug into the Switch, and asked for a plug-in although the controller must be powered before the tool starts. It is now the console handshake hint, or the Mac for the soak.
+  - H.25 said "press Ctrl+C" while the bench review sends SIGINT; the row now matches the review.
+  - C.13 claimed every refusal names its line.
+
+MINOR fixed:
+
+- The `end2` bound in `on_interrupt` was a no-op. Replaced by `one_more_status`.
+- The interrupt message said "before the session opened" for any phase.
+- Failure messages hard-coded the limits.
+- The prefill test only bounded from above (now exactly 16).
+- The steady backlog ≤ 256 was not checked (`Outcome.max_unsent_streaming`).
+- L/R byte order was untested (the R row at 5 833 333 µs).
+- C.16 did not assert "no STOP before INFO".
+
+MINOR recorded (not fixed):
+
+- **M-1 `SimIo` records only chunks that are exactly one frame** (Blind Hunter). It is exact today, because `poll_transmit` hands out one frame or a lone `0x00` per chunk. It would hide frames if the session ever batched them.
+- **M-2 The dry run cannot model write errors, partial writes or the line rate** (Edge Case Hunter). `SerialIo`'s retry loop and the real throughput are exercised only at the bench (H.24–H.26).
+- **M-3 `Soak` for more than about 71 minutes would stop before END** (Blind Hunter). `u32` `t_us` cannot reach it; the bench soak is fixed at 10 minutes.
+- **M-4 The soak baseline STATUS can be up to 50 ms older than START**. Counters that move in that window count against the soak (a false FAIL, never a false PASS).
+- **M-5 A second Ctrl+C leaves a piece already queued on the controller playing** (Edge Case Hunter). By design: it is the way out of a STOP that is never ACKed. Documented; unplugging the bridge makes the controller go neutral.
+
 ## Dev Notes
 
 ### What exists today (read before writing)
@@ -244,7 +286,7 @@ Tools: `app/target/release/ocb-dev` (new; `cargo build --release -p ocb-dev` in 
 
 - `app/Cargo.toml`, `app/Cargo.lock`, `app/deny.toml` (modified)
 - `app/core/src/link/mod.rs`, `app/core/src/link/send.rs` (modified: `events_unsent`, `qe_len`)
-- `app/sim/src/controller.rs` (modified: `set_debug_extra`, `ControllerLog.starts`)
+- `app/sim/src/controller.rs` (modified: `set_debug_extra`, `ControllerLog.starts`, `set_table_on_sync`, `published`)
 - `app/sim/tests/backlog.rs` (new)
 - `app/tools/ocb-dev/Cargo.toml`, `README.md`, `src/{main,lib,port_rule,runner,serial,soak,tap,timeline}.rs`, `tests/common/mod.rs`, `tests/{timeline,port_rule,melody,interrupt,soak}.rs`, `timelines/ode-to-joy-90bpm.csv` (new)
 - `firmware/tools/gen_test_timeline.py`, `firmware/tests/test_gen_test_timeline.py` (modified)
@@ -255,3 +297,4 @@ Tools: `app/target/release/ocb-dev` (new; `cargo build --release -p ocb-dev` in 
 
 - 2026-11-24: Story created (gds-create-story).
 - 2026-11-24: Story 3.4 implemented (`ocb-dev`, `events_unsent`, sim debug counters, CSV generator, C.13–C.17, F.38 extended); `Unicode-3.0` allowed (owner). Bench part pending.
+- 2026-11-24: Code review: 12 IMPORTANT and 7 MINOR fixed, 5 MINOR recorded (Review Findings); C.13, C.15–C.17 and H.25 rows updated.

@@ -7,15 +7,16 @@
 //! `poll_transmit` is drained after every input. The tool never builds a
 //! frame itself.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ocb_core::link::{AbandonReason, LinkEvent, Phase, Session, SessionConfig, StatusView};
+use ocb_core::link::{LinkEvent, Phase, Session, SessionConfig, StatusView};
 use ocb_core::protocol::consts::HAT_DOWN;
 use ocb_core::protocol::{Info, Mode, NEUTRAL, NakReason, State};
 
 use crate::soak::Soak;
-use crate::tap::Tap;
+use crate::tap::{DebugCounters, Tap};
 use crate::timeline::Timeline;
 
 /// The byte port and the clock (one object, so a fake clock can move with
@@ -34,8 +35,11 @@ pub trait Io {
 pub trait Owner {
     /// Prints one line.
     fn say(&mut self, line: &str);
-    /// Enter was pressed since the last call.
+    /// Enter was pressed since the last call (or the last `discard_input`).
     fn enter_pressed(&mut self) -> bool;
+    /// Forgets every Enter pressed so far (called right before the prompt,
+    /// so only an Enter typed after it starts the piece).
+    fn discard_input(&mut self);
 }
 
 /// What to play.
@@ -54,7 +58,7 @@ pub enum Piece {
     },
 }
 
-/// Time limits (tests shorten nothing: the fake clock makes them free).
+/// Time limits and the first-input shape.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     /// INFO must arrive within this.
@@ -63,15 +67,19 @@ pub struct Limits {
     pub ready_wait_us: u64,
     /// ... and hold this long (plug bounces).
     pub ready_stable_us: u64,
+    /// A STATUS older than this does not count as "ready now".
+    pub status_fresh_us: u64,
+    /// No STATUS for this long once connected: the controller is gone.
+    pub status_silent_us: u64,
     /// The owner presses Enter within this.
     pub enter_wait_us: u64,
-    /// STOP must be ACKed within this.
+    /// STOP (and the first-input SET_STATEs) must be ACKed within this.
     pub stop_wait_us: u64,
     /// After the last event's time, `PLAYBACK_DONE` must come within this.
     pub tail_us: u64,
     /// Feed the session while fewer than this many events are unsent.
     pub backlog: usize,
-    /// First input: presses of D-pad down, held and apart (µs).
+    /// First input: presses of D-pad down.
     pub presses: u32,
     /// Press length.
     pub press_hold_us: u64,
@@ -85,6 +93,8 @@ impl Default for Limits {
             connect_us: 5_000_000,
             ready_wait_us: 120_000_000,
             ready_stable_us: 2_000_000,
+            status_fresh_us: 150_000,
+            status_silent_us: 1_000_000,
             enter_wait_us: 300_000_000,
             stop_wait_us: 2_000_000,
             tail_us: 10_000_000,
@@ -93,6 +103,15 @@ impl Default for Limits {
             press_hold_us: 150_000,
             press_gap_us: 300_000,
         }
+    }
+}
+
+fn secs(us: u64) -> String {
+    let s = us as f64 / 1e6;
+    if s.fract() == 0.0 {
+        format!("{s:.0} s")
+    } else {
+        format!("{s:.2} s")
     }
 }
 
@@ -112,8 +131,10 @@ pub struct Outcome {
     pub code: i32,
     /// `PASS`, `FAIL <reason>` or `INTERRUPTED …`.
     pub verdict: String,
-    /// The most events ever unsent in the session at once.
+    /// The most events ever unsent in the session at once (the prefill).
     pub max_unsent: usize,
+    /// The most events unsent right after a refill once START was sent.
+    pub max_unsent_streaming: usize,
     /// Events handed to the session.
     pub queued: u64,
 }
@@ -130,18 +151,21 @@ struct Runner<'a, I: Io, O: Owner> {
     owner: &'a mut O,
     interrupt: Arc<AtomicBool>,
     lim: Limits,
+    soak_mode: bool,
     s: Session,
     tap: Tap,
     buf: Vec<u8>,
     info: Option<Info>,
     status: Option<StatusView>,
+    status_at: Option<u64>,
     ready_since: Option<u64>,
     playback_done: bool,
     stopped: bool,
     trouble: Option<String>,
-    timeline_build: bool,
     written: u64,
     max_unsent: usize,
+    max_unsent_streaming: usize,
+    started: bool,
     queued: u64,
 }
 
@@ -159,18 +183,21 @@ pub fn run<I: Io, O: Owner>(
         owner,
         interrupt,
         lim,
+        soak_mode: matches!(piece, Piece::Soak { .. }),
         s: Session::new(cfg),
         tap: Tap::new(),
         buf: Vec::with_capacity(512),
         info: None,
         status: None,
+        status_at: None,
         ready_since: None,
         playback_done: false,
         stopped: false,
         trouble: None,
-        timeline_build: false,
         written: 0,
         max_unsent: 0,
+        max_unsent_streaming: 0,
+        started: false,
         queued: 0,
     };
     let res = r.go(piece);
@@ -185,11 +212,14 @@ pub fn run<I: Io, O: Owner>(
             (EXIT_INTERRUPTED, line)
         }
     };
+    let summary = r.summary();
+    r.owner.say(&summary);
     r.owner.say(&verdict);
     Outcome {
         code,
         verdict,
         max_unsent: r.max_unsent,
+        max_unsent_streaming: r.max_unsent_streaming,
         queued: r.queued,
     }
 }
@@ -201,10 +231,21 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
     /// feed them, run the timers, write, read the events.
     fn pump(&mut self, until_us: u64) -> Result<(), String> {
         let now = self.io.now_us();
+        // Wake for the session's timer, the caller's deadline, and the
+        // moment a silent controller counts as gone (`check_alive`).
+        // Once that moment has passed it bounds nothing: the endings
+        // (`finish_stop`, `one_more_status`) still pump to their deadline.
+        let silent_at = match (self.info, self.status_at) {
+            (Some(_), Some(t)) if t + self.lim.status_silent_us + 1 > now => {
+                t + self.lim.status_silent_us + 1
+            }
+            _ => u64::MAX,
+        };
         let wake = self
             .s
             .poll_timeout()
             .map_or(until_us, |t| t.min(until_us))
+            .min(silent_at)
             .max(now);
         self.buf.clear();
         let mut buf = std::mem::take(&mut self.buf);
@@ -239,13 +280,11 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
                     self.ready_since = None;
                 }
                 self.status = Some(st);
+                self.status_at = Some(now);
             }
             LinkEvent::PlaybackDone => self.playback_done = true,
             LinkEvent::Stopped => self.stopped = true,
             LinkEvent::PieceAbandoned { reason } => {
-                if reason == AbandonReason::Nak(NakReason::BadState) {
-                    self.timeline_build = true;
-                }
                 self.trouble
                     .get_or_insert_with(|| format!("piece abandoned: {reason:?}"));
             }
@@ -275,7 +314,8 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
             )),
             LinkEvent::ControllerEvent(code) => self.owner.say(&format!("EVENT {code:?}")),
             LinkEvent::Malformed { ty } => {
-                self.owner.say(&format!("malformed frame of type {ty:#04x} (ignored)"));
+                self.owner
+                    .say(&format!("malformed frame of type {ty:#04x} (ignored)"));
             }
             LinkEvent::UnknownNak { reason, .. } => {
                 self.owner.say(&format!("unknown NAK reason {reason:#04x}"));
@@ -291,6 +331,23 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         }
     }
 
+    /// Once connected, a controller that sends no STATUS for
+    /// `status_silent_us` is gone (unplugged, powered off, hung).
+    fn check_alive(&mut self) -> Step<()> {
+        if self.info.is_none() {
+            return Ok(());
+        }
+        let now = self.io.now_us();
+        let last = self.status_at.unwrap_or(now);
+        if now > last + self.lim.status_silent_us {
+            return Err(Stop::Fail(format!(
+                "no STATUS for {}: the controller stopped answering",
+                secs(now - last)
+            )));
+        }
+        Ok(())
+    }
+
     /// Pumps until `done` or `deadline`; `Ok(false)` at the deadline.
     fn wait(&mut self, deadline: u64, mut done: impl FnMut(&mut Self) -> bool) -> Step<bool> {
         loop {
@@ -301,6 +358,7 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
             if self.io.now_us() >= deadline {
                 return Ok(false);
             }
+            self.check_alive()?;
             self.pump(deadline).map_err(Stop::Fail)?;
         }
     }
@@ -319,11 +377,24 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         }
     }
 
+    /// Waits for one more STATUS (at most 200 ms), so the last STATUS read
+    /// was sent after whatever just happened.
+    fn one_more_status(&mut self) {
+        let seen = self.tap.statuses;
+        let end = self.io.now_us() + 200_000;
+        while self.tap.statuses == seen && self.io.now_us() < end {
+            if self.pump(end).is_err() {
+                break;
+            }
+        }
+    }
+
     // ------------------------------------------------------------ phases
 
     fn go(&mut self, piece: Piece) -> Step<String> {
         self.connect()?;
         self.wait_ready()?;
+        self.check_queue_empty()?;
         match piece {
             Piece::Melody(tl) => {
                 self.first_input()?;
@@ -338,14 +409,25 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
                 period_us,
                 lead_us,
             } => {
+                // The baseline is the controller's state right before the
+                // soak, not the session's first STATUS: a bounce or a CRC
+                // NAK while waiting for the console is not the soak's.
+                let Some(before) = self.tap.last.filter(DebugCounters::has_v2) else {
+                    return Err(Stop::Fail(
+                        "soak needs a debug controller build with the v2 counters (fw-debug): \
+                         STATUS has none"
+                            .to_owned(),
+                    ));
+                };
+                let naks_before = self.tap.naks.clone();
                 let soak = Soak::new(duration_us, period_us);
                 let n = u64::from(soak.len());
                 let last = soak.last_t_us();
                 let start = self.io.now_us();
-                let first = self.tap.first;
                 let written0 = self.written;
                 self.play(soak, n, last, lead_us)?;
-                self.soak_verdict(start, first, written0)
+                self.one_more_status();
+                self.soak_verdict(start, before, &naks_before, written0)
             }
         }
     }
@@ -362,9 +444,11 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
             return Err(Stop::Fail(if ok {
                 "incompatible controller firmware".to_owned()
             } else {
-                "no INFO within 5 s: is the bridge plugged in, the controller powered and wired, \
-                 the port the bridge's?"
-                    .to_owned()
+                format!(
+                    "no INFO within {}: is the bridge plugged in, the controller powered and wired, \
+                     the port the bridge's?",
+                    secs(self.lim.connect_us)
+                )
             }));
         };
         let host = match info.report_period_us {
@@ -384,16 +468,27 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         let start = self.io.now_us();
         let mut prompted = false;
         let stable = self.lim.ready_stable_us;
+        let fresh = self.lim.status_fresh_us;
+        // The controller is powered by its USB host, so it is plugged in
+        // before the tool starts (INFO came from it); only the console
+        // handshake can still be pending.
+        let hint = if self.soak_mode {
+            "WAITING for console_ready: the controller's USB-C on the Mac (the soak's host)"
+        } else {
+            "WAITING for console_ready: console on, Wired Communication ON, the controller in the \
+             console's top USB-C port"
+        };
         let ok = self.wait(start + self.lim.ready_wait_us, |r| {
             let now = r.io.now_us();
             if !prompted && now >= start + 1_000_000 && r.ready_since.is_none() {
                 prompted = true;
-                r.owner.say(
-                    "WAITING: plug the controller into the Switch's top USB-C port (Wired Communication ON); \
-                     the bridge needs its own wire to the controller",
-                );
+                r.owner.say(hint);
             }
+            // Ready for `stable` and still ready now (a STATUS within
+            // `fresh`): a controller that went silent after one good
+            // STATUS does not pass.
             r.ready_since.is_some_and(|t| now >= t + stable)
+                && r.status_at.is_some_and(|t| now <= t + fresh)
         })?;
         self.no_trouble()?;
         if !ok {
@@ -403,11 +498,29 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
                 Some(s) if !s.link_ok => {
                     "link_ok 0: no bridge heartbeat reaches the controller".to_owned()
                 }
-                Some(_) => "console_ready never held 1 for 2 s within 120 s".to_owned(),
+                Some(_) => format!(
+                    "console_ready never held 1 for {} within {}",
+                    secs(stable),
+                    secs(self.lim.ready_wait_us)
+                ),
             }));
         }
         self.owner.say("link_ok 1 and console_ready 1");
         Ok(())
+    }
+
+    /// The `fw-debug-timeline` build loads its table at HELLO (Story 2.5
+    /// D38): its queue is not empty before the tool queued anything.
+    fn check_queue_empty(&mut self) -> Step<()> {
+        let cap = self.info.map_or(0, |i| i.queue_cap);
+        match self.status {
+            Some(st) if st.mode == Mode::Idle && st.free < cap => Err(Stop::Fail(format!(
+                "STATUS free {} < queue_cap {cap} before anything was queued: this controller build \
+                 has the built-in timeline (fw-debug-timeline); flash fw-debug",
+                st.free
+            ))),
+            _ => Ok(()),
+        }
     }
 
     fn first_input(&mut self) -> Step<()> {
@@ -430,10 +543,18 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
                 self.lim.presses
             ));
         }
-        Ok(())
+        // Every SET_STATE acknowledged (a refusal would have been trouble).
+        let end = self.io.now_us() + self.lim.stop_wait_us;
+        if !self.wait(end, |r| r.s.unacked() == 0)? {
+            return Err(Stop::Fail(
+                "the first-input SET_STATEs were not acknowledged".to_owned(),
+            ));
+        }
+        self.no_trouble()
     }
 
     fn wait_enter(&mut self) -> Step<()> {
+        self.owner.discard_input();
         self.owner.say(
             "PROMPT: dismiss the controller connection screen with the Joy-Con, reopen the ocarina, \
              then press Enter here",
@@ -442,20 +563,29 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         let ok = self.wait(deadline, |r| r.trouble.is_some() || r.owner.enter_pressed())?;
         self.no_trouble()?;
         if !ok {
-            return Err(Stop::Fail("no Enter within 300 s".to_owned()));
+            return Err(Stop::Fail(format!(
+                "no Enter within {}",
+                secs(self.lim.enter_wait_us)
+            )));
         }
         Ok(())
     }
 
     fn feed(&mut self, src: &mut impl Iterator<Item = (u32, State)>, upto: usize) -> Step<()> {
+        let mut added = false;
         while self.s.events_unsent() < upto {
             let Some((t, st)) = src.next() else { break };
             self.s
                 .queue_event(t, st)
                 .map_err(|e| Stop::Fail(format!("event at t_us {t} refused locally: {e:?}")))?;
             self.queued += 1;
+            added = true;
         }
-        self.max_unsent = self.max_unsent.max(self.s.events_unsent());
+        let unsent = self.s.events_unsent();
+        self.max_unsent = self.max_unsent.max(unsent);
+        if added && self.started {
+            self.max_unsent_streaming = self.max_unsent_streaming.max(unsent);
+        }
         Ok(())
     }
 
@@ -474,6 +604,7 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         self.s
             .start(lead_us)
             .map_err(|e| Stop::Fail(format!("START refused locally: {e:?}")))?;
+        self.started = true;
         self.owner.say(&format!(
             "START lead {lead_us} us, {n} events, last at {:.3} s",
             last_t_us as f64 / 1e6
@@ -482,25 +613,24 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         let backlog = self.lim.backlog;
         loop {
             self.check_interrupt()?;
-            if self.trouble.is_some() {
-                if self.timeline_build {
-                    return Err(Stop::Fail(
-                        "QUEUE_EVENT refused with NAK BAD_STATE: this controller build has the built-in \
-                         timeline (fw-debug-timeline); flash fw-debug"
-                            .to_owned(),
-                    ));
-                }
-                self.no_trouble()?;
+            if let Some(t) = self.trouble.take() {
+                let hint = if t.contains("Nak(BadState)") {
+                    " (a fw-debug-timeline build refuses every QUEUE_EVENT; flash fw-debug)"
+                } else {
+                    ""
+                };
+                return Err(Stop::Fail(format!("{t}{hint}")));
             }
             if self.playback_done {
                 break;
             }
             if self.io.now_us() >= deadline {
                 return Err(Stop::Fail(format!(
-                    "no PLAYBACK_DONE within the piece plus {} s",
-                    self.lim.tail_us / 1_000_000
+                    "no PLAYBACK_DONE within the piece plus {}",
+                    secs(self.lim.tail_us)
                 )));
             }
+            self.check_alive()?;
             self.feed(&mut src, backlog)?;
             self.pump(deadline).map_err(Stop::Fail)?;
         }
@@ -509,16 +639,13 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         }
         let end = self.io.now_us() + self.lim.stop_wait_us;
         if !self.wait(end, |r| r.stopped)? {
-            return Err(Stop::Fail(
-                "STOP after PLAYBACK_DONE not acknowledged".to_owned(),
-            ));
+            return Err(Stop::Fail(format!(
+                "STOP after PLAYBACK_DONE not acknowledged within {}",
+                secs(self.lim.stop_wait_us)
+            )));
         }
-        let st = self.s.send_stats();
         self.owner.say(&format!(
-            "PLAYBACK_DONE: {n} events queued and played; resends {} rewinds {}; NAKs {}",
-            st.resends,
-            st.rewinds,
-            self.tap.naks_line()
+            "PLAYBACK_DONE: {n} events queued, the END event applied"
         ));
         Ok(())
     }
@@ -526,43 +653,43 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
     fn soak_verdict(
         &mut self,
         start: u64,
-        first_before: Option<crate::tap::DebugCounters>,
+        before: DebugCounters,
+        naks_before: &BTreeMap<u8, u64>,
         written0: u64,
     ) -> Step<String> {
-        let first = first_before.or(self.tap.first);
-        let (Some(first), Some(last)) = (first, self.tap.last) else {
+        let Some(after) = self.tap.last.filter(DebugCounters::has_v2) else {
             return Err(Stop::Fail(
-                "soak needs a debug controller build (fw-debug): STATUS has no debug counters"
-                    .to_owned(),
+                "the debug counters disappeared during the soak".to_owned(),
             ));
         };
-        if !first.has_v2() || !last.has_v2() {
-            return Err(Stop::Fail(
-                "soak needs the v2 debug counters (fw-debug from Story 2.6 on)".to_owned(),
-            ));
-        }
-        let secs = (self.io.now_us().saturating_sub(start)) as f64 / 1e6;
+        let duration = (self.io.now_us().saturating_sub(start)) as f64 / 1e6;
         let bytes = self.written - written0;
-        let load = if secs > 0.0 {
-            100.0 * bytes as f64 / secs / 46_080.0
+        let load = if duration > 0.0 {
+            100.0 * bytes as f64 / duration / 46_080.0
         } else {
             0.0
         };
+        let transport: u64 = self
+            .tap
+            .naks
+            .iter()
+            .filter(|(r, _)| NakReason::from_u8(**r).is_transport())
+            .map(|(r, n)| n - naks_before.get(r).copied().unwrap_or(0))
+            .sum();
         self.owner.say(&format!(
-            "SOAK: {:.1} s, {} events, {bytes} bytes written ({load:.1} % of 460800 baud), transport NAKs {}",
-            secs,
-            self.queued,
-            self.tap.transport_naks()
+            "SOAK: {duration:.1} s, {} events, {bytes} bytes written ({load:.1} % of 460800 baud), \
+             transport NAKs {transport}",
+            self.queued
         ));
-        self.owner.say(&format!("debug first: {}", first.line()));
-        self.owner.say(&format!("debug last:  {}", last.line()));
-        let moved = first.moved(&last);
+        self.owner.say(&format!("debug before: {}", before.line()));
+        self.owner.say(&format!("debug after:  {}", after.line()));
+        let moved = before.moved(&after);
         if !moved.is_empty() {
             return Err(Stop::Fail(format!("counters moved: {}", moved.join(", "))));
         }
-        if self.tap.transport_naks() != 0 {
+        if transport != 0 {
             return Err(Stop::Fail(format!(
-                "transport NAKs during the soak: {}",
+                "{transport} transport NAKs during the soak ({})",
                 self.tap.naks_line()
             )));
         }
@@ -571,58 +698,93 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
 
     // ------------------------------------------------------------ endings
 
-    /// After a failure: STOP if a session is open, so nothing stays held.
+    /// One line at the end of every run (Task 6.6).
+    fn summary(&self) -> String {
+        let st = self.s.send_stats();
+        let debug = match (self.tap.first, self.tap.last) {
+            (Some(a), Some(b)) => format!(
+                "; debug first: dropped_bytes={} watchdog_trips={} tx_dropped={}, last: dropped_bytes={} \
+                 watchdog_trips={} tx_dropped={}",
+                a.dropped_bytes,
+                a.watchdog_trips,
+                a.tx_dropped,
+                b.dropped_bytes,
+                b.watchdog_trips,
+                b.tx_dropped
+            ),
+            _ => String::new(),
+        };
+        format!(
+            "SUMMARY: {} events queued, PLAYBACK_DONE {}, frames sent {}, resends {}, rewinds {}, NAKs {}{debug}",
+            self.queued,
+            if self.playback_done { "yes" } else { "no" },
+            st.sent,
+            st.resends,
+            st.rewinds,
+            self.tap.naks_line()
+        )
+    }
+
+    /// Waits for the ACK of a STOP in flight (`Phase::Stopping`).
+    fn finish_stop(&mut self) -> bool {
+        let end = self.io.now_us() + self.lim.stop_wait_us;
+        while self.io.now_us() < end {
+            if self.stopped || self.s.phase() != Phase::Stopping {
+                return self.stopped || self.s.phase() == Phase::Connected;
+            }
+            if self.pump(end).is_err() {
+                return false;
+            }
+        }
+        self.stopped
+    }
+
+    /// After a failure: make sure a STOP reached the controller, so nothing
+    /// stays held (a STOP the session already started is waited for too).
     fn stop_quietly(&mut self) {
-        if self.s.phase() == Phase::Connected && self.s.stop().is_ok() {
-            let end = self.io.now_us() + self.lim.stop_wait_us;
-            self.stopped = false;
-            while !self.stopped && self.io.now_us() < end {
-                if self.pump(end).is_err() {
-                    break;
+        self.stopped = false;
+        match self.s.phase() {
+            Phase::Connected => {
+                if self.s.stop().is_ok() {
+                    let _ = self.finish_stop();
                 }
             }
+            Phase::Stopping => {
+                let _ = self.finish_stop();
+            }
+            Phase::Closed | Phase::Opening | Phase::Incompatible => {}
         }
     }
 
     /// Ctrl+C: STOP, wait for its ACK, report the mode.
     fn on_interrupt(&mut self) -> String {
-        if !matches!(self.s.phase(), Phase::Connected | Phase::Stopping) {
-            return "INTERRUPTED before the session opened".to_owned();
-        }
-        if self.s.phase() == Phase::Connected {
-            let _ = self.s.stop();
+        let phase = self.s.phase();
+        if !matches!(phase, Phase::Connected | Phase::Stopping) {
+            return format!("INTERRUPTED: the session was not open ({phase:?}), nothing to stop");
         }
         self.stopped = false;
-        let end = self.io.now_us() + self.lim.stop_wait_us;
-        let mut acked = false;
-        while self.io.now_us() < end {
-            if self.pump(end).is_err() {
-                break;
-            }
-            if self.stopped {
-                acked = true;
-                // One more STATUS shows the mode after the STOP.
-                let seen = self.tap.statuses;
-                let end2 = (self.io.now_us() + 200_000).min(end.max(self.io.now_us() + 200_000));
-                while self.tap.statuses == seen && self.io.now_us() < end2 {
-                    if self.pump(end2).is_err() {
-                        break;
-                    }
-                }
-                break;
-            }
+        if phase == Phase::Connected {
+            let _ = self.s.stop();
         }
+        if !self.finish_stop() {
+            let mode = self
+                .status
+                .map_or_else(|| "unknown".to_owned(), |s| format!("{:?}", s.mode));
+            return format!(
+                "INTERRUPTED: STOP not acknowledged within {} (last mode {mode}); \
+                 unplug the bridge to make the controller go neutral",
+                secs(self.lim.stop_wait_us)
+            );
+        }
+        // One more STATUS shows the mode after the STOP.
+        self.one_more_status();
         let mode = self
             .status
             .map_or_else(|| "unknown".to_owned(), |s| format!("{:?}", s.mode));
-        if acked {
-            let idle = self.status.is_some_and(|s| s.mode == Mode::Idle);
-            format!(
-                "INTERRUPTED: STOP ACKed, controller mode {mode}{}",
-                if idle { " (neutral)" } else { "" }
-            )
-        } else {
-            format!("INTERRUPTED: STOP not acknowledged within 2 s (last mode {mode})")
-        }
+        let idle = self.status.is_some_and(|s| s.mode == Mode::Idle);
+        format!(
+            "INTERRUPTED: STOP ACKed, controller mode {mode}{}",
+            if idle { " (neutral)" } else { "" }
+        )
     }
 }

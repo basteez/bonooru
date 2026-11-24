@@ -44,6 +44,10 @@ impl Owner for TerminalOwner {
         println!("{line}");
     }
 
+    fn discard_input(&mut self) {
+        while self.enter.try_recv().is_ok() {}
+    }
+
     fn enter_pressed(&mut self) -> bool {
         let mut any = false;
         loop {
@@ -98,8 +102,9 @@ fn main() -> ExitCode {
     let interrupt = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&interrupt);
     if let Err(e) = ctrlc::set_handler(move || {
-        // A second Ctrl+C leaves at once; closing the port drops DTR, which
-        // aborts DIRECT on the controller anyway (AD-5).
+        // A second Ctrl+C leaves at once, without STOP: closing the port
+        // drops DTR, which aborts DIRECT (AD-5) but not PLAYING, so a
+        // piece already on the controller plays on (unplug the bridge).
         if flag.swap(true, Ordering::SeqCst) {
             std::process::exit(EXIT_INTERRUPTED);
         }

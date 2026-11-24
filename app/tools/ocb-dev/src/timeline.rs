@@ -58,7 +58,7 @@ pub fn neutral_end() -> State {
 }
 
 fn hex_state(text: &str) -> Option<State> {
-    if text.len() != 16 || !text.is_ascii() {
+    if text.len() != 16 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let mut b = [0u8; 8];
@@ -77,8 +77,8 @@ pub fn parse(text: &str) -> Result<Timeline, String> {
     let mut end_line = None;
     for (idx, raw) in text.lines().enumerate() {
         let n = idx + 1;
-        let line = raw.trim();
-        if line.is_empty() {
+        let line = raw.trim_end_matches('\r');
+        if line.trim().is_empty() {
             continue;
         }
         if let Some(comment) = line.strip_prefix('#') {
@@ -110,10 +110,14 @@ pub fn parse(text: &str) -> Result<Timeline, String> {
         let (t_text, s_text) = line
             .split_once(',')
             .ok_or_else(|| format!("line {n}: expected t_us,state"))?;
+        if t_text.is_empty() || !t_text.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!(
+                "line {n}: bad t_us {t_text:?} (decimal digits only)"
+            ));
+        }
         let t_us: u32 = t_text
-            .trim()
             .parse()
-            .map_err(|_| format!("line {n}: bad t_us {:?}", t_text.trim()))?;
+            .map_err(|_| format!("line {n}: bad t_us {t_text:?}"))?;
         if t_us >= T_US_LIMIT {
             return Err(format!("line {n}: t_us {t_us} is not below 2^31"));
         }
@@ -124,12 +128,11 @@ pub fn parse(text: &str) -> Result<Timeline, String> {
                 "line {n}: t_us {t_us} is not after the previous {prev}"
             ));
         }
-        let state = hex_state(s_text.trim())
-            .ok_or_else(|| format!("line {n}: state must be 16 hex digits"))?;
+        let state =
+            hex_state(s_text).ok_or_else(|| format!("line {n}: state must be 16 hex digits"))?;
         if !allowed(&state) {
             return Err(format!(
-                "line {n}: state {} is outside the AD-9 allow-list",
-                s_text.trim()
+                "line {n}: state {s_text} is outside the AD-9 allow-list"
             ));
         }
         if state.has_end() {

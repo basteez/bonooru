@@ -23,6 +23,10 @@ fn the_committed_melody_parses() {
         tl.events.iter().any(|e| e.1.hat == HAT_UP),
         "D-pad up is used"
     );
+    // The high byte of `buttons` (little-endian on the wire): R is 0x0020.
+    let r = tl.events.iter().find(|e| e.0 == 5_833_333).unwrap();
+    assert_eq!(r.1.buttons, 0x0020, "R at 5.833 s");
+    assert_eq!(r.1.ly, 0x00, "with the left stick up");
 }
 
 const HEAD: &str = "# start_lead_us: 500000\nt_us,state\n";
@@ -52,6 +56,22 @@ fn refusals_name_the_line() {
     refused(
         &format!("{HEAD}x,0000088080808000\n{END}"),
         "line 3: bad t_us",
+    );
+    refused(
+        &format!("{HEAD}+5,0000088080808000\n{END}"),
+        "line 3: bad t_us",
+    );
+    refused(
+        &format!("{HEAD} 5,0000088080808000\n{END}"),
+        "line 3: bad t_us",
+    );
+    refused(
+        &format!("{HEAD}5,+000088080808000\n{END}"),
+        "line 3: state must be 16 hex digits",
+    );
+    refused(
+        &format!("{HEAD}5, 000088080808000\n{END}"),
+        "line 3: state must be 16 hex digits",
     );
     refused(
         &format!("{HEAD}0,00000880808080\n{END}"),

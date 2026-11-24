@@ -59,7 +59,7 @@ STICK_CENTRE = 0x80
 END_FLAG = 0x01
 
 _ROW_RE = re.compile(r"^(\d+)f$")
-_LEAD_RE = re.compile(r"\bstart_lead_ms (\d+)\b")
+_LEAD_RE = re.compile(r"\bstart_lead_ms (\d+)(?!\d|\.\d)")
 _NOTE_RE = re.compile(r"NOTE\s+(\d+)\s+([A-G]#?\d)\b")
 
 
@@ -190,8 +190,10 @@ def render_expected(notes, n_events, end_us, src_rel):
 
 
 def start_lead_us(text):
-    """The source header's `start_lead_ms N` (the Story 1.5 profile value) in us."""
-    m = _LEAD_RE.search(text)
+    """The source header's `start_lead_ms N` (the Story 1.5 profile value) in us:
+    comment lines only (a row label never counts), an integer only."""
+    header = "\n".join(ln for ln in text.splitlines() if ln.startswith("#"))
+    m = _LEAD_RE.search(header)
     if m is None:
         raise GenError("the source header has no 'start_lead_ms N' (the profile's start lead)")
     return int(m.group(1)) * 1000
