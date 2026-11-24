@@ -2,7 +2,7 @@
 # `ocb-core`: no egui/eframe, no threads, no I/O (checked by tests/purity.rs).
 [workspace]
 resolver = "3"
-members = ["core"]
+members = ["core", "sim"]
 
 [workspace.package]
 version = "0.0.0" # placeholder: the app version comes from git describe (core/build.rs, AD-14)

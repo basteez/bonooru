@@ -359,6 +359,18 @@ The firmware now has the shape of AD-11; the rules below are what the controller
 - **The reset** restarts the whole chip but the oscillators, the USB controller included: the controller disappears from the USB bus and enumerates again, nothing pressed. The link starts again with the session closed (`NAK VERSION` mid-session = reboot, send `HELLO`, as before). The debug STATUS v4 reports `boot_cause`, `reboot_count` and the board's own stall-to-reset interval after it (kept in a third watchdog scratch register across the reset). A host sees the device disappear only after its own USB removal latency (about 110 ms inferred from the first Story 2.5 H.2a runs, calibrated by `p2_probe.py stall --runs N`), so the AC number is the board's.
 - **What the app must do:** nothing new. A controller that rebooted is seen as before (no STATUS for a moment, then `NAK VERSION`, then a fresh session with `abort_count` 0).
 
+### Rules the app link applies (Story 3.3)
+
+The app's sans-IO session (`app/core/src/link/`, crate `ocb-core`) follows the "What the app must do" paragraphs above. Where the ADs are silent it does the following. **No wire value changed**: no message, NAK reason, EVENT code, constant or `PROTO_VERSION` change, and the conformance vectors are unchanged.
+
+- **Open.** One lone `0x00`, then HELLO with one fixed seq (every resend of one open uses the same seq, because INFO carries no seq), every 100 ms until INFO. A matching INFO opens the session (`expected` on the controller is then HELLO seq + 1); another `proto_ver` stops the HELLOs and reports a required update.
+- **Versions.** `fw_ver` or `bridge_ver` different from the app version is a recommended update; `bridge_ver` `0.0.0` means "no heartbeat seen" and is never reported.
+- **Credits.** No QUEUE_EVENT before the first STATUS of a session (or after a STOP): credits need `STATUS.free`. Other frames do not wait for credit but count in the window of 64.
+- **NAKs.** The `expected` of any NAK also acknowledges every frame before it. A transport NAK rewinds only when its `expected` is ahead of the last rewind point; the 50 ms resend clears that point. A semantic NAK on QUEUE_EVENT or START abandons the piece and sends STOP; on SET_STATE or PING it is reported and nothing is stopped. An unknown reason (any value the app does not know, also inside `0x01–0x0F`) never rewinds and never stops; only its cumulative part is used.
+- **STOP.** STOP discards every unacknowledged and unsent frame, takes the next seq, is resent every 50 ms and nothing else is sent until its ACK. The session also sends STOP after `PLAYBACK_DONE` (to clear the latch END sets), after `LINK_LOST` (preceded by a lone `0x00`), after `LATE`, `UNDERRUN`, `USB_SUSPENDED`, and when STATUS shows `abort_count` rising without an EVENT.
+- **Local refusals.** The app does not send what the controller would refuse: `t_us` not increasing or `≥ 2^31`, `hat > 8`, reserved flag bits, END on a pose that is not neutral, anything after END, START on an empty queue or twice, SET_STATE with a flag or while a piece is started, START or SET_STATE while the last STATUS says `link_ok` 0 (or before the first STATUS).
+- **PING.** Only while DIRECT input is active: after `app_timeout_ms / 4` without any app frame sent (resends count).
+
 ## Controller → app reporting (AD-19)
 
 - **STATUS body:** `free u16, now_us u32` (µs since t0; 0 when IDLE or during the lead), `last_seq` (= `expected−1`), `mode`, `abort_count`, `last_event`, `flags u8`. Debug builds add counters: max gap between app frames (W.1), watchdog trips, dropped bytes.
