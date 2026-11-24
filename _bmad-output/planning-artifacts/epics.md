@@ -139,7 +139,7 @@ CI, release and test infrastructure
 - No code signing (Q3); README documents first-run unblock per OS (macOS Open Anyway; Windows SmartScreen More info › Run anyway).
 - App test layers: score parsers, pipeline property tests (sorted, onsets never shifted, min press/gap respected, END last), range-fit, fingering DP, profile validation/migration; golden tests (reference piece → timeline snapshot; text and `.mid` of the same melody → identical note list); sans-IO link tests against an in-test fake controller (HELLO/INFO, version mismatch, go-back-N under injected loss/corruption, credits, PING cadence).
 - Firmware host tests F.1–F.10 (go-back-N, NAK matrix, mode table + abort latch, END/underrun/LATE, HELLO/STOP in PLAYING, allow-list, heartbeat gap ≤ 27 ms under 512-frame burst, bridge framer, shared vectors, `console_ready` with a fake profile).
-- Hardware-in-the-loop: H.1 (no back-powering), H.2 (core stall → watchdog reboot, nothing pressed), H.3 (`console_ready` on Switch 2 with sleep/wake and Wired Communication off/on, back to 0 within 150 ms), W.1 (30-min DIRECT soak sets `app_timeout_ms`), W.2 (30-min playback under load, 0 false trips), T.1–T.5 (timing phase), A.1–A.5 (acceptance).
+- Hardware-in-the-loop: H.1 (no back-powering), H.2 (core stall → watchdog reboot, nothing pressed), H.3 (`console_ready` on Switch 2 with sleep/wake and Wired Communication off/on, back to 0 within 150 ms on OFF; sleep cuts USB power, so the controller reboots), W.1 (30-min DIRECT soak sets `app_timeout_ms`), W.2 (30-min playback under load, 0 false trips), T.1–T.5 (timing phase), A.1–A.5 (acceptance).
 - Every HIL run records the test environment (Switch 2 system version, game version, port, cable, firmware version, host OS).
 
 Hardware-risk spikes and roadmap gates (from roadmap / test plan / risk register)
@@ -749,11 +749,15 @@ So that I hear the full chain (PC → bridge → controller → Switch) play a m
 **Then** it opens the port (DTR asserted), runs the session, prefills, sends `START` with the profile's start lead, streams on credit and the melody plays with every note at the right pitch
 **And** on macOS it opens only `/dev/cu.*` ports
 
+**Given** the console shows a wired controller only after its first input (Story 2.3 H.15)
+**When** `ocb-dev` has opened the session and before it sends `START`
+**Then** it sends D-pad down three times in DIRECT (never A), prompts the owner to dismiss OoT's controller connection screen with the Joy-Con and reopen the ocarina, keeps the link alive with `PING` while waiting, and starts only after the owner presses Enter (Story 2.5 D37)
+
 **Given** Ctrl+C during playback
 **When** the tool exits
 **Then** it sends STOP and the console is neutral
 
-**Given** the tool in a soak mode (same binary, a long generated timeline) at 460800 baud for 10 minutes
+**Given** the tool in a soak mode (same binary, a long generated timeline) at 460800 baud for 10 minutes, on a controller build without the built-in timeline (that build loads its table at every HELLO and answers every `QUEUE_EVENT` with `NAK BAD_STATE`, Story 2.5 D38)
 **When** the run ends
 **Then** the controller's debug counters show no dropped bytes and no CRC NAKs; the result is recorded (M4 exit; if bytes are lost, the 921600 option is evaluated as a build-constant change)
 
@@ -775,7 +779,7 @@ So that I can trust the boards with my console and settle the open timing questi
 
 **Given** H.3 on the Switch 2 with P2
 **When** the owner plugs in with Wired Communication ON, puts the console to sleep and wakes it, then switches Wired Communication OFF and ON
-**Then** `console_ready` is 0 until the handshake and 1 after; back to 0 within 150 ms on sleep and on OFF; 1 again after wake / ON; `START` gets `NAK NOT_READY` whenever it is 0
+**Then** `console_ready` is 0 until the handshake and 1 after; back to 0 within 150 ms on OFF; on sleep the console cuts USB power (Story 2.3 H.16), so the controller powers off, STATUS stops and, after wake, the session reports "controller rebooted" and `console_ready` is 1 again after the new handshake; 1 again after ON; `START` gets `NAK NOT_READY` whenever it is 0
 **And** results are recorded in `docs/test-plan.md`
 
 **Given** the H.3 data
