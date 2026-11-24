@@ -6,7 +6,8 @@ Cross-platform desktop app in **Rust + egui/eframe** (ADR-008, accepted 2026-11-
 
 A Cargo workspace (Story 3.2), Rust pinned to 1.100.0 by `rust-toolchain.toml`:
 
-- `core/`: crate `ocb-core`, the GUI-free core (AD-18): no egui/eframe, no threads, no I/O, no runtime dependencies. Today it holds `protocol` (COBS, CRC-16/CCITT-FALSE, frames, the receive splitter, the canonical state and every message) and `version` (the app version from `git describe`, fallback `0.0.0-dev`). The sans-IO link session follows in Story 3.3.
+- `core/`: crate `ocb-core`, the GUI-free core (AD-18): no egui/eframe, no threads, no I/O, no runtime dependencies. Today it holds `protocol` (COBS, CRC-16/CCITT-FALSE, frames, the receive splitter, the canonical state and every message) and `version` (the app version from `git describe`, fallback `0.0.0-dev`). `link` is the sans-IO session (Story 3.3): HELLO and INFO, go-back-N with credits, STOP, PING and typed events; bytes and a µs clock in, bytes and events out.
+- `sim/`: crate `ocb-sim`, dev-only and never shipped: a fake controller that follows `docs/link-protocol.md`, an impaired channel (drop, bit flip, junk, duplicate, reorder) and a driver on a fake clock. The session tests C.6 to C.11 live in `sim/tests/`; Story 3.4 uses it for the dry run of `ocb-dev`.
 - `profiles/`: the bundled default mapping profiles (TOML, one per game version, AD-17); the first, `oot-switch2-1.1.1.toml`, comes from Story 1.5. Not a crate.
 
 ## Checks
@@ -15,7 +16,7 @@ Run from `app/` (the same gates as the `app` CI workflow on ubuntu, windows and 
 
 ```sh
 cargo fmt --all --check
-cargo test                                   # C.1 to C.5 in docs/test-plan.md
+cargo test                                   # C.1 to C.11 in docs/test-plan.md
 cargo clippy --all-targets -- -D warnings
 cargo deny check licenses                    # NFR-07 allow-list, deny.toml
 ```
