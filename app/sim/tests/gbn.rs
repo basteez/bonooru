@@ -104,25 +104,24 @@ fn matrix() -> Vec<Impair> {
             drop: p,
             ..Impair::default()
         });
+        v.push(Impair {
+            flip: p,
+            ..Impair::default()
+        });
+        v.push(Impair {
+            dup: p,
+            ..Impair::default()
+        });
+        v.push(Impair {
+            reorder: p,
+            ..Impair::default()
+        });
+        v.push(Impair {
+            junk: p,
+            ..Impair::default()
+        });
+        v.push(Impair::all(p));
     }
-    v.push(Impair {
-        flip: 0.05,
-        ..Impair::default()
-    });
-    v.push(Impair {
-        dup: 0.05,
-        ..Impair::default()
-    });
-    v.push(Impair {
-        reorder: 0.05,
-        ..Impair::default()
-    });
-    v.push(Impair {
-        junk: 0.05,
-        ..Impair::default()
-    });
-    v.push(Impair::all(0.05));
-    v.push(Impair::all(0.10));
     v
 }
 

@@ -51,8 +51,12 @@ pub enum AbandonReason {
     /// The controller latched an abort (`abort_count` + 1) for another
     /// reason: underrun, LATE, USB, app timeout, DTR edge, core stall.
     ControllerAborted,
-    /// The controller rebooted (mid-session `NAK VERSION`).
+    /// The controller rebooted (mid-session `NAK VERSION`, or a STATUS
+    /// from a freshly booted controller).
     ControllerRebooted,
+    /// START was handled but the controller is not playing and did not
+    /// abort: its refusal (a semantic NAK) was lost on the wire.
+    NotPlaying,
 }
 
 /// Something the app should know.

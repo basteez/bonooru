@@ -3,30 +3,40 @@
 //! after `ACK_TIMEOUT_MS`, a rewind only on a transport NAK whose `expected`
 //! is ahead of the last rewind point, and credits from STATUS.
 //!
-//! Frames are numbered with an absolute counter (`abs`, u64) so wrap-around
-//! never confuses the window: `abs` 0 is the sync point itself (its seq is
-//! `sync_seq`), the first frame after it is `abs` 1 with seq `sync_seq + 1`.
+//! A frame gets its seq when it is **first sent**, not when it is pushed
+//! (review fix of Story 3.3): QUEUE_EVENTs wait for credit in their own
+//! queue, and control frames (START, SET_STATE, PING) never wait behind them.
+//! So the seqs in use are always exactly the sent, unacknowledged frames, and
+//! the next free seq (the one a STOP takes) is never one of them.
+//!
+//! Frames are numbered with an absolute counter (`abs`, u64): `abs` 0 is the
+//! sync point itself (its seq is `sync_seq`), the first frame sent after it
+//! is `abs` 1 with seq `sync_seq + 1`.
 
 use std::collections::VecDeque;
 
-use crate::protocol::consts::{ACK_TIMEOUT_MS, ACK_WINDOW, MSG_QUEUE_EVENT};
+use crate::protocol::consts::{ACK_TIMEOUT_MS, ACK_WINDOW, MSG_QUEUE_EVENT, MSG_START};
 
 /// The ACK timeout in µs.
 pub const ACK_TIMEOUT_US: u64 = ACK_TIMEOUT_MS as u64 * 1000;
 /// The go-back-N window (frames).
-pub const WINDOW: u64 = ACK_WINDOW as u64;
+pub const WINDOW: usize = ACK_WINDOW as usize;
 
-/// How many acknowledged frames are remembered for credit accounting: a
-/// STATUS can lag behind the ACKs by at most the window.
-const HISTORY: usize = 256;
+/// How many acknowledged frames are remembered for credit accounting and
+/// stale-seq matching. A STATUS lags the ACKs by at most the window; keeping
+/// no more than that keeps forward (≤ 64) plus backward (≤ 64) matches well
+/// inside the 256 seq values, so a seq never matches twice.
+const HISTORY: usize = WINDOW;
 
-/// One app frame waiting for its ACK (or not yet sent).
+/// One app frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pending {
     /// Message type.
     pub ty: u8,
     /// Body bytes.
     pub body: Vec<u8>,
+    /// START only: the number of QUEUE_EVENTs pushed before it.
+    after_qe: u64,
 }
 
 impl Pending {
@@ -50,14 +60,18 @@ pub struct SendStats {
 #[derive(Debug, Clone)]
 pub struct SendBuffer {
     sync_seq: u8,
-    /// `abs` of `frames[0]` (the oldest unacknowledged frame).
+    /// `abs` of `sent[0]` (the oldest unacknowledged frame).
     base: u64,
-    /// Frames from `base` on: the first `high` were sent at least once.
-    frames: VecDeque<Pending>,
-    /// Index into `frames` of the next frame to hand out.
+    /// Sent and not acknowledged, oldest first; `sent[i]` is `abs base + i`.
+    sent: VecDeque<Pending>,
+    /// Index into `sent` of the next frame to resend (`sent.len()`: none).
     next: usize,
-    /// How many of `frames` were sent at least once.
-    high: usize,
+    /// Control frames not sent yet (START, SET_STATE, PING), in order.
+    ctl: VecDeque<Pending>,
+    /// QUEUE_EVENTs not sent yet, in order.
+    qe: VecDeque<Pending>,
+    qe_pushed: u64,
+    qe_first_sent: u64,
     /// When the frame at `base` was last sent (or `base` last moved).
     base_timer: u64,
     /// The last rewind point (`abs`), cleared by a timeout resend.
@@ -65,8 +79,7 @@ pub struct SendBuffer {
     /// `is_queue_event` of acknowledged frames, newest last; `history[i]`
     /// is `abs = base - history.len() + i`.
     history: VecDeque<bool>,
-    /// The last STATUS that mapped into the window: (`free`, `abs` of
-    /// `last_seq`).
+    /// The last STATUS that mapped: (`free`, `abs` of `last_seq`).
     credit_base: Option<(u16, u64)>,
     stats: SendStats,
 }
@@ -78,9 +91,12 @@ impl SendBuffer {
         Self {
             sync_seq,
             base: 1,
-            frames: VecDeque::new(),
+            sent: VecDeque::new(),
             next: 0,
-            high: 0,
+            ctl: VecDeque::new(),
+            qe: VecDeque::new(),
+            qe_pushed: 0,
+            qe_first_sent: 0,
             base_timer: 0,
             rewind_at: None,
             history: VecDeque::new(),
@@ -94,19 +110,20 @@ impl SendBuffer {
         self.sync_seq.wrapping_add((abs % 256) as u8)
     }
 
-    /// The seq the next pushed frame will get.
+    /// The seq the next new frame will get (one past the sent frames): the
+    /// seq a STOP takes, never one in flight.
     #[must_use]
     pub fn next_free_seq(&self) -> u8 {
-        self.seq_of(self.base + self.frames.len() as u64)
+        self.seq_of(self.base + self.sent.len() as u64)
     }
 
-    /// The `abs` of the acknowledged-or-sent frame with this seq, searching
-    /// from `base − 1` forward over the sent frames, then backward over the
-    /// remembered history (the sync point is `abs` 0).
+    /// The `abs` of the frame with this seq among the sent ones (forward
+    /// from `base − 1`) or the remembered acknowledged ones (backward; the
+    /// sync point is `abs` 0).
     fn abs_of(&self, seq: u8) -> Option<u64> {
         let before_base = self.base - 1;
         let fwd = u64::from(seq.wrapping_sub(self.seq_of(before_base)));
-        if fwd <= self.high as u64 {
+        if fwd <= self.sent.len() as u64 {
             return Some(before_base + fwd);
         }
         let back = u64::from(self.seq_of(before_base).wrapping_sub(seq));
@@ -114,35 +131,64 @@ impl SendBuffer {
         (back <= known_back).then(|| before_base - back)
     }
 
-    /// Appends a frame; it goes out when the window allows.
-    pub fn push(&mut self, ty: u8, body: Vec<u8>) -> u8 {
-        let seq = self.next_free_seq();
-        self.frames.push_back(Pending { ty, body });
-        seq
+    /// The `abs` a seq maps to (sent, acknowledged and remembered, or the
+    /// sync point), if any.
+    #[must_use]
+    pub fn position_of(&self, seq: u8) -> Option<u64> {
+        self.abs_of(seq)
+    }
+
+    /// The `abs` the next new frame will get.
+    #[must_use]
+    pub fn next_abs(&self) -> u64 {
+        self.base + self.sent.len() as u64
+    }
+
+    /// Queues a frame. QUEUE_EVENTs wait for credit in their own queue;
+    /// other frames go out first (a START only once the QUEUE_EVENTs pushed
+    /// before it are sent, or no credit is left for the next one).
+    pub fn push(&mut self, ty: u8, body: Vec<u8>) {
+        if ty == MSG_QUEUE_EVENT {
+            self.qe_pushed += 1;
+            self.qe.push_back(Pending {
+                ty,
+                body,
+                after_qe: 0,
+            });
+        } else {
+            let after_qe = if ty == MSG_START { self.qe_pushed } else { 0 };
+            self.ctl.push_back(Pending { ty, body, after_qe });
+        }
     }
 
     /// Frames sent and not acknowledged.
     #[must_use]
     pub fn unacked(&self) -> usize {
-        self.high
+        self.sent.len()
     }
 
     /// Frames pushed and not acknowledged (sent or not).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.frames.len()
-    }
-
-    /// A pushed frame was never sent yet (or a resend is pending).
-    #[must_use]
-    pub fn has_unsent(&self) -> bool {
-        self.next < self.frames.len()
+        self.sent.len() + self.ctl.len() + self.qe.len()
     }
 
     /// Nothing pushed and unacknowledged.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.frames.is_empty()
+        self.len() == 0
+    }
+
+    /// A control frame is waiting to be sent.
+    #[must_use]
+    pub fn has_unsent_control(&self) -> bool {
+        !self.ctl.is_empty()
+    }
+
+    /// The window has room for a new frame.
+    #[must_use]
+    pub fn window_open(&self) -> bool {
+        self.sent.len() < WINDOW
     }
 
     /// The counters.
@@ -151,12 +197,12 @@ impl SendBuffer {
         self.stats
     }
 
-    /// The pending frame with this seq among the sent ones, if any.
+    /// The sent frame with this seq, if any.
     #[must_use]
     pub fn sent_frame(&self, seq: u8) -> Option<&Pending> {
         let abs = self.abs_of(seq)?;
         let i = usize::try_from(abs.checked_sub(self.base)?).ok()?;
-        (i < self.high).then(|| self.frames.get(i)).flatten()
+        self.sent.get(i)
     }
 
     /// Cumulative acknowledgement of every frame up to `seq`. Returns how
@@ -171,9 +217,9 @@ impl SendBuffer {
         }
         let n = usize::try_from(abs - self.base + 1)
             .unwrap_or(0)
-            .min(self.high);
+            .min(self.sent.len());
         for _ in 0..n {
-            if let Some(f) = self.frames.pop_front() {
+            if let Some(f) = self.sent.pop_front() {
                 self.history.push_back(f.is_queue_event());
                 if self.history.len() > HISTORY {
                     self.history.pop_front();
@@ -182,7 +228,6 @@ impl SendBuffer {
         }
         if n > 0 {
             self.base += n as u64;
-            self.high -= n;
             self.next = self.next.saturating_sub(n);
             self.base_timer = now_us;
         }
@@ -197,9 +242,7 @@ impl SendBuffer {
         let Some(abs) = self.abs_of(expected) else {
             return false;
         };
-        // After the ack above, `expected` can only be `base` if it is a
-        // sent frame (or one past the sent ones: nothing to rewind).
-        if abs != self.base || self.high == 0 {
+        if abs != self.base || self.sent.is_empty() {
             return false;
         }
         if self.rewind_at.is_some_and(|r| abs <= r) {
@@ -213,56 +256,59 @@ impl SendBuffer {
     }
 
     /// The resend timer: after `ACK_TIMEOUT_US` without progress, go back to
-    /// the oldest unacknowledged frame and clear the rewind point.
-    pub fn check_timeout(&mut self, now_us: u64) {
-        if self.high > 0 && now_us.saturating_sub(self.base_timer) >= ACK_TIMEOUT_US {
+    /// the oldest unacknowledged frame and clear the rewind point. Returns
+    /// true if it went back.
+    pub fn check_timeout(&mut self, now_us: u64) -> bool {
+        if !self.sent.is_empty() && now_us >= self.base_timer.saturating_add(ACK_TIMEOUT_US) {
             self.next = 0;
             self.rewind_at = None;
             self.base_timer = now_us;
             self.stats.resends += 1;
+            return true;
         }
+        false
     }
 
     /// When `check_timeout` will next act, if anything is unacknowledged.
     #[must_use]
     pub fn timeout_at(&self) -> Option<u64> {
-        (self.high > 0).then_some(self.base_timer + ACK_TIMEOUT_US)
+        (!self.sent.is_empty()).then(|| self.base_timer.saturating_add(ACK_TIMEOUT_US))
     }
 
     /// A STATUS: `last_seq` acknowledges like an ACK, and (`free`,
-    /// `last_seq`) becomes the credit base if `last_seq` maps into the known
-    /// frames.
-    pub fn status(&mut self, free: u16, last_seq: u8, now_us: u64) {
+    /// `last_seq`) becomes the credit base if `last_seq` maps. Returns the
+    /// `abs` it mapped to.
+    pub fn status(&mut self, free: u16, last_seq: u8, now_us: u64) -> Option<u64> {
         self.ack(last_seq, now_us);
-        if let Some(abs) = self.abs_of(last_seq) {
-            self.credit_base = Some((free, abs));
-        }
+        let abs = self.abs_of(last_seq)?;
+        self.credit_base = Some((free, abs));
+        Some(abs)
     }
 
-    /// QUEUE_EVENTs sent (at least once) after the credit base's `last_seq`.
+    /// QUEUE_EVENTs sent (at least once) after `abs`.
     fn queue_events_after(&self, abs: u64) -> u64 {
         let hist_start = self.base - self.history.len() as u64;
-        let mut n = 0u64;
-        for (i, &qe) in self.history.iter().enumerate() {
-            if qe && hist_start + i as u64 > abs {
-                n += 1;
-            }
-        }
-        for (i, f) in self.frames.iter().take(self.high).enumerate() {
-            if f.is_queue_event() && self.base + i as u64 > abs {
-                n += 1;
-            }
-        }
-        n
+        let old = self
+            .history
+            .iter()
+            .enumerate()
+            .filter(|&(i, &qe)| qe && hist_start + i as u64 > abs)
+            .count();
+        let new = self
+            .sent
+            .iter()
+            .enumerate()
+            .filter(|&(i, f)| f.is_queue_event() && self.base + i as u64 > abs)
+            .count();
+        (old + new) as u64
     }
 
     /// `STATUS.free − QUEUE_EVENTs sent after STATUS.last_seq` (AD-6);
-    /// `None` before the first STATUS that maps into this sync period.
+    /// `None` before the first STATUS that maps into this sync period, or
+    /// when the base is older than the remembered history.
     #[must_use]
     pub fn credit(&self) -> Option<i64> {
         let (free, abs) = self.credit_base?;
-        // A base older than the remembered history cannot be counted: no
-        // credit until a fresher STATUS.
         let hist_start = self.base - self.history.len() as u64;
         if abs + 1 < hist_start {
             return None;
@@ -270,29 +316,53 @@ impl SendBuffer {
         Some(i64::from(free) - self.queue_events_after(abs) as i64)
     }
 
+    fn start_ready(&self, f: &Pending) -> bool {
+        if f.ty != MSG_START {
+            return true;
+        }
+        // Every QUEUE_EVENT pushed before START is out, or the prefill is
+        // over: at least one is out and no credit is left for the next.
+        self.qe_first_sent >= f.after_qe
+            || (self.qe_first_sent > 0 && !self.credit().is_some_and(|c| c > 0))
+    }
+
     /// The next frame to hand out, if the window and the credits allow:
     /// `(seq, type, body)`. A resend is always allowed; a new frame needs
-    /// `unacked < 64` and, for a QUEUE_EVENT, a positive credit.
+    /// `unacked < 64`; a new QUEUE_EVENT also needs a positive credit.
     pub fn next_to_send(&mut self, now_us: u64) -> Option<(u8, u8, Vec<u8>)> {
-        let f = self.frames.get(self.next)?;
-        if self.next >= self.high {
-            if self.high as u64 >= WINDOW {
-                return None;
+        if let Some(f) = self.sent.get(self.next) {
+            let out = (
+                self.seq_of(self.base + self.next as u64),
+                f.ty,
+                f.body.clone(),
+            );
+            if self.next == 0 {
+                self.base_timer = now_us;
             }
-            if f.is_queue_event() && !self.credit().is_some_and(|c| c > 0) {
-                return None;
-            }
+            self.next += 1;
+            self.stats.sent += 1;
+            return Some(out);
         }
-        let out = (
-            self.seq_of(self.base + self.next as u64),
-            f.ty,
-            f.body.clone(),
-        );
-        if self.next == 0 {
+        if !self.window_open() {
+            return None;
+        }
+        let ctl_ready = self.ctl.front().is_some_and(|f| self.start_ready(f));
+        let f = if ctl_ready {
+            self.ctl.pop_front()?
+        } else if self.credit().is_some_and(|c| c > 0) {
+            let f = self.qe.pop_front()?;
+            self.qe_first_sent += 1;
+            f
+        } else {
+            return None;
+        };
+        let seq = self.next_free_seq();
+        let out = (seq, f.ty, f.body.clone());
+        if self.sent.is_empty() {
             self.base_timer = now_us;
         }
-        self.next += 1;
-        self.high = self.high.max(self.next);
+        self.sent.push_back(f);
+        self.next = self.sent.len();
         self.stats.sent += 1;
         Some(out)
     }
@@ -302,7 +372,7 @@ impl SendBuffer {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::protocol::consts::{MSG_PING, MSG_START};
+    use crate::protocol::consts::{MSG_PING, MSG_SET_STATE};
 
     fn qe(b: &mut SendBuffer, n: usize) {
         for _ in 0..n {
@@ -318,6 +388,14 @@ mod tests {
         seqs
     }
 
+    fn drain_types(b: &mut SendBuffer, now: u64) -> Vec<u8> {
+        let mut t = Vec::new();
+        while let Some((_, ty, _)) = b.next_to_send(now) {
+            t.push(ty);
+        }
+        t
+    }
+
     #[test]
     fn no_queue_event_before_a_status_and_credit_limits() {
         let mut b = SendBuffer::new(250);
@@ -326,23 +404,67 @@ mod tests {
         b.status(3, 250, 0);
         assert_eq!(drain(&mut b, 0), vec![251, 252, 253]);
         assert_eq!(b.credit(), Some(0));
-        // A STATUS that saw two of them and has 4 free: 4 − 1 in flight = 3.
         b.status(4, 252, 1);
         assert_eq!(b.credit(), Some(3));
         assert_eq!(drain(&mut b, 1), vec![254, 255, 0]);
     }
 
     #[test]
-    fn non_queue_frames_need_no_credit_but_count_in_the_window() {
+    fn control_frames_overtake_queue_events_waiting_for_credit() {
         let mut b = SendBuffer::new(0);
-        b.push(MSG_START, vec![0; 4]);
+        b.status(2, 0, 0);
+        qe(&mut b, 5);
+        b.push(MSG_SET_STATE, vec![0; 8]);
         b.push(MSG_PING, vec![]);
-        assert_eq!(drain(&mut b, 0), vec![1, 2]);
+        assert_eq!(
+            drain_types(&mut b, 0),
+            vec![MSG_SET_STATE, MSG_PING, MSG_QUEUE_EVENT, MSG_QUEUE_EVENT]
+        );
+        assert_eq!(
+            b.next_free_seq(),
+            5,
+            "the next free seq follows the sent frames"
+        );
+    }
+
+    #[test]
+    fn start_waits_for_the_prefill_then_goes_without_more_credit() {
+        let mut b = SendBuffer::new(0);
+        b.status(3, 0, 0);
+        qe(&mut b, 10);
+        b.push(MSG_START, vec![0; 4]);
+        qe(&mut b, 2);
+        assert_eq!(
+            drain_types(&mut b, 0),
+            vec![MSG_QUEUE_EVENT, MSG_QUEUE_EVENT, MSG_QUEUE_EVENT, MSG_START]
+        );
+        let mut b = SendBuffer::new(0);
+        b.status(100, 0, 0);
+        qe(&mut b, 4);
+        b.push(MSG_START, vec![0; 4]);
+        qe(&mut b, 2);
+        assert_eq!(
+            drain_types(&mut b, 0),
+            vec![
+                MSG_QUEUE_EVENT,
+                MSG_QUEUE_EVENT,
+                MSG_QUEUE_EVENT,
+                MSG_QUEUE_EVENT,
+                MSG_START,
+                MSG_QUEUE_EVENT,
+                MSG_QUEUE_EVENT
+            ]
+        );
+    }
+
+    #[test]
+    fn window_of_64_for_every_frame() {
         let mut b = SendBuffer::new(0);
         for _ in 0..70 {
             b.push(MSG_PING, vec![]);
         }
         assert_eq!(drain(&mut b, 0).len(), 64);
+        assert!(!b.window_open());
         b.ack(10, 1);
         assert_eq!(drain(&mut b, 1).len(), 6);
     }
@@ -353,12 +475,12 @@ mod tests {
         b.status(100, 0, 0);
         qe(&mut b, 10);
         assert_eq!(drain(&mut b, 0).len(), 10);
-        assert!(b.transport_nak(4, 1)); // frames 1..3 accepted, rewind to 4
+        assert!(b.transport_nak(4, 1));
         assert_eq!(b.unacked(), 7);
-        assert!(!b.transport_nak(4, 2)); // same point: ignored
+        assert!(!b.transport_nak(4, 2));
         assert_eq!(drain(&mut b, 2), vec![4, 5, 6, 7, 8, 9, 10]);
-        assert!(!b.transport_nak(4, 3)); // duplicate of an old NAK
-        assert!(b.transport_nak(6, 4)); // ahead: rewinds
+        assert!(!b.transport_nak(4, 3));
+        assert!(b.transport_nak(6, 4));
         assert_eq!(b.stats().rewinds, 2);
     }
 
@@ -368,10 +490,10 @@ mod tests {
         b.status(100, 0, 0);
         qe(&mut b, 3);
         assert_eq!(drain(&mut b, 1000), vec![1, 2, 3]);
-        b.check_timeout(1000 + ACK_TIMEOUT_US - 1);
+        assert!(!b.check_timeout(1000 + ACK_TIMEOUT_US - 1));
         assert!(drain(&mut b, 1000 + ACK_TIMEOUT_US - 1).is_empty());
         assert_eq!(b.timeout_at(), Some(1000 + ACK_TIMEOUT_US));
-        b.check_timeout(1000 + ACK_TIMEOUT_US);
+        assert!(b.check_timeout(1000 + ACK_TIMEOUT_US));
         assert_eq!(drain(&mut b, 1000 + ACK_TIMEOUT_US), vec![1, 2, 3]);
         assert_eq!(b.stats().resends, 1);
     }
@@ -383,11 +505,28 @@ mod tests {
         qe(&mut b, 5);
         drain(&mut b, 0);
         assert_eq!(b.ack(200, 1), 0);
-        assert_eq!(b.ack(0, 1), 0); // the sync point itself
-        assert_eq!(b.ack(9, 1), 0); // beyond what was sent
+        assert_eq!(b.ack(0, 1), 0);
+        assert_eq!(b.ack(9, 1), 0);
         assert_eq!(b.ack(2, 1), 2);
-        assert_eq!(b.ack(1, 1), 0); // older than base: stale
+        assert_eq!(b.ack(1, 1), 0);
         assert_eq!(b.unacked(), 3);
+    }
+
+    #[test]
+    fn a_seq_maps_at_most_once() {
+        // 64 acknowledged (history) + 64 in flight: at most 129 seqs map.
+        let mut b = SendBuffer::new(0);
+        b.status(1000, 0, 0);
+        qe(&mut b, 300);
+        for _ in 0..4 {
+            let s = drain(&mut b, 0);
+            if let Some(&last) = s.last() {
+                b.ack(last, 0);
+            }
+        }
+        drain(&mut b, 0);
+        let hits = (0..=255u8).filter(|&s| b.position_of(s).is_some()).count();
+        assert!(hits <= 64 + 64 + 1, "{hits}");
     }
 
     #[test]
@@ -412,10 +551,9 @@ mod tests {
         b.status(5, 0, 0);
         qe(&mut b, 5);
         assert_eq!(drain(&mut b, 0).len(), 5);
-        // ACKs arrive before the next STATUS: the old base still counts them.
         b.ack(5, 1);
         assert_eq!(b.credit(), Some(0));
-        b.status(2, 5, 2); // 3 still queued on the controller
+        b.status(2, 5, 2);
         assert_eq!(b.credit(), Some(2));
     }
 }

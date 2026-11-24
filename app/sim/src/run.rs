@@ -1,11 +1,15 @@
 //! The simulation driver: one `Session`, one `FakeController`, a channel each
-//! way and a fake clock. After every step it checks the session's
-//! invariants independently of the session's own bookkeeping (C.7).
+//! way and a fake clock. It drives the session the way a real adapter must
+//! (`handle_timeout` only when `poll_timeout` is due) and checks invariants
+//! from the bytes on the wire only, never from the session's own counters
+//! (C.7, Story 3.3 review fix).
 
 use std::collections::BTreeSet;
 
-use ocb_core::link::{LinkEvent, Phase, Session, SessionConfig};
-use ocb_core::protocol::consts::{ACK_WINDOW, MSG_HELLO, MSG_NAK, MSG_QUEUE_EVENT, MSG_STOP};
+use ocb_core::link::{LinkEvent, Session, SessionConfig};
+use ocb_core::protocol::consts::{
+    ACK_WINDOW, MSG_ACK, MSG_HELLO, MSG_INFO, MSG_NAK, MSG_QUEUE_EVENT, MSG_STATUS, MSG_STOP,
+};
 use ocb_core::protocol::{Message, NakReason, RxEvent, RxSide, Splitter, decode_frame};
 
 use crate::channel::Channel;
@@ -43,9 +47,16 @@ pub struct Sim {
     pub step_us: u64,
     /// What happened.
     pub seen: Observed,
+    // Wire-side bookkeeping, independent of the session.
     sync_seq: Option<u8>,
     sent_new: Vec<(u8, bool)>,
+    /// Index into `sent_new` of the newest frame the controller confirmed.
+    confirmed: Option<usize>,
+    /// The last STATUS delivered: (`free`, `last_seq`).
+    last_status: Option<(u16, u8)>,
     sync_epoch: u64,
+    awaiting_info: bool,
+    awaiting_stop_ack: Option<u8>,
     down_tap: Splitter,
 }
 
@@ -74,7 +85,11 @@ impl Sim {
             seen: Observed::default(),
             sync_seq: None,
             sent_new: Vec::new(),
+            confirmed: None,
+            last_status: None,
             sync_epoch: 0,
+            awaiting_info: false,
+            awaiting_stop_ack: None,
             down_tap: Splitter::new(RxSide::App),
         }
     }
@@ -87,8 +102,29 @@ impl Sim {
         }
     }
 
-    /// Checks one chunk the session sent.
-    fn check_tx(&mut self, chunk: &[u8], phase: Phase) {
+    /// The index in `sent_new` of the newest frame with this seq (a reply
+    /// lags by at most the window), `None` for the sync point itself.
+    fn index_of(&self, seq: u8) -> Option<Option<usize>> {
+        let lo = self
+            .sent_new
+            .len()
+            .saturating_sub(2 * usize::from(ACK_WINDOW));
+        if let Some(p) = self.sent_new.iter().skip(lo).rposition(|(s, _)| *s == seq) {
+            return Some(Some(lo + p));
+        }
+        (Some(seq) == self.sync_seq && self.sent_new.len() < 256).then_some(None)
+    }
+
+    fn confirm(&mut self, seq: u8) {
+        if let Some(Some(i)) = self.index_of(seq)
+            && self.confirmed.is_none_or(|c| i > c)
+        {
+            self.confirmed = Some(i);
+        }
+    }
+
+    /// Checks one chunk the session sent, from the wire only.
+    fn check_tx(&mut self, chunk: &[u8]) {
         if chunk == [0] {
             return;
         }
@@ -103,17 +139,15 @@ impl Sim {
                 return;
             }
         };
-        match phase {
-            Phase::Opening if f.ty != MSG_HELLO => {
-                self.violation(format!("type {:#04x} sent before INFO", f.ty));
-            }
-            Phase::Stopping if f.ty != MSG_STOP => {
-                self.violation(format!("type {:#04x} sent between STOP and its ACK", f.ty));
-            }
-            Phase::Closed | Phase::Incompatible => {
-                self.violation(format!("type {:#04x} sent in phase {phase:?}", f.ty));
-            }
-            _ => {}
+        if f.ty == MSG_HELLO {
+            self.awaiting_info = true;
+            self.awaiting_stop_ack = None;
+        } else if self.awaiting_info {
+            self.violation(format!("type {:#04x} sent before INFO", f.ty));
+        } else if f.ty == MSG_STOP {
+            self.awaiting_stop_ack = Some(f.seq);
+        } else if self.awaiting_stop_ack.is_some() {
+            self.violation(format!("type {:#04x} sent between STOP and its ACK", f.ty));
         }
         if f.ty == MSG_HELLO || f.ty == MSG_STOP {
             if self.sync_seq != Some(f.seq) || !self.sent_new.is_empty() {
@@ -121,6 +155,8 @@ impl Sim {
             }
             self.sync_seq = Some(f.seq);
             self.sent_new.clear();
+            self.confirmed = None;
+            self.last_status = None;
             return;
         }
         let Some(sync) = self.sync_seq else {
@@ -129,33 +165,40 @@ impl Sim {
         };
         let next_new = sync.wrapping_add(1).wrapping_add(self.sent_new.len() as u8);
         if f.seq != next_new {
-            return; // a resend
+            // A resend must be one of the unconfirmed frames.
+            let first_open = self.confirmed.map_or(0, |c| c + 1);
+            let ok = self
+                .sent_new
+                .iter()
+                .skip(first_open)
+                .any(|(s, _)| *s == f.seq);
+            if !ok {
+                self.violation(format!("seq {} is neither new nor unconfirmed", f.seq));
+            }
+            return;
         }
         let qe = f.ty == MSG_QUEUE_EVENT;
         self.sent_new.push((f.seq, qe));
+        // The window (AD-6), from the wire: new frames not yet confirmed.
+        let open = self.sent_new.len() - self.confirmed.map_or(0, |c| c + 1);
+        if open > usize::from(ACK_WINDOW) {
+            self.violation(format!("{open} frames in flight"));
+        }
         if !qe {
             return;
         }
-        // Credits (AD-6): QUEUE_EVENTs sent after the last STATUS's
+        // Credits (AD-6): QUEUE_EVENTs after the last delivered STATUS's
         // `last_seq` must not exceed its `free`.
-        let Some(st) = self.session.status().copied() else {
-            self.violation("QUEUE_EVENT before any STATUS".to_owned());
+        let Some((free, last_seq)) = self.last_status else {
+            self.violation("QUEUE_EVENT before any STATUS of this sync period".to_owned());
             return;
         };
-        // The newest frame with that seq (a STATUS lags by at most the
-        // window, so the newest is the right one), else the sync point.
-        let pos = match self.sent_new.iter().rposition(|(s, _)| *s == st.last_seq) {
-            Some(p) => Some(Some(p)),
-            None if st.last_seq == sync && self.sent_new.len() < 256 => Some(None),
-            None => None,
-        };
-        if let Some(pos) = pos {
+        if let Some(pos) = self.index_of(last_seq) {
             let start = pos.map_or(0, |p| p + 1);
             let after = self.sent_new.iter().skip(start).filter(|(_, q)| *q).count();
-            if after > usize::from(st.free) {
+            if after > usize::from(free) {
                 self.violation(format!(
-                    "{after} QUEUE_EVENTs after last_seq {} with free {}",
-                    st.last_seq, st.free
+                    "{after} QUEUE_EVENTs after last_seq {last_seq} with free {free}"
                 ));
             }
         }
@@ -163,33 +206,48 @@ impl Sim {
 
     fn tap_down(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            if let RxEvent::Frame(f) = self.down_tap.push(b)
-                && f.ty == MSG_NAK
-                && let Ok(Message::Nak(n)) = Message::decode(f.ty, &f.body)
-                && n.reason.is_transport()
-                && !matches!(n.reason, NakReason::Unknown(_))
-            {
-                self.seen.transport_naks += 1;
-                // The absolute frame the NAK points at: the newest sent frame
-                // with that seq (a NAK lags by at most the window), or the
-                // next new one.
-                let pos = self
-                    .sent_new
-                    .iter()
-                    .rposition(|(s, _)| *s == n.expected)
-                    .map(|p| p as u64)
-                    .or_else(|| {
-                        let next = self
-                            .sync_seq?
-                            .wrapping_add(1)
-                            .wrapping_add(self.sent_new.len() as u8);
-                        (next == n.expected).then_some(self.sent_new.len() as u64)
-                    });
-                if let Some(pos) = pos {
-                    self.seen
-                        .transport_nak_points
-                        .insert((self.sync_epoch, pos));
+            let RxEvent::Frame(f) = self.down_tap.push(b) else {
+                continue;
+            };
+            let Ok(msg) = Message::decode(f.ty, &f.body) else {
+                continue;
+            };
+            match (f.ty, msg) {
+                (MSG_INFO, _) => self.awaiting_info = false,
+                (MSG_ACK, Message::Ack(a)) => {
+                    if self.awaiting_stop_ack == Some(a.seq) {
+                        self.awaiting_stop_ack = None;
+                    }
+                    self.confirm(a.seq);
                 }
+                (MSG_STATUS, Message::Status(s)) => {
+                    // Only a STATUS that maps into this sync period counts.
+                    if self.awaiting_stop_ack.is_none() && self.index_of(s.last_seq).is_some() {
+                        self.last_status = Some((s.free, s.last_seq));
+                        self.confirm(s.last_seq);
+                    }
+                }
+                (MSG_NAK, Message::Nak(n)) => {
+                    self.confirm(n.expected.wrapping_sub(1));
+                    if n.reason.is_transport() && !matches!(n.reason, NakReason::Unknown(_)) {
+                        self.seen.transport_naks += 1;
+                        let pos = match self.index_of(n.expected) {
+                            Some(Some(p)) => Some(p as u64),
+                            _ => {
+                                let next = self.sync_seq.map(|s| {
+                                    s.wrapping_add(1).wrapping_add(self.sent_new.len() as u8)
+                                });
+                                (next == Some(n.expected)).then_some(self.sent_new.len() as u64)
+                            }
+                        };
+                        if let Some(pos) = pos {
+                            self.seen
+                                .transport_nak_points
+                                .insert((self.sync_epoch, pos));
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -200,15 +258,21 @@ impl Sim {
         let down = self.down.deliver(now);
         self.tap_down(&down);
         self.session.handle_rx(&down, now);
-        self.session.handle_timeout(now);
-        loop {
-            let phase = self.session.phase();
-            let Some(chunk) = self.session.poll_transmit(now) else {
-                break;
-            };
-            self.check_tx(&chunk, phase);
+        // Strict timers: `handle_timeout` only when `poll_timeout` says so.
+        if self.session.poll_timeout().is_some_and(|t| t <= now) {
+            self.session.handle_timeout(now);
+        }
+        while let Some(chunk) = self.session.poll_transmit(now) {
+            self.check_tx(&chunk);
             self.seen.tx.push((now, chunk.clone()));
             self.up.send(now, chunk);
+        }
+        if let Some(t) = self.session.poll_timeout()
+            && t <= now
+        {
+            self.violation(format!(
+                "poll_timeout {t} is still due after a full step (busy loop)"
+            ));
         }
         self.up.flush_hold(now);
         let up = self.up.deliver(now);
@@ -220,9 +284,6 @@ impl Sim {
         self.down.flush_hold(now);
         while let Some(e) = self.session.poll_event() {
             self.seen.events.push((now, e));
-        }
-        if self.session.unacked() > usize::from(ACK_WINDOW) {
-            self.violation(format!("{} frames unacknowledged", self.session.unacked()));
         }
         if self.ctrl.queue_len() > self.ctrl.queue_cap() {
             self.violation("controller queue over capacity".to_owned());
@@ -264,12 +325,12 @@ impl Sim {
         }
     }
 
-    /// Opens the session and runs until it is connected and has a STATUS
-    /// (or 2 s pass). Returns whether it got there.
+    /// Opens the session and runs until it is connected and has a credit
+    /// (a STATUS), or 2 s pass. Returns whether it got there.
     pub fn connect(&mut self) -> bool {
         self.session.open(self.now);
         self.run_until(2_000_000, |s| {
-            s.session.phase() == Phase::Connected && s.session.credit().is_some()
+            s.session.phase() == ocb_core::link::Phase::Connected && s.session.credit().is_some()
         })
     }
 

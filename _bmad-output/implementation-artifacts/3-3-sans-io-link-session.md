@@ -83,6 +83,32 @@ No bench part: host-only story (no H-row, no retro action #27 step). Story 3.4 i
   - [x] 9.4 `docs/link-protocol.md`: a short section "Rules the app link applies (Story 3.3)" listing D3–D9 as concrete app behaviour (no wire change: no message, NAK reason, EVENT, constant or `PROTO_VERSION` change, vectors unchanged).
   - [x] 9.5 `app/README.md`: mention `link` and `sim/`.
 
+### Review Findings
+
+Code review 2026-11-24 (gds-code-review: Blind Hunter, Edge Case Hunter, Acceptance Auditor; the Edge Case Hunter and the Auditor reproduced their main findings with scratch tests). The owner's rule: IMPORTANT findings fixed, MINOR fixed when cheap, otherwise recorded here. Every fix has a test in `app/sim/tests/regress.rs` (C.12); the first nine of those fail on the code before the fixes (checked by restoring the old `link/mod.rs` and `link/send.rs`).
+
+- [x] [Review][Patch][IMPORTANT] **I-1 STOP could take the seq of a frame in flight** (all three; reproduced) — with more than 256 frames pushed, `next_free_seq` counted unsent frames, so an old ACK was taken as STOP's ACK: `Stopped` while the controller never stopped, and later frames lost silently. Fixed by giving seqs at first send (I-2): STOP takes the seq after the last frame sent. [app/core/src/link/send.rs, mod.rs]
+- [x] [Review][Patch][IMPORTANT] **I-2 A QUEUE_EVENT waiting for credit blocked START, SET_STATE and PING** (blind+edge; reproduced) — a piece longer than the controller's queue never started (START queued behind events with no credit), and in DIRECT the gamepad froze until the app timeout fired. Fixed: QUEUE_EVENTs wait in their own queue; control frames go first; START waits only for the events queued before it or for the credit to run out. [send.rs]
+- [x] [Review][Patch][IMPORTANT] **I-3 `poll_timeout` stayed in the past** (blind+edge) — a PING that could not be pushed kept `ping_due` behind now (busy loop for an adapter that sleeps on it). Fixed: PING is due only when the window has room and no control frame waits; `poll_transmit` no longer runs the timers (the adapter calls `handle_timeout` at `poll_timeout`). [mod.rs]
+- [x] [Review][Patch][IMPORTANT] **I-4 `abort_rise_expected` could get stuck** (all three; reproduced) — an abort EVENT before the first STATUS left the flag set and the next abort without EVENT (app timeout) was ignored: no STOP, gamepad dead. Fixed: the EVENT advances the abort baseline by one; a STATUS behind the baseline only resyncs. [mod.rs]
+- [x] [Review][Patch][IMPORTANT] **I-5 A lost semantic NAK on START went unnoticed** (all three; reproduced) — the next cumulative ACK covered the refused START; the app believed it was playing. Fixed with AD-19: once a STATUS covers START, a mode other than PLAYING with no abort rise abandons the piece (`AbandonReason::NotPlaying`). [mod.rs, events.rs]
+- [x] [Review][Patch][IMPORTANT] **I-6 A reboot seen only in STATUS was taken for an abort** (blind+edge; reproduced) — `abort_count` dropping to 0 read as a rise, STOP acknowledged by a closed controller session, next piece died on `NAK VERSION`. Fixed: a STATUS with `abort_count` 0 and `last_event` NONE after a non-fresh one is a reboot (HELLO again); it is not applied to the send buffer. [mod.rs]
+- [x] [Review][Patch][IMPORTANT] **I-7 No lone `0x00` after a wire fault** (auditor+edge) — Story 2.7 duty. Fixed: after a rewinding transport NAK, a 50 ms resend, and a link loss learned in any phase or from STATUS. [mod.rs]
+- [x] [Review][Patch][IMPORTANT] **I-8 The simulator could not catch these bugs** (all three) — the driver read the session's own phase and `unacked`, called the timers every 1 ms, reordered only inside one step, and the fake controller was kinder than the firmware. Fixed: invariants from the wire only (window from confirmations, resends must be unconfirmed frames, credit from delivered STATUS, phase rules from HELLO/INFO/STOP/ACK on the wire), strict timers with a busy-loop check, reorder across steps (3 ms hold), and a fake controller with the firmware's TX priority, ACK and STATUS replacement, NAK and EVENT rings, replies discarded on link loss and the 8000 µs LATE fallback; knobs `lose_next_nak` / `lose_next_event`. [app/sim/src/run.rs, controller.rs, channel.rs]
+- [x] [Review][Patch][IMPORTANT] **I-9 No lossy test of START, STOP, semantic NAKs; impairment matrix narrower than Task 8.2** (auditor+blind) — C.7 now runs every impairment at 1, 5 and 10 %; C.12 adds a lossy long piece with START and a lossy STOP. [app/sim/tests/gbn.rs, regress.rs]
+- [x] [Review][Patch][MINOR] **M-1 Refused SET_STATE left DIRECT on** — `direct` cleared on a refused SET_STATE. [mod.rs]
+- [x] [Review][Patch][MINOR] **M-2 Stale `last_event` reported a later abort as `PlaybackDone`** (blind+edge) — STATUS reports done only when `last_event` has just become `PLAYBACK_DONE`. [mod.rs]
+- [x] [Review][Patch][MINOR] **M-3 `HISTORY` 256 let a seq map both ways** — now 64 (forward ≤ 64 + backward ≤ 64 < 256); unit test `a_seq_maps_at_most_once`. [send.rs]
+- [x] [Review][Patch][MINOR] **M-4 Unchecked time additions** — `saturating_add` everywhere. [mod.rs, send.rs]
+- [x] [Review][Patch][MINOR] **M-5 No PING with `app_timeout_ms < 4`** — interval computed in µs. [mod.rs]
+- [x] [Review][Patch][MINOR] **M-6 Unbounded event queue** — consecutive unread STATUS events coalesce to the newest. [mod.rs]
+- [x] [Review][Patch][MINOR] **M-7 Weak tests** — PING refusal tested; C.9 checks the `00` right before HELLO; the property test asserts it really sends QUEUE_EVENTs (not vacuous); Malformed bodies counted (`Session::malformed`). [regress.rs, props.rs, mod.rs]
+- [ ] [Review][Minor][recorded] **M-8 A lost semantic NAK on a QUEUE_EVENT can still drop that event silently** — after the fixes the only semantic NAKs a QUEUE_EVENT can get are `ABORTED` (caught by the abort rise) and `ORDER` / `BAD_STATE`, which the app refuses locally before sending; a refusal of a valid event is therefore not expected. Detecting a missing event from STATUS `free` would need the controller's queue fill per event; not done.
+- [ ] [Review][Minor][recorded] **M-9 An abort EVENT delayed behind STOP's ACK** (reordering only) can trigger one more STOP after `Stopped`; harmless (an idle STOP), and it can only abandon a piece started inside that few-ms window. The firmware sends EVENT before every other reply, so this needs the channel's reorder.
+- [ ] [Review][Minor][recorded] **M-10 An idle session learns of a reboot only from STATUS or its next frame** — a reboot right after connecting (both STATUS "fresh") is seen at the next app frame (`NAK VERSION`).
+- [ ] [Review][Minor][recorded] **M-11 A delayed transport NAK after a timeout resend rewinds once more** — a duplicate burst of at most 64 frames; correctness unaffected (go-back-N).
+- [ ] [Review][Minor][recorded] **M-12 API differences from the story's sketch** — `PieceAbandoned` has no `seq`; `credit()` is `Option<i64>` (it can be negative right after a STATUS); `Sim::run` became `run_until` / `run_for` — recorded as D18–D20.
+
 ## Dev Notes
 
 ### What exists (read before writing)
@@ -245,6 +271,10 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 - **D15. Fake controller test knob `sink_every_us`**: outside PLAYING it pops one queued event every N µs, so C.7 can stream 2000 events through a capacity of 5 without START and without the underrun rule ending the run.
 - **D16. The driver checks invariants independently** of the session: it decodes every chunk the session sends, numbers new frames itself, and checks the credit rule against the session's last STATUS; the session's own counters are never trusted for C.7.
 - **D17. `SendBuffer` is public** (`ocb_core::link::SendBuffer`) so the property test lives with the other session tests in `ocb-sim`; the session is the only intended user.
+- **D18. `PieceAbandoned` carries only the reason**: the refused seq is in the NAK and means nothing to the UI (review M-12).
+- **D19. `credit()` is `Option<i64>`**: right after a STATUS that saw a fuller queue the credit is negative, and hiding that as 0 would hide a bug (review M-12).
+- **D20. `Sim::run_until(max, done)` and `run_for(us)`** instead of one `run(…)`: tests read better with a stop condition (review M-12).
+- **D21. Code review fixes (2026-11-24)**: I-1 to I-9 and M-1 to M-7 fixed, M-8 to M-12 recorded (Review Findings above). The send buffer gives seqs at first send, with separate queues for QUEUE_EVENTs and control frames; `poll_transmit` no longer runs timers; `AbandonReason::NotPlaying` is new. Tests after the fixes: 83 (`ocb-core` 44: lib 14, props 11, purity 4, vectors 14, version 1; `ocb-sim` 39: gbn 5, naks 4, open 4, ping 3, props 2, reboot 2, recovery 6, regress 13).
 
 ### Completion Notes List
 
@@ -271,7 +301,7 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 - `app/sim/src/channel.rs` (new)
 - `app/sim/src/run.rs` (new)
 - `app/sim/tests/common/mod.rs` (new)
-- `app/sim/tests/open.rs`, `gbn.rs`, `naks.rs`, `reboot.rs`, `ping.rs`, `recovery.rs`, `props.rs` (new)
+- `app/sim/tests/open.rs`, `gbn.rs`, `naks.rs`, `reboot.rs`, `ping.rs`, `recovery.rs`, `props.rs`, `regress.rs` (new)
 - `docs/test-plan.md` (modified: C.6 to C.11)
 - `docs/link-protocol.md` (modified: "Rules the app link applies (Story 3.3)")
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` (modified)
@@ -280,3 +310,4 @@ Claude Opus 5.5 (`claude-opus-5-5`), gds-dev-story, 2026-11-24.
 ## Change Log
 
 - 2026-11-24: Story 3.3 implemented (`ocb-core::link` sans-IO session, `ocb-sim` fake controller and impaired channel, C.6 to C.11). Status → review.
+- 2026-11-24: Code review: 9 IMPORTANT and 7 MINOR findings fixed, 5 MINOR recorded (Review Findings); C.12 added. CI: `app` run 45372030897 green before the review.

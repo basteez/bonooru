@@ -60,12 +60,26 @@ proptest! {
                 }
                 Op::Ack(s) => { b.ack(s, now); }
                 Op::Nak(s) => { b.transport_nak(s, now); }
-                Op::Status(f, s) => b.status(f, s, now),
-                Op::Wait(d) => { now += d; b.check_timeout(now); }
+                Op::Status(f, s) => { b.status(f, s, now); }
+                Op::Wait(d) => { now += d; let _ = b.check_timeout(now); }
             }
             prop_assert!(b.unacked() <= 64);
             prop_assert!(b.unacked() <= b.len());
         }
-        let _ = new_qe_seen;
+        // Not vacuous: count the runs that really sent a QUEUE_EVENT.
+        if new_qe_seen > 0 {
+            SENT_SOME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
+}
+
+static SENT_SOME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[test]
+fn c11_send_buffer_property_sends_queue_events() {
+    c11_send_buffer_invariants();
+    assert!(
+        SENT_SOME.load(std::sync::atomic::Ordering::Relaxed) > 50,
+        "too few runs sent a QUEUE_EVENT"
+    );
 }

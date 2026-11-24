@@ -69,6 +69,8 @@ pub struct ControllerLog {
     pub pings: u32,
     /// DIRECT app timeouts.
     pub app_timeouts: u32,
+    /// EVENT and NAK entries dropped because their ring was full.
+    pub tx_dropped: u32,
     /// The highest queue fill seen.
     pub max_fill: usize,
 }
@@ -84,7 +86,16 @@ enum Reply {
 pub struct FakeController {
     cfg: ControllerConfig,
     rx: Splitter,
-    out: VecDeque<Vec<u8>>,
+    // TX, as the firmware's link (Story 2.6 "TX priority and overflow"):
+    // EVENT ring of 8 and NAK ring of 4 (a new entry is dropped when full),
+    // INFO, ACK and STATUS each replaced by the newest.
+    tx_events: VecDeque<Vec<u8>>,
+    tx_naks: VecDeque<Vec<u8>>,
+    tx_info: Option<Vec<u8>>,
+    tx_ack: Option<Vec<u8>>,
+    tx_status: Option<Vec<u8>>,
+    lose_next_nak: bool,
+    lose_next_event: bool,
     tx_seq: u8,
     // link
     session_open: bool,
@@ -119,7 +130,13 @@ impl FakeController {
         Self {
             cfg,
             rx: Splitter::new(RxSide::Controller),
-            out: VecDeque::new(),
+            tx_events: VecDeque::new(),
+            tx_naks: VecDeque::new(),
+            tx_info: None,
+            tx_ack: None,
+            tx_status: None,
+            lose_next_nak: false,
+            lose_next_event: false,
             tx_seq: 0,
             session_open: false,
             expected: 0,
@@ -180,11 +197,27 @@ impl FakeController {
     }
 
     /// Link loss (`false`: abort with `EVENT LINK_LOST`) or recovery.
+    /// A link loss also discards every pending ACK, NAK, INFO and STATUS
+    /// (only EVENTs leave until the TX release, Story 2.7).
     pub fn set_link_ok(&mut self, ok: bool) {
         if self.link_ok && !ok {
+            self.tx_naks.clear();
+            self.tx_info = None;
+            self.tx_ack = None;
+            self.tx_status = None;
             self.abort(Some(EventCode::LinkLost));
         }
         self.link_ok = ok;
+    }
+
+    /// The next NAK is computed and acted on but lost on the wire.
+    pub fn lose_next_nak(&mut self) {
+        self.lose_next_nak = true;
+    }
+
+    /// The next EVENT is sent by the core but lost on the wire.
+    pub fn lose_next_event(&mut self) {
+        self.lose_next_event = true;
     }
 
     /// The next frame of type `ty` the core would handle gets this NAK.
@@ -217,10 +250,35 @@ impl FakeController {
     }
 
     fn send(&mut self, ty: u8, body: &[u8]) {
-        if let Ok(f) = encode_frame(ty, self.tx_seq, body) {
-            self.out.push_back(f);
-        }
+        let Ok(f) = encode_frame(ty, self.tx_seq, body) else {
+            return;
+        };
         self.tx_seq = self.tx_seq.wrapping_add(1);
+        match ty {
+            MSG_EVENT => {
+                if std::mem::take(&mut self.lose_next_event) {
+                    return;
+                }
+                if self.tx_events.len() < 8 {
+                    self.tx_events.push_back(f);
+                } else {
+                    self.log.tx_dropped += 1;
+                }
+            }
+            MSG_NAK => {
+                if std::mem::take(&mut self.lose_next_nak) {
+                    return;
+                }
+                if self.tx_naks.len() < 4 {
+                    self.tx_naks.push_back(f);
+                } else {
+                    self.log.tx_dropped += 1;
+                }
+            }
+            MSG_INFO => self.tx_info = Some(f),
+            MSG_ACK => self.tx_ack = Some(f),
+            _ => self.tx_status = Some(f),
+        }
     }
 
     fn send_event(&mut self, code: EventCode) {
@@ -502,7 +560,13 @@ impl FakeController {
                 && now_us >= self.t0 + u64::from(t)
             {
                 let late = now_us - (self.t0 + u64::from(t));
-                if late > u64::from(self.cfg.report_period_us.max(1)) {
+                // The firmware's LATE threshold: one report period, 8000 µs
+                // while the period is unknown (Story 2.5 D14).
+                let period = match self.cfg.report_period_us {
+                    0 => 8000,
+                    p => u64::from(p),
+                };
+                if late > period {
                     self.abort(Some(EventCode::Late));
                 } else {
                     self.queue.pop_front();
@@ -543,6 +607,11 @@ impl FakeController {
 
     /// The next frame to send (whole, with its `0x00`).
     pub fn poll_transmit(&mut self) -> Option<Vec<u8>> {
-        self.out.pop_front()
+        self.tx_events
+            .pop_front()
+            .or_else(|| self.tx_naks.pop_front())
+            .or_else(|| self.tx_info.take())
+            .or_else(|| self.tx_ack.take())
+            .or_else(|| self.tx_status.take())
     }
 }

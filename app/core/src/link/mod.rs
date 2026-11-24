@@ -1,8 +1,8 @@
 //! The sans-IO link session (Story 3.3, AD-6, AD-7, AD-19): bytes and a
 //! clock in, bytes and typed events out. It never touches a port and never
 //! reads a clock: the caller passes the time as µs on its own monotonic
-//! clock, writes what `poll_transmit` returns and calls `handle_timeout` at
-//! `poll_timeout`.
+//! clock, writes what `poll_transmit` returns until `None`, and calls
+//! `handle_timeout` whenever `poll_timeout` is at or before now.
 //!
 //! The controller's side of every rule is in `docs/link-protocol.md`; the
 //! app's side is listed there under "Rules the app link applies (Story 3.3)".
@@ -21,8 +21,8 @@ use crate::protocol::consts::{
     T_US_LIMIT,
 };
 use crate::protocol::{
-    EventCode, Info, Message, NakReason, QueueEvent, RxSide, RxStats, SetState, Splitter, Start,
-    State, Status, encode_frame,
+    EventCode, Info, Message, Mode, NakReason, QueueEvent, RxEvent, RxSide, RxStats, SetState,
+    Splitter, Start, State, Status, encode_frame,
 };
 use crate::version::APP_VERSION_TRIPLE;
 
@@ -53,6 +53,8 @@ struct Piece {
     last_t: Option<u32>,
     end_queued: bool,
     started: bool,
+    /// `abs` of the START frame once it was sent.
+    start_abs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,13 +74,14 @@ pub struct Session {
     send: SendBuffer,
     info: Option<Info>,
     status: Option<StatusView>,
+    /// `abort_count` as far as the session has accounted for it.
     abort_baseline: Option<u8>,
-    abort_rise_expected: bool,
     events: VecDeque<LinkEvent>,
     stop: Option<StopState>,
     piece: Piece,
     direct: bool,
     last_app_tx: u64,
+    malformed: u64,
 }
 
 impl Session {
@@ -95,12 +98,12 @@ impl Session {
             info: None,
             status: None,
             abort_baseline: None,
-            abort_rise_expected: false,
             events: VecDeque::new(),
             stop: None,
             piece: Piece::default(),
             direct: false,
             last_app_tx: 0,
+            malformed: 0,
         }
     }
 
@@ -115,7 +118,6 @@ impl Session {
         self.info = None;
         self.status = None;
         self.abort_baseline = None;
-        self.abort_rise_expected = false;
         self.stop = None;
         self.piece = Piece::default();
         self.direct = false;
@@ -135,13 +137,15 @@ impl Session {
         self.info.as_ref()
     }
 
-    /// The last STATUS.
+    /// The last STATUS; the app's view of the controller mode comes from
+    /// here (AD-19).
     #[must_use]
     pub fn status(&self) -> Option<&StatusView> {
         self.status.as_ref()
     }
 
-    /// `STATUS.free − QUEUE_EVENTs sent after STATUS.last_seq`.
+    /// `STATUS.free − QUEUE_EVENTs sent after STATUS.last_seq` (may be
+    /// negative right after a STATUS that saw a fuller queue).
     #[must_use]
     pub fn credit(&self) -> Option<i64> {
         self.send.credit()
@@ -165,13 +169,19 @@ impl Session {
         self.splitter.stats()
     }
 
-    /// The controller is believed to be in DIRECT (PING is due when idle).
+    /// Frames whose body did not fit their type.
+    #[must_use]
+    pub fn malformed(&self) -> u64 {
+        self.malformed
+    }
+
+    /// DIRECT input is active on the app side (PING is due when idle).
     #[must_use]
     pub fn is_direct(&self) -> bool {
         self.direct
     }
 
-    /// A piece has been started and not stopped.
+    /// A piece has been started and not finished, stopped or abandoned.
     #[must_use]
     pub fn is_playing(&self) -> bool {
         self.piece.started
@@ -179,6 +189,17 @@ impl Session {
 
     fn piece_active(&self) -> bool {
         self.piece.queued > 0 || self.piece.started || self.direct
+    }
+
+    fn push_event(&mut self, e: LinkEvent) {
+        // STATUS arrives every 50 ms or faster: keep only the newest one if
+        // the caller has not read the previous yet, so the queue is bounded.
+        if matches!(e, LinkEvent::Status(_))
+            && matches!(self.events.back(), Some(LinkEvent::Status(_)))
+        {
+            self.events.pop_back();
+        }
+        self.events.push_back(e);
     }
 
     // ------------------------------------------------------------ commands
@@ -225,8 +246,9 @@ impl Session {
         Ok(())
     }
 
-    /// Starts the queued piece after `lead_us`. It goes out after every
-    /// QUEUE_EVENT queued before it.
+    /// Starts the queued piece after `lead_us`. START goes out once the
+    /// events queued before it are sent, or as soon as the credit for the
+    /// next one runs out (the prefill is done); the rest streams after it.
     pub fn start(&mut self, lead_us: u32) -> Result<(), CommandError> {
         self.check_connected()?;
         self.check_link()?;
@@ -242,7 +264,8 @@ impl Session {
         Ok(())
     }
 
-    /// Sends one DIRECT state (the virtual gamepad).
+    /// Sends one DIRECT state (the virtual gamepad). It never waits behind
+    /// queued events.
     pub fn set_state(&mut self, state: State) -> Result<(), CommandError> {
         self.check_connected()?;
         self.check_link()?;
@@ -271,6 +294,7 @@ impl Session {
     }
 
     fn do_stop(&mut self) {
+        // One past the sent frames: never the seq of a frame in flight.
         let seq = self.send.next_free_seq();
         self.send = SendBuffer::new(seq);
         self.stop = Some(StopState { seq, due: 0 });
@@ -284,7 +308,7 @@ impl Session {
             return;
         }
         if self.piece_active() {
-            self.events.push_back(LinkEvent::PieceAbandoned { reason });
+            self.push_event(LinkEvent::PieceAbandoned { reason });
         }
         self.do_stop();
     }
@@ -294,7 +318,7 @@ impl Session {
     /// Feeds received bytes.
     pub fn handle_rx(&mut self, bytes: &[u8], now_us: u64) {
         for &b in bytes {
-            if let crate::protocol::RxEvent::Frame(f) = self.splitter.push(b) {
+            if let RxEvent::Frame(f) = self.splitter.push(b) {
                 self.on_frame(f.ty, &f.body, now_us);
             }
         }
@@ -304,12 +328,10 @@ impl Session {
         if self.phase == Phase::Closed {
             return;
         }
-        let msg = match Message::decode(ty, body) {
-            Ok(m) => m,
-            Err(_) => {
-                self.events.push_back(LinkEvent::Malformed { ty });
-                return;
-            }
+        let Ok(msg) = Message::decode(ty, body) else {
+            self.malformed += 1;
+            self.push_event(LinkEvent::Malformed { ty });
+            return;
         };
         match msg {
             Message::Info(info) => self.on_info(info),
@@ -322,7 +344,7 @@ impl Session {
                     if self.stop.is_some_and(|s| s.seq == a.seq) {
                         self.stop = None;
                         self.phase = Phase::Connected;
-                        self.events.push_back(LinkEvent::Stopped);
+                        self.push_event(LinkEvent::Stopped);
                     }
                 }
                 Phase::Closed | Phase::Opening | Phase::Incompatible => {}
@@ -336,7 +358,10 @@ impl Session {
             | Message::Start(_)
             | Message::Stop
             | Message::Ping
-            | Message::Heartbeat(_) => self.events.push_back(LinkEvent::Malformed { ty }),
+            | Message::Heartbeat(_) => {
+                self.malformed += 1;
+                self.push_event(LinkEvent::Malformed { ty });
+            }
         }
     }
 
@@ -346,7 +371,7 @@ impl Session {
         }
         if info.proto_ver != PROTO_VERSION {
             self.phase = Phase::Incompatible;
-            self.events.push_back(LinkEvent::RequiredUpdate {
+            self.push_event(LinkEvent::RequiredUpdate {
                 controller_proto: info.proto_ver,
                 app_proto: PROTO_VERSION,
                 info,
@@ -355,12 +380,12 @@ impl Session {
         }
         self.phase = Phase::Connected;
         self.info = Some(info);
-        self.events.push_back(LinkEvent::Connected(info));
+        self.push_event(LinkEvent::Connected(info));
         let app = self.cfg.app_version;
         let fw_differs = info.fw_ver != app;
         let bridge_differs = info.bridge_ver != [0, 0, 0] && info.bridge_ver != app;
         if fw_differs || bridge_differs {
-            self.events.push_back(LinkEvent::RecommendedUpdate {
+            self.push_event(LinkEvent::RecommendedUpdate {
                 fw_ver: info.fw_ver,
                 bridge_ver: info.bridge_ver,
                 app_ver: app,
@@ -368,6 +393,14 @@ impl Session {
                 bridge_differs,
             });
         }
+    }
+
+    /// A STATUS from a freshly booted controller while the previous one
+    /// was not fresh: `abort_count` 0 and `last_event` NONE (STOP and HELLO
+    /// clear neither, so only a reboot brings both back).
+    fn looks_rebooted(prev: Option<&StatusView>, now: &StatusView) -> bool {
+        let fresh = |s: &StatusView| s.abort_count == 0 && s.last_event == EventCode::None;
+        prev.is_some_and(|p| !fresh(p)) && fresh(now)
     }
 
     fn on_status(&mut self, s: &Status, now_us: u64) {
@@ -381,31 +414,55 @@ impl Session {
             link_ok: s.flags & STATUS_LINK_OK != 0,
             console_ready: s.flags & STATUS_CONSOLE_READY != 0,
         };
-        self.status = Some(view);
-        self.events.push_back(LinkEvent::Status(view));
+        let prev = self.status.replace(view);
+        self.push_event(LinkEvent::Status(view));
         if !matches!(self.phase, Phase::Connected | Phase::Stopping) {
             return;
         }
-        self.send.status(s.free, s.last_seq, now_us);
-        let Some(base) = self.abort_baseline.replace(s.abort_count) else {
+        if Self::looks_rebooted(prev.as_ref(), &view) {
+            self.on_reboot(now_us);
             return;
+        }
+        let mapped = self.send.status(s.free, s.last_seq, now_us);
+
+        // The abort latch: a rise the session has not accounted for (no
+        // EVENT reached it: lost, or a cause that sends none).
+        let rise = match self.abort_baseline {
+            None => false,
+            Some(b) => {
+                let d = s.abort_count.wrapping_sub(b);
+                // A count "behind" the baseline (an EVENT counted before this
+                // STATUS was built) only resyncs.
+                (1..128).contains(&d)
+            }
         };
-        if s.abort_count == base {
+        self.abort_baseline = Some(s.abort_count);
+        if self.phase != Phase::Connected {
             return;
         }
-        if std::mem::take(&mut self.abort_rise_expected) || self.phase != Phase::Connected {
+        if rise {
+            let done_now = view.last_event == EventCode::PlaybackDone
+                && prev.is_some_and(|p| p.last_event != EventCode::PlaybackDone);
+            if !view.link_ok {
+                self.zero_pending = true;
+                self.abandon(AbandonReason::LinkLost);
+            } else if done_now && self.piece.started {
+                self.push_event(LinkEvent::PlaybackDone);
+                self.do_stop();
+            } else {
+                self.abandon(AbandonReason::ControllerAborted);
+            }
             return;
         }
-        // The latch rose without an EVENT reaching us (lost, or a cause that
-        // sends none: app timeout, DTR edge, core stall).
-        if !view.link_ok {
-            self.zero_pending = true;
-            self.abandon(AbandonReason::LinkLost);
-        } else if view.last_event == EventCode::PlaybackDone && self.piece.started {
-            self.events.push_back(LinkEvent::PlaybackDone);
-            self.do_stop();
-        } else {
-            self.abandon(AbandonReason::ControllerAborted);
+        // START was handled (this STATUS covers it) but the controller is not
+        // playing and did not abort: a semantic NAK on START was lost and the
+        // next cumulative ACK covered it (AD-19: the mode comes from STATUS).
+        if self.piece.started
+            && view.mode != Mode::Playing
+            && let (Some(start), Some(at)) = (self.piece.start_abs, mapped)
+            && at >= start
+        {
+            self.abandon(AbandonReason::NotPlaying);
         }
     }
 
@@ -422,7 +479,7 @@ impl Session {
         if let NakReason::Unknown(r) = reason {
             // Transport or semantic is unknown: take only the cumulative part.
             self.send.ack(expected.wrapping_sub(1), now_us);
-            self.events.push_back(LinkEvent::UnknownNak {
+            self.push_event(LinkEvent::UnknownNak {
                 reason: r,
                 expected,
                 got,
@@ -430,48 +487,65 @@ impl Session {
             return;
         }
         if reason.is_transport() {
-            self.send.transport_nak(expected, now_us);
+            if self.send.transport_nak(expected, now_us) {
+                // A wire fault: end any partial run the controller holds.
+                self.zero_pending = true;
+            }
             return;
         }
         let refused_ty = self.send.sent_frame(got).map(|f| f.ty);
         self.send.ack(expected.wrapping_sub(1), now_us);
         match refused_ty {
             Some(MSG_QUEUE_EVENT | MSG_START) => self.abandon(AbandonReason::Nak(reason)),
-            Some(ty) => self.events.push_back(LinkEvent::Refused { reason, ty }),
+            Some(ty) => {
+                if ty == MSG_SET_STATE {
+                    self.direct = false;
+                }
+                self.push_event(LinkEvent::Refused { reason, ty });
+            }
             None => {}
         }
     }
 
     fn on_event(&mut self, code: EventCode) {
-        self.events.push_back(LinkEvent::ControllerEvent(code));
+        self.push_event(LinkEvent::ControllerEvent(code));
+        let latches = matches!(
+            code,
+            EventCode::PlaybackDone
+                | EventCode::LinkLost
+                | EventCode::Late
+                | EventCode::Underrun
+                | EventCode::UsbSuspended
+        );
+        if !latches || !matches!(self.phase, Phase::Connected | Phase::Stopping) {
+            return;
+        }
+        // Each of these EVENTs comes with exactly one rise of `abort_count`
+        // (the controller sends none when already latched): account for it
+        // so the STATUS that shows the rise does not act a second time.
+        self.abort_baseline = self.abort_baseline.map(|b| b.wrapping_add(1));
+        if code == EventCode::LinkLost {
+            self.zero_pending = true;
+        }
         if self.phase != Phase::Connected {
             return;
         }
         match code {
             EventCode::PlaybackDone => {
-                self.abort_rise_expected = true;
                 if self.piece.started {
-                    self.events.push_back(LinkEvent::PlaybackDone);
+                    self.push_event(LinkEvent::PlaybackDone);
                 }
                 self.do_stop();
             }
-            EventCode::LinkLost => {
-                self.abort_rise_expected = true;
-                self.zero_pending = true;
-                self.abandon(AbandonReason::LinkLost);
-            }
-            EventCode::Late | EventCode::Underrun | EventCode::UsbSuspended => {
-                self.abort_rise_expected = true;
-                self.abandon(AbandonReason::ControllerAborted);
-            }
-            EventCode::None | EventCode::Unknown(_) => {}
+            EventCode::LinkLost => self.abandon(AbandonReason::LinkLost),
+            _ => self.abandon(AbandonReason::ControllerAborted),
         }
     }
 
     fn on_reboot(&mut self, now_us: u64) {
-        self.events.push_back(LinkEvent::ControllerRebooted);
+        self.push_event(LinkEvent::ControllerRebooted);
         if self.piece_active() {
-            self.events.push_back(LinkEvent::PieceAbandoned {
+            self.push_event(LinkEvent::PieceAbandoned {
                 reason: AbandonReason::ControllerRebooted,
             });
         }
@@ -480,34 +554,40 @@ impl Session {
 
     // ------------------------------------------------------------ time
 
-    /// Runs the timers: the 50 ms resend and the DIRECT PING.
+    /// Runs the timers: the 50 ms resend and the DIRECT PING. Call it when
+    /// `poll_timeout` is at or before now (calling it more often is fine).
     pub fn handle_timeout(&mut self, now_us: u64) {
         if self.phase != Phase::Connected {
             return;
         }
-        self.send.check_timeout(now_us);
+        if self.send.check_timeout(now_us) {
+            // No ACK for 50 ms: something was lost on the wire.
+            self.zero_pending = true;
+        }
         if let Some(due) = self.ping_due()
             && now_us >= due
-            && !self.send.has_unsent()
         {
             self.send.push(MSG_PING, Vec::new());
         }
     }
 
     fn ping_interval_us(&self) -> Option<u64> {
-        let ms = u64::from(self.info?.app_timeout_ms) / u64::from(APP_PING_DIVISOR);
-        (ms > 0).then_some(ms * 1000)
+        let us = u64::from(self.info?.app_timeout_ms) * 1000 / u64::from(APP_PING_DIVISOR);
+        (us > 0).then_some(us)
     }
 
+    /// When a PING is due: only in DIRECT, with no control frame waiting
+    /// (it would reset the timer anyway) and room in the window.
     fn ping_due(&self) -> Option<u64> {
-        if !self.direct {
+        if !self.direct || self.send.has_unsent_control() || !self.send.window_open() {
             return None;
         }
-        Some(self.last_app_tx + self.ping_interval_us()?)
+        Some(self.last_app_tx.saturating_add(self.ping_interval_us()?))
     }
 
-    /// When `handle_timeout` (or `poll_transmit`) must next be called. A
-    /// time at or before now means "now".
+    /// When `handle_timeout` must next be called. A time at or before now
+    /// means "now"; it never stays in the past once `handle_timeout` and
+    /// `poll_transmit` have run.
     #[must_use]
     pub fn poll_timeout(&self) -> Option<u64> {
         if self.zero_pending && self.phase != Phase::Closed {
@@ -527,9 +607,9 @@ impl Session {
     // ------------------------------------------------------------ output
 
     /// The next bytes to write (one frame with its `0x00`, or a lone
-    /// `0x00`), or `None`. Call until `None` after every input.
+    /// `0x00`), or `None`. Call until `None` after every input, command
+    /// and timeout.
     pub fn poll_transmit(&mut self, now_us: u64) -> Option<Vec<u8>> {
-        self.handle_timeout(now_us);
         if self.phase == Phase::Closed {
             return None;
         }
@@ -542,7 +622,7 @@ impl Session {
                 if now_us < self.hello_due {
                     return None;
                 }
-                self.hello_due = now_us + HELLO_RESEND_US;
+                self.hello_due = now_us.saturating_add(HELLO_RESEND_US);
                 encode_frame(MSG_HELLO, self.cfg.hello_seq, &[PROTO_VERSION]).ok()
             }
             Phase::Stopping => {
@@ -550,11 +630,15 @@ impl Session {
                 if now_us < stop.due {
                     return None;
                 }
-                stop.due = now_us + send::ACK_TIMEOUT_US;
+                stop.due = now_us.saturating_add(send::ACK_TIMEOUT_US);
                 encode_frame(MSG_STOP, stop.seq, &[]).ok()
             }
             Phase::Connected => {
+                let abs = self.send.next_abs();
                 let (seq, ty, body) = self.send.next_to_send(now_us)?;
+                if ty == MSG_START && self.piece.start_abs.is_none() {
+                    self.piece.start_abs = Some(abs);
+                }
                 self.last_app_tx = now_us;
                 encode_frame(ty, seq, &body).ok()
             }

@@ -5,6 +5,9 @@
 
 use std::collections::VecDeque;
 
+/// The longest a chunk is held back for a reorder, µs.
+pub const HOLD_US: u64 = 3_000;
+
 /// xorshift64* (Vigna): small, seedable, stable across versions.
 #[derive(Debug, Clone)]
 pub struct Rng(u64);
@@ -96,7 +99,7 @@ pub struct Channel {
     latency_us: u64,
     rng: Rng,
     queue: VecDeque<(u64, Vec<u8>)>,
-    hold: Option<Vec<u8>>,
+    hold: Option<(u64, Vec<u8>)>,
     stats: ChannelStats,
 }
 
@@ -162,7 +165,7 @@ impl Channel {
             self.stats.duplicated += 1;
         }
         // Reorder: hold this chunk back and send it after the next one.
-        if let Some(held) = self.hold.take() {
+        if let Some((_, held)) = self.hold.take() {
             self.enqueue(now_us, chunk.clone());
             if dup {
                 self.enqueue(now_us, chunk);
@@ -172,7 +175,7 @@ impl Channel {
         }
         if self.rng.chance(self.impair.reorder) {
             self.stats.reordered += 1;
-            self.hold = Some(chunk);
+            self.hold = Some((now_us, chunk));
             return;
         }
         self.enqueue(now_us, chunk.clone());
@@ -181,10 +184,14 @@ impl Channel {
         }
     }
 
-    /// Releases a held chunk (call when the sender has nothing else, so a
-    /// reorder never delays a chunk forever).
+    /// Releases a chunk held for a reorder once it has waited `HOLD_US`
+    /// with nothing to swap with (so a reorder can cross clock steps but
+    /// never delays a chunk for long).
     pub fn flush_hold(&mut self, now_us: u64) {
-        if let Some(h) = self.hold.take() {
+        if let Some((t, _)) = &self.hold
+            && now_us >= t + HOLD_US
+            && let Some((_, h)) = self.hold.take()
+        {
             self.enqueue(now_us, h);
         }
     }
@@ -206,6 +213,10 @@ impl Channel {
     /// When the next chunk is due.
     #[must_use]
     pub fn next_due(&self) -> Option<u64> {
-        self.queue.front().map(|(t, _)| *t)
+        let held = self.hold.as_ref().map(|(t, _)| t + HOLD_US);
+        [self.queue.front().map(|(t, _)| *t), held]
+            .into_iter()
+            .flatten()
+            .min()
     }
 }
