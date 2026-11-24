@@ -202,17 +202,31 @@ fn c7_a_duplicated_nak_rewinds_once() {
     // Every controller frame arrives twice; app frames are lost now and then,
     // so every transport NAK is seen twice. Only the first may rewind.
     for seed in common::seeds(&[1, 2, 3]) {
-        let ctrl = ControllerConfig { sink_every_us: Some(500), ..ControllerConfig::default() };
+        let ctrl = ControllerConfig {
+            sink_every_us: Some(500),
+            ..ControllerConfig::default()
+        };
         let mut s = common::connected_lossy(ctrl, Impair::default(), seed);
-        s.up.set_impair(Impair { drop: 0.05, ..Impair::default() });
-        s.down.set_impair(Impair { dup: 1.0, ..Impair::default() });
+        s.up.set_impair(Impair {
+            drop: 0.05,
+            ..Impair::default()
+        });
+        s.down.set_impair(Impair {
+            dup: 1.0,
+            ..Impair::default()
+        });
         for i in 0..N {
-            s.session.queue_event(1000 + i as u32 * 1000, common::note(i)).unwrap();
+            s.session
+                .queue_event(1000 + i as u32 * 1000, common::note(i))
+                .unwrap();
         }
         assert!(s.run_until(300_000_000, |s| s.ctrl.log().enqueued.len() >= N));
         let st = s.session.send_stats();
         let points = s.seen.transport_nak_points.len() as u64;
-        assert!(s.seen.transport_naks >= 2 * points && points > 10, "seed {seed}: {points} points");
+        assert!(
+            s.seen.transport_naks >= 2 * points && points > 10,
+            "seed {seed}: {points} points"
+        );
         assert!(
             st.rewinds <= points,
             "seed {seed}: {} rewinds for {points} NAK points ({} NAKs delivered)",
