@@ -100,6 +100,26 @@ if(OCB_TEST_ENV)
     set_tests_properties(${OCB_LINK_TESTS} PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
 endif()
 
+# Bridge (Story 3.1): F.8 framer, F.7 heartbeat gaps in a 512-frame burst,
+# F.39 the AD-20 probe, F.41 the UART -> PC forwarder.
+set(OCB_BRIDGE_TESTS test_bridge_framer test_bridge_heartbeat test_bridge_probe test_bridge_rxfwd)
+foreach(_t IN LISTS OCB_BRIDGE_TESTS)
+    add_executable(${_t} ${_t}.c)
+    target_link_libraries(${_t} PRIVATE ocb_bridge_core)
+    ocb_strict_warnings(${_t}.c)
+    add_test(NAME ${_t} COMMAND ${_t})
+endforeach()
+if(OCB_TEST_ENV)
+    set_tests_properties(${OCB_BRIDGE_TESTS} PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
+endif()
+
+# F.40 (Story 3.1): ocb_bridge_core includes only the allowed headers and
+# uses no heap, I/O or clock identifiers; bad fixtures flagged, the good one
+# and the real bridge/core tree pass; no own tud_cdc_line_coding_cb.
+add_test(NAME bridge_pure_check
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/bridge_pure_selftest.sh"
+            "${OCB_FW_DIR}/tools/check-bridge-pure.sh" "${OCB_FW_DIR}")
+
 # F.37 (story 2.5 D8, D10): the built-in test timeline, its loader through
 # the real link and core, the melody played on a fake clock.
 add_executable(test_testtl test_testtl.c)
@@ -138,9 +158,20 @@ target_compile_options(ocb_link_sim PRIVATE -fno-sanitize=all)
 target_link_options(ocb_link_sim PRIVATE -fno-sanitize=all)
 set_target_properties(ocb_link_sim PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
 ocb_strict_warnings(link_sim_shim.c)
+# F.42 (Story 3.1): the own bridge's core, loaded the same way, between the
+# probe and ocb_link_sim (the --bridge own bench dry run).
+file(GLOB OCB_BRIDGE_SIM_SOURCES CONFIGURE_DEPENDS
+    "${OCB_FW_DIR}/bridge/core/*.c" "${OCB_FW_DIR}/common/proto/*.c")
+add_library(ocb_bridge_sim MODULE bridge_sim_shim.c ${OCB_BRIDGE_SIM_SOURCES})
+target_include_directories(ocb_bridge_sim PRIVATE
+    "${OCB_FW_DIR}/bridge/core/include" "${OCB_FW_DIR}/common/proto/include")
+target_compile_options(ocb_bridge_sim PRIVATE -fno-sanitize=all)
+target_link_options(ocb_bridge_sim PRIVATE -fno-sanitize=all)
+set_target_properties(ocb_bridge_sim PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+ocb_strict_warnings(bridge_sim_shim.c)
 add_test(NAME link_probe_selftest
     COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_link_probe.py" "${OCB_FW_DIR}"
-            "$<TARGET_FILE:ocb_link_sim>" "${CMAKE_CURRENT_BINARY_DIR}")
+            "$<TARGET_FILE:ocb_link_sim>" "${CMAKE_CURRENT_BINARY_DIR}" "$<TARGET_FILE:ocb_bridge_sim>")
 
 # F.22 (story 2.7 D18): the watchdog values written in docs/link-protocol.md
 # (timing table and prose) equal constants.txt and ocb_link/config.h.

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Self-test of tools/link_probe.py (story 2.6 Task 10.2, tests F.19, F.20).
 
-Run by ctest as `python3 -I test_link_probe.py FIRMWARE_DIR [LINK_SIM_LIB]`.
+Run by ctest as `python3 -I test_link_probe.py FIRMWARE_DIR [LINK_SIM_LIB [TMP_DIR [BRIDGE_SIM_LIB]]]`.
 F.19: the probe's codec against the shared conformance vectors (cobs,
 crc16, frames, messages; parsed exactly as common/proto/vectors/README.md
 says, every vector must pass) and its AD-6 sender against an in-process
@@ -663,6 +663,7 @@ class Bridge2wiCCPort:
             self.ctrl_tx += self.buf.raw[:k]
         self.credit_rev += self.UART_BYTES_PER_TICK
         n = min(int(self.credit_rev), len(self.ctrl_tx))
+        self.rx_busy = n > 0
         if n > 0:
             self.host_in += self.ctrl_tx[:n]
             del self.ctrl_tx[:n]
@@ -1651,6 +1652,372 @@ class SelfPlay(unittest.TestCase):
         self.assertIn("stopped answering or rebooted during the piece", last_line(text))
         self.assertFalse(port.hb_running())
 
+# ------------------------------------------------- Story 3.1: the own bridge
+BRIDGE_SIM_LIB = None
+OWN_VER = (0, 3, 1)
+
+
+def load_bridge_sim():
+    lib = ctypes.CDLL(BRIDGE_SIM_LIB)
+    lib.bs_init.argtypes = [ctypes.c_uint8] * 3
+    lib.bs_cdc_in.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+    lib.bs_cdc_in.restype = ctypes.c_size_t
+    lib.bs_set_dtr.argtypes = [ctypes.c_int]
+    lib.bs_uart_rx.argtypes = [ctypes.c_uint16]
+    lib.bs_cdc_out.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+    lib.bs_cdc_out.restype = ctypes.c_size_t
+    lib.bs_hb_ticks.argtypes = [ctypes.c_uint32]
+    lib.bs_step.argtypes = [ctypes.c_uint64, ctypes.c_int]
+    lib.bs_step.restype = ctypes.c_int
+    lib.bs_uart_out.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_size_t]
+    lib.bs_uart_out.restype = ctypes.c_size_t
+    lib.bs_linked.restype = ctypes.c_int
+    lib.bs_counter.argtypes = [ctypes.c_int]
+    lib.bs_counter.restype = ctypes.c_uint32
+    return lib
+
+
+class OwnBridgePort:
+    """The Story 3.1 bench on a fake clock: probe -> CDC -> the own bridge's
+    core (ocb_bridge_sim, ctypes) -> UART -> the real controller link
+    (ocb_link_sim) -> UART -> the bridge -> CDC -> probe. Per 100 us tick:
+    up to 120 bytes offered to the bridge's CDC input (it takes what its
+    framer accepts: USB backpressure), the bridge's 20 ms alarm, the AD-20
+    probe on both ends (the bridge sees the controller's TX gate, the
+    controller sees the bridge's TX; a driven line that falls is a break on
+    the other side), the bridge's UART ring plus FIFO drained at 460800 baud,
+    the controller's TX ring drained back into the bridge, and up to 120
+    bytes from the bridge to the host. Knobs: `bridge_hb` (False: the
+    bridge's heartbeat is removed, a red control), `honour_dtr` (False: the
+    DTR line never reaches the bridge, a red control), the two wires, and
+    `bridge_powered` / `ctrl_powered` for the power-up orders of H.1."""
+
+    TICK = 100e-6
+    USB_BYTES_PER_TICK = 120
+    UART_BYTES_PER_TICK = 46080 * 100e-6
+    RING = 128
+    FIFO = 32
+
+    def __init__(self, lib, blib, usb_ready=False, ctrl_powered=True, bridge_powered=True):
+        self.lib = lib
+        self.blib = blib
+        self.usb_ready = usb_ready
+        self.bridge_hb = True
+        self.honour_dtr = True
+        self.fwd_plugged = True   # bridge TX -> controller RX
+        self.rev_plugged = True   # controller TX -> bridge RX
+        self.ctrl_powered = ctrl_powered
+        self.bridge_powered = bridge_powered
+        self.actions = []
+        self.clock = FakeClock(self._advance)
+        self.host_out = bytearray()
+        self.host_in = bytearray()
+        self.line = bytearray()     # the bridge's UART ring + FIFO
+        self.ctrl_tx = bytearray()
+        self.credit_fwd = 0.0
+        self.credit_rev = 0.0
+        self.prev_bridge_line = False
+        self.prev_ctrl_line = False
+        self.rx_busy = False
+        self.bridge_tx_ticks = 0    # ticks with the bridge's TX driven (probe duty)
+        self.ticks = 0
+        self.rx = probe.Splitter("APP")
+        self.buf = ctypes.create_string_buffer(512)
+        if bridge_powered:
+            blib.bs_init(*OWN_VER)
+        if ctrl_powered:
+            lib.sim_init(512, self._us())
+
+    # The probe-side port API (no emulated heartbeat with --bridge own).
+    def hb_running(self):
+        return False
+
+    def hb_stats(self):
+        return "heartbeat: none (own bridge)"
+
+    def service(self):
+        pass
+
+    def set_dtr(self, on):
+        if self.honour_dtr and self.bridge_powered:
+            self.blib.bs_set_dtr(1 if on else 0)
+
+    def at(self, t, fn):
+        self.actions.append((t, fn))
+
+    def power_bridge(self):
+        self.blib.bs_init(*OWN_VER)
+        self.bridge_powered = True
+
+    def power_controller(self):
+        self.lib.sim_init(512, self._us())
+        self.ctrl_powered = True
+
+    def _us(self):
+        return ctypes.c_uint64(int(round(self.clock.t * 1e6)))
+
+    def now(self):
+        return self.clock.now()
+
+    def sleep(self, dt):
+        self.clock.sleep(dt)
+
+    def write(self, data):
+        self.host_out += data
+
+    def poll(self):
+        data, self.host_in = bytes(self.host_in), bytearray()
+        return self.rx.feed(data) if data else []
+
+    def read_raw(self, n):
+        return b""
+
+    def _advance(self, dt):
+        end = self.clock.t + dt
+        while True:
+            self._tick()
+            self.clock.t += self.TICK
+            if self.clock.t >= end:
+                break
+
+    def _tick(self):
+        lib, b = self.lib, self.blib
+        now = self._us()
+        self.ticks += 1
+        if self.actions:
+            due = [a for a in self.actions if a[0] <= self.clock.t]
+            self.actions = [a for a in self.actions if a[0] > self.clock.t]
+            for _, fn in due:
+                fn()
+        if self.ctrl_powered and self.usb_ready:
+            lib.sim_usb_ready(now)
+        ctrl_line = bool(self.ctrl_powered and lib.sim_counter(9) != 0 and self.rev_plugged)
+        # The bridge samples its RX pad once per pass: while controller
+        # characters are on the wire it reads data bits (low), not idle-high.
+        rx_sample = ctrl_line and not self.rx_busy
+        bridge_line = False
+        if self.bridge_powered:
+            # Host -> bridge (USB backpressure: only what the framer takes).
+            if self.host_out:
+                take = bytes(self.host_out[:self.USB_BYTES_PER_TICK])
+                n = b.bs_cdc_in(take, len(take))
+                del self.host_out[:n]
+            if self.bridge_hb:
+                b.bs_hb_ticks(int(self.clock.t / 0.020))
+            if self.prev_ctrl_line and not ctrl_line:
+                b.bs_uart_rx(0x400)  # the line falls under the pull-down: a break
+            tx = b.bs_step(now, 1 if rx_sample else 0) != 0
+            if tx:
+                self.bridge_tx_ticks += 1
+            else:
+                self.line.clear()
+            bridge_line = tx and self.fwd_plugged
+            ring_used = max(0, len(self.line) - self.FIFO)
+            k = b.bs_uart_out(self.buf, self.RING - ring_used, ring_used)
+            self.line += self.buf.raw[:k]
+        if self.ctrl_powered:
+            lib.sim_rx_level(1 if bridge_line else 0, now)
+            if self.prev_bridge_line and not bridge_line:
+                lib.sim_break(now)
+        self.prev_bridge_line = bridge_line
+        self.prev_ctrl_line = ctrl_line
+        # Bridge UART -> controller RX.
+        self.credit_fwd += self.UART_BYTES_PER_TICK
+        n = min(int(self.credit_fwd), len(self.line))
+        if n > 0:
+            chunk = bytes(self.line[:n])
+            del self.line[:n]
+            self.credit_fwd -= n
+            if bridge_line and self.ctrl_powered:
+                lib.sim_rx(chunk, len(chunk), now)
+        if not self.line:
+            self.credit_fwd = min(self.credit_fwd, 1.0)
+        if not self.ctrl_powered:
+            return
+        lib.sim_poll(now)
+        if lib.sim_counter(9) == 0:
+            self.ctrl_tx.clear()
+        while True:
+            space = 128 - len(self.ctrl_tx)
+            k = lib.sim_tx(now, self.buf, space)
+            if k == 0:
+                break
+            self.ctrl_tx += self.buf.raw[:k]
+        self.credit_rev += self.UART_BYTES_PER_TICK
+        n = min(int(self.credit_rev), len(self.ctrl_tx))
+        if n > 0:
+            chunk = bytes(self.ctrl_tx[:n])
+            del self.ctrl_tx[:n]
+            self.credit_rev -= n
+            if ctrl_line and self.bridge_powered:
+                for byte in chunk:
+                    b.bs_uart_rx(byte)
+        if not self.ctrl_tx:
+            self.credit_rev = min(self.credit_rev, 1.0)
+        lib.sim_tx_settled(now, 0 if self.ctrl_tx else 1)
+        if self.bridge_powered:
+            k = b.bs_cdc_out(self.buf, self.USB_BYTES_PER_TICK)
+            self.host_in += self.buf.raw[:k]
+
+
+class OwnBridge(unittest.TestCase):
+    """F.42 (Story 3.1, retro action #27): the --bridge own bench commands,
+    unmodified, through the own bridge's real core and the real controller
+    link on a fake clock; red controls show they depend on the bridge's
+    heartbeat and on the DTR line."""
+
+    def setUp(self):
+        if SIM_LIB is None or BRIDGE_SIM_LIB is None:
+            self.skipTest("no simulation libraries")
+        self.lib = load_sim()
+        self.blib = load_bridge_sim()
+
+    def port(self, **kw):
+        return OwnBridgePort(self.lib, self.blib, **kw)
+
+    def bridgeup(self, port, **kw):
+        a = dict(seconds=2.0, expect_ready="no", expect_bridge_ver=OWN_VER)
+        a.update(kw)
+        return run_cmd(port, probe.cmd_bridgeup, **a)
+
+    def test_bridgeup_passes(self):
+        port = self.port()
+        rc, text = self.bridgeup(port)
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(last_line(text), "PASS")
+        self.assertGreater(self.blib.bs_counter(0), 100, "bridge heartbeats sent")
+
+    def test_bridgeup_red_without_the_bridge_heartbeat(self):
+        port = self.port()
+        port.bridge_hb = False
+        rc, text = self.bridgeup(port)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("link_ok 1 from the bridge's own heartbeat", last_line(text))
+
+    def test_bridgeup_red_wrong_version(self):
+        rc, text = self.bridgeup(self.port(), expect_bridge_ver=(9, 9, 9))
+        self.assertEqual(rc, 1, text)
+        self.assertIn("bridge_ver", last_line(text))
+
+    def test_soak_through_the_own_bridge(self):
+        port = self.port()
+        with fake_time(port):
+            port.set_dtr(True)
+            rc, text, totals = run_soak(port, cycles=3, events=500)
+        self.assertEqual(rc, 0, text[-800:])
+        self.assertEqual(totals.get("naks"), 0, text[-800:])
+        self.assertEqual(self.lib.sim_counter(2), 0, "COBS/CRC drops at the controller")
+        for seed in (1, 2):
+            port = self.port()
+            with fake_time(port):
+                port.set_dtr(True)
+                rc, text, totals = run_soak(port, cycles=2, events=500, seed=seed, corrupt=0.02, drop=0.02,
+                                            garbage=True)
+            self.assertEqual(rc, 0, "seed %d: %s" % (seed, text[-800:]))
+        # Unpaced is fine with the own bridge (USB backpressure, AD-4).
+        port = self.port()
+        with fake_time(port):
+            port.set_dtr(True)
+            rc, text, totals = run_soak(port, cycles=2, events=500, no_pace=True, max_inflight=0)
+        self.assertEqual(rc, 0, text[-800:])
+        self.assertEqual(totals.get("naks"), 0, text[-800:])
+
+    def test_bridgedtr_red_without_the_bridge_heartbeat(self):
+        port = self.port(usb_ready=True)
+        port.bridge_hb = False
+        rc, text = run_cmd(port, probe.cmd_bridgedtr)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("link_ok 1 from the bridge's own heartbeat", last_line(text))
+
+    def test_main_with_bridge_own(self):
+        """The H-row command lines themselves, through main() (argparse,
+        the --bridge own guards, --expect-bridge-ver, no emulated heartbeat)."""
+        saved = probe.Port
+        port = self.port()
+        try:
+            probe.Port = lambda name, baud: port
+            out = io.StringIO()
+            with fake_time(port), contextlib.redirect_stdout(out):
+                rc = probe.main(["--port", "sim", "--bridge", "own", "--expect-bridge-ver", "0.3.1", "bridgeup",
+                                 "--seconds", "1", "--expect-ready", "no"])
+            self.assertEqual(rc, 0, out.getvalue())
+            self.assertEqual(last_line(out.getvalue()), "PASS")
+            # --heartbeat is ignored with a warning: the probe never writes one.
+            err = io.StringIO()
+            port2 = self.port()
+            probe.Port = lambda name, baud: port2
+            with fake_time(port2), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = probe.main(["--port", "sim", "--bridge", "own", "--heartbeat", "--expect-bridge-ver", "0.3.1",
+                                 "--seed", "1", "soak", "--cycles", "1", "--events", "50"])
+            self.assertEqual(rc, 0)
+            self.assertIn("--heartbeat ignored", err.getvalue())
+            self.assertGreater(self.blib.bs_counter(0), 0, "the bridge's own heartbeats carried the soak")
+        finally:
+            probe.Port = saved
+        for argv in (["bridgeup"], ["bridgedtr"]):
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+                probe.main(["--port", "sim"] + argv)
+            self.assertEqual(cm.exception.code, 2, argv)
+        for cmd in ("linkup", "silence", "direct", "playing", "breaks"):
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+                probe.main(["--port", "sim", "--bridge", "own", cmd])
+            self.assertEqual(cm.exception.code, 2, cmd)
+        for bad in ("1.2", "1.2.3.4", "256.0.0", "a.b.c"):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                probe.main(["--port", "sim", "--bridge", "own", "--expect-bridge-ver", bad, "bridgeup"])
+        self.assertEqual(probe.fw_version_triple(TMP_DIR or "/nonexistent"), (0, 0, 0), "no git: 0.0.0")
+
+    def test_bridgedtr_passes_and_red_without_dtr(self):
+        rc, text = run_cmd(self.port(usb_ready=True), probe.cmd_bridgedtr)
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(last_line(text), "PASS")
+        port = self.port(usb_ready=True)
+        port.honour_dtr = False
+        rc, text = run_cmd(port, probe.cmd_bridgedtr)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("DTR dropped in DIRECT", last_line(text))
+
+    def test_link_loss_and_recovery(self):
+        port = self.port()
+        rc, text = self.bridgeup(port, seconds=1.0)
+        self.assertEqual(rc, 0, text)
+        losses, ups = self.blib.bs_counter(3), self.blib.bs_counter(2)
+        port.at(port.now() + 0.05, lambda: setattr(port, "fwd_plugged", False))
+        port.at(port.now() + 0.35, lambda: setattr(port, "fwd_plugged", True))
+        with fake_time(port):
+            port.sleep(1.5)
+        self.assertGreater(self.blib.bs_counter(3), losses, "the bridge saw the loss")
+        self.assertGreater(self.blib.bs_counter(2), ups, "and linked again")
+        self.assertGreaterEqual(self.lib.sim_counter(6), 1, "the controller's watchdog tripped (LINK_LOST)")
+        # The controller latched (LINK_LOST): bridgeup's STOP clears it.
+        rc, text = self.bridgeup(port, seconds=1.0)
+        self.assertEqual(rc, 0, text)
+
+    def test_power_up_orders(self):
+        for first in ("controller", "bridge"):
+            port = self.port(ctrl_powered=first == "controller", bridge_powered=first == "bridge")
+            with fake_time(port):
+                port.sleep(2.0)
+                if first == "bridge":
+                    duty = port.bridge_tx_ticks / float(port.ticks)
+                    self.assertLessEqual(duty, 0.011, "probe duty with no controller: %.4f" % duty)
+                    self.assertGreater(port.bridge_tx_ticks, 0, "the bridge probes")
+                    t = port.now()
+                    port.power_controller()
+                else:
+                    t = port.now()
+                    port.power_bridge()
+                port.set_dtr(True)
+            link_t = []
+            with fake_time(port):
+                link = probe.Link(port, out=lambda _s: None)
+                st = link.next_status(1.0, lambda s: s["flags"] & probe.STATUS_LINK_OK)
+                if st is not None:
+                    link_t.append(link.status_t - t)
+            self.assertTrue(link_t and link_t[0] <= 1.0, "%s first: link_ok %s" % (
+                first, ("after %.3f s" % link_t[0]) if link_t else "never"))
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit("usage: test_link_probe.py FIRMWARE_DIR [LINK_SIM_LIB]")
@@ -1659,5 +2026,7 @@ if __name__ == "__main__":
         SIM_LIB = sys.argv.pop(1)
     if len(sys.argv) >= 2:
         TMP_DIR = sys.argv.pop(1)
+    if len(sys.argv) >= 2:
+        BRIDGE_SIM_LIB = sys.argv.pop(1)
     probe = load_probe(FW_DIR)
     unittest.main(verbosity=1)

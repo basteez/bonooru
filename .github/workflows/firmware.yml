@@ -139,6 +139,19 @@ jobs:
       - name: Controller P2 profile is pico-sdk and TinyUSB free (AD-2)
         run: firmware/tools/check-p2-pure.sh
 
+      - name: Bridge core is pico-sdk and TinyUSB free (AD-2, Story 3.1)
+        run: firmware/tools/check-bridge-pure.sh
+
+      # Story 3.1 AC5: the 1200-baud BOOTSEL touch is pico_usb_reset's own
+      # line-coding callback, present in every bridge ELF.
+      - name: Bridge has the 1200-baud touch (AD-13, Story 3.1)
+        run: |
+          for p in fw-release fw-debug; do
+            elf="firmware/build/$p/bridge/bridge.elf"
+            "${OCB_ARM_TOOLCHAIN}/bin/arm-none-eabi-nm" -l "$elf" | grep -E ' tud_cdc_line_coding_cb\b.*pico_usb_reset/usb_reset\.c' \
+              || { echo "::error::$elf: tud_cdc_line_coding_cb from pico_usb_reset missing"; exit 1; }
+          done
+
       # Story 2.3 AC5a: the P2 debug log exists in debug builds only. The
       # debug ELF must contain it, so a rename cannot make the gate vacuous.
       # Story 2.5 Task 8.3: nor the test melody or the hang injectors; the

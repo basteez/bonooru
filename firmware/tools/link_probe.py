@@ -763,6 +763,11 @@ class Port(HeartbeatService):
     def read_raw(self, n):
         return self.ser.read(n)
 
+    def set_dtr(self, on):
+        """The real CDC DTR line (Story 3.1, --bridge own): the own bridge
+        puts it in its HEARTBEAT flags; a fall also drops a partial frame."""
+        self.ser.dtr = bool(on)
+
 
 def _log(port, frame, t0):
     ftype, seq, body = frame
@@ -1445,6 +1450,139 @@ def cmd_linkup(port, args):
         c.note("last STATUS: %s" % _status_str(link.status))
     c.check(link.nak_version == 0, "no NAK VERSION")
     c.note(port.hb_stats())
+    return c.finish()
+
+
+def fw_version_triple(repo_dir=None):
+    """The version the firmware build gives (Story 3.1, AD-14): `git describe
+    --tags --match v*.*.* --long`, the same rule as cmake/ocb_version.cmake;
+    (0, 0, 0) when there is no tag or no git."""
+    import subprocess  # pylint: disable=import-outside-toplevel
+    repo_dir = repo_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+    try:
+        out = subprocess.run(["git", "-C", repo_dir, "describe", "--tags", "--match", "v[0-9]*.[0-9]*.[0-9]*",
+                              "--long", "--dirty"], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return (0, 0, 0)
+    m = re.match(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)-g[0-9a-f]+(-dirty)?$", out.stdout.strip())
+    if out.returncode != 0 or not m:
+        return (0, 0, 0)
+    return tuple(int(x) & 0xFF for x in m.groups()[:3])
+
+
+def _hold(link, c, seconds, base):
+    """Watches STATUS for `seconds`: link_ok stays 1, abort_count and
+    watchdog_trips unchanged, about one STATUS every 50 ms."""
+    n0 = link.status_count
+    bad = []
+
+    def watch():
+        st = link.status
+        if link.status_count > n0 and not bad:
+            if not st["flags"] & STATUS_LINK_OK:
+                bad.append("link_ok 0")
+            elif st["abort_count"] != base["abort_count"]:
+                bad.append("abort_count %d -> %d" % (base["abort_count"], st["abort_count"]))
+            elif _trips(st) != _trips(base):
+                bad.append("watchdog_trips %s -> %s" % (_trips(base), _trips(st)))
+        return False
+
+    link.wait(seconds, watch)
+    n = link.status_count - n0
+    c.check(not bad and n >= int(seconds * 10), "hold %.0f s: %d STATUS, link_ok stayed 1, abort_count and "
+            "watchdog_trips unchanged%s" % (seconds, n, (" -- " + bad[0]) if bad else ""))
+    c.note("last STATUS: %s" % _status_str(link.status))
+
+
+def cmd_bridgeup(port, args):
+    """H.22 (Story 3.1): the link through the own bridge. Its heartbeat, not
+    the probe's, brings link_ok to 1; INFO.bridge_ver is the bridge firmware's
+    version; the usual replies; a hold with no trip."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    port.set_dtr(True)
+    link.delimiter()
+    st = link.next_status(1.0, lambda s: s["flags"] & STATUS_LINK_OK)
+    if not c.check(st is not None, "STATUS link_ok 1 from the bridge's own heartbeat (no probe heartbeat)"):
+        c.note("last STATUS: %s" % _status_str(link.status))
+        return c.finish()
+    info = link.hello()
+    if not c.check(info is not None, "INFO received"):
+        return c.finish()
+    want = bytes(args.expect_bridge_ver)
+    c.check(info["bridge_ver"] == want, "INFO bridge_ver %s (want %s, the bridge firmware)" % (
+        ".".join(str(x) for x in info["bridge_ver"]), ".".join(str(x) for x in want)))
+    ready = _expect_ready(link, args)
+    r1, r2 = _try_pair(link)
+    if ready:
+        c.check(r1 == "ACK" and r2 == "BAD_STATE", "link up, ready: SET_STATE %s, START %s (want ACK, BAD_STATE)"
+                % (r1, r2))
+    else:
+        c.check(r1 == "NOT_READY" and r2 == "NOT_READY",
+                "link up, not ready: SET_STATE %s, START %s (want NOT_READY twice)" % (r1, r2))
+    c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed")
+    base = link.next_status(0.5)
+    if c.check(base is not None, "STATUS before the hold"):
+        _hold(link, c, args.seconds, base)
+    c.check(link.nak_version == 0, "no NAK VERSION")
+    return c.finish()
+
+
+def cmd_bridgedtr(port, args):
+    """H.23 (Story 3.1): the DTR edge through the real CDC DTR line. In
+    DIRECT, dropping DTR makes the bridge send HEARTBEAT flags 0 and the
+    controller abort (latch, IDLE, no EVENT); raising it and STOP recover.
+    Needs console_ready 1 (a USB host completed the handshake)."""
+    link = Link(port, trace=getattr(args, "trace", None))
+    c = Checks(link)
+    port.set_dtr(True)
+    link.delimiter()
+    if not c.check(link.hello() is not None, "INFO received"):
+        return c.finish()
+    st = link.next_status(1.0, lambda s: s["flags"] & STATUS_LINK_OK)
+    if not c.check(st is not None, "STATUS link_ok 1 from the bridge's own heartbeat"):
+        c.note("last STATUS: %s" % _status_str(link.status))
+        return c.finish()
+    # The host's P2 handshake (p2_probe.py, started in the same shell line)
+    # can take a few seconds: wait like `direct` does (review fix of 3.1).
+    if not _need_ready(link, c, 10.0):
+        return c.finish()
+    c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed (clean start)")
+    c.check(link.request_reliable(SET_STATE, NEUTRAL) == "ACK", "SET_STATE ACKed: DIRECT")
+    st = link.next_status(0.5, lambda s: s["mode"] == 1)
+    if not c.check(st is not None, "STATUS mode DIRECT"):
+        return c.finish()
+    base = st
+    t0 = port.now()
+    port.set_dtr(False)
+    # Keep the app timeout away: a PING every 200 ms while waiting.
+    aborted = []
+
+    def check_abort():
+        s = link.status
+        if s is not None and s["abort_count"] != base["abort_count"] and s["mode"] == 0:
+            aborted.append(port.now())
+            return True
+        if link.last_app_write is not None and port.now() - link.last_app_write > 0.2:
+            link.send(PING)
+        return False
+
+    link.wait(1.0, check_abort)
+    dt = (aborted[0] - t0) * 1000.0 if aborted else None
+    c.check(dt is not None and dt <= 200.0, "DTR dropped in DIRECT: abort (abort_count +1, IDLE) %s (want <= 200 ms)"
+            % (("after %.0f ms" % dt) if dt is not None else "never"))
+    c.check(link.event_after(t0, EVT_LINK_LOST) is None, "no EVENT LINK_LOST (the link stays up)")
+    st = link.status
+    c.check(st is not None and st["flags"] & STATUS_LINK_OK, "link_ok still 1")
+    c.check(link.request_reliable(SET_STATE, NEUTRAL) == "ABORTED", "SET_STATE after the abort: NAK ABORTED")
+    port.set_dtr(True)
+    # The controller learns DTR 1 from the next heartbeats (every 20 ms):
+    # wait three periods before going on.
+    link.wait(0.08)
+    c.check(link.request_reliable(STOP) == "ACK", "DTR back, STOP ACKed (latch cleared)")
+    c.check(link.request_reliable(SET_STATE, NEUTRAL) == "ACK", "SET_STATE ACKed again")
+    c.check(link.request_reliable(STOP) == "ACK", "STOP ACKed")
+    c.check(link.nak_version == 0, "no NAK VERSION")
     return c.finish()
 
 
@@ -2498,6 +2636,20 @@ def lead_ms_arg(text):
     return v
 
 
+# Story 3.1: the commands for the own bridge, and the 2.7 ones that drive the
+# emulated heartbeat (refused with --bridge own: the bridge's own heartbeat
+# cannot be stopped or given a DTR flag by the probe).
+OWN_BRIDGE_COMMANDS = ("bridgeup", "bridgedtr")
+EMULATED_HB_COMMANDS = ("linkup", "silence", "direct", "playing", "breaks")
+
+
+def version_arg(text):
+    m = re.match(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$", text)
+    if not m or any(int(x) > 255 for x in m.groups()):
+        raise argparse.ArgumentTypeError("X.Y.Z with each part 0..255")
+    return tuple(int(x) for x in m.groups())
+
+
 # Story 2.7 subcommands: the heartbeat is on by default.
 HEARTBEAT_COMMANDS = ("linkup", "silence", "direct", "playing", "breaks", "p2check", "p2watch", "press", "selfplay",
                       "hangcheck")
@@ -2526,6 +2678,13 @@ def main(argv=None):
                          "subcommands ignore it")
     ap.add_argument("--hb-period-ms", type=hb_period_arg, default=HEARTBEAT_PERIOD_MS,
                     help="heartbeat period, 5..40 ms (default %(default)s)")
+    ap.add_argument("--bridge", choices=("emulated", "own"), default="emulated",
+                    help="emulated: a transparent bridge, the probe sends the HEARTBEAT (Story 2.7); own: the "
+                         "Bonooru bridge firmware (Story 3.1) sends it, the probe never does and drives the real "
+                         "DTR line (default %(default)s)")
+    ap.add_argument("--expect-bridge-ver", type=version_arg, default=None, metavar="X.Y.Z",
+                    help="with --bridge own: the INFO.bridge_ver wanted (default: what git describe gives, "
+                         "the firmware build's rule)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("hello", help="HELLO until INFO, print INFO")
     p.add_argument("--seconds", type=float, default=3.0)
@@ -2554,6 +2713,12 @@ def main(argv=None):
     p.add_argument("--expect-ready", choices=("auto", "no", "yes"), default="auto",
                    help="console_ready: no (no USB host), yes (a host completed the handshake: the console or "
                         "p2_probe.py handshake --hold), auto (from STATUS)")
+    p = sub.add_parser("bridgeup", help="H.22 (Story 3.1, --bridge own): link_ok from the bridge's heartbeat, "
+                                        "bridge_ver, replies, hold")
+    p.add_argument("--seconds", type=seconds_arg, default=20.0, help="hold time (default %(default)s)")
+    p.add_argument("--expect-ready", choices=("auto", "no", "yes"), default="auto")
+    p = sub.add_parser("bridgedtr", help="H.23 (Story 3.1, --bridge own): DTR edge in DIRECT through the real DTR "
+                                         "(needs console_ready 1)")
     p = sub.add_parser("silence", help="H.9: stop the heartbeat, EVENT LINK_LOST in 80..120 ms, recovery")
     p.add_argument("--expect-ready", choices=("auto", "no", "yes"), default="auto")
     p = sub.add_parser("direct", help="H.11: DIRECT app timeout and DTR edge (needs console_ready 1)")
@@ -2604,12 +2769,22 @@ def main(argv=None):
     p.add_argument("--reboots-before", type=int, default=None,
                    help="the reboot_count before the hang, when known (then exactly one more is wanted)")
     args = ap.parse_args(argv)
+    if args.cmd in OWN_BRIDGE_COMMANDS and args.bridge != "own":
+        ap.error("%s needs --bridge own (the Bonooru bridge firmware)" % args.cmd)
+    if args.bridge == "own" and args.cmd in EMULATED_HB_COMMANDS:
+        ap.error("%s drives the emulated heartbeat; with --bridge own use bridgeup / bridgedtr" % args.cmd)
+    if args.bridge == "own" and args.expect_bridge_ver is None:
+        args.expect_bridge_ver = fw_version_triple()
     if args.cmd in HEARTBEAT_COMMANDS:
         args.hb_enabled = not args.no_heartbeat_global
     else:
         args.hb_enabled = args.heartbeat and not args.no_heartbeat_global
     if args.cmd != "breaks":
         args.no_heartbeat = False
+    if args.bridge == "own":
+        if args.heartbeat:
+            print("link_probe: --heartbeat ignored with --bridge own (the bridge sends its own)", file=sys.stderr)
+        args.hb_enabled = False
     port = Port(args.port, args.baud)
     if args.hb_enabled and args.cmd not in HEARTBEAT_COMMANDS:
         port.hb_start(args.hb_period_ms)
@@ -2617,7 +2792,8 @@ def main(argv=None):
                "noise": cmd_noise, "try": cmd_try, "loopback": cmd_loopback, "linkup": cmd_linkup,
                "silence": cmd_silence, "direct": cmd_direct, "playing": cmd_playing,
                "breaks": cmd_breaks, "p2check": cmd_p2check, "p2watch": cmd_p2watch, "press": cmd_press,
-               "selfplay": cmd_selfplay, "hangcheck": cmd_hangcheck}[args.cmd]
+               "selfplay": cmd_selfplay, "hangcheck": cmd_hangcheck, "bridgeup": cmd_bridgeup,
+               "bridgedtr": cmd_bridgedtr}[args.cmd]
     rc = handler(port, args)
     if port.hb_running() and args.cmd not in HEARTBEAT_COMMANDS:
         print(port.hb_stats())

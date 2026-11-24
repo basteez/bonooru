@@ -86,6 +86,7 @@ add_subdirectory(controller/core)
 add_subdirectory(controller/link)
 # Controller P2 profile (story 2.3): pure C99, built in both modes.
 add_subdirectory(controller/profile_p2)
+add_subdirectory(bridge/core)
 
 if(NOT OCB_HOST_TESTS)
     add_subdirectory(bridge)
