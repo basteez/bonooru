@@ -1,0 +1,2 @@
+// Bad fixture: systemtime
+pub fn f() { let _ = std::time::SystemTime::now(); }

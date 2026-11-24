@@ -1,0 +1,2 @@
+// Bad fixture: include_str
+static S: &str = include_str!("x");

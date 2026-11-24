@@ -1,0 +1,18 @@
+[package]
+name = "ocb-core"
+description = "Bonooru app core: protocol codec and (later) sans-IO link, no GUI, no threads, no I/O"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+# Must stay empty (Story 3.2 D2; enforced by tests/purity.rs).
+[dependencies]
+
+[dev-dependencies]
+proptest = "=1.12.0"
+
+[lints]
+workspace = true

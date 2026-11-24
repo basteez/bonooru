@@ -1,0 +1,2 @@
+// Bad fixture: eprintln
+pub fn f() { eprintln!("x"); }

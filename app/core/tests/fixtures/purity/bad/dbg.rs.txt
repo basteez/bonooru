@@ -1,0 +1,2 @@
+// Bad fixture: dbg
+pub fn f() { dbg!(1); }

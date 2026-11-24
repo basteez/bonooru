@@ -1,0 +1,24 @@
+# Bonooru app workspace (AD-18, Story 3.2). `core` is the GUI-free crate
+# `ocb-core`: no egui/eframe, no threads, no I/O (checked by tests/purity.rs).
+[workspace]
+resolver = "3"
+members = ["core"]
+
+[workspace.package]
+version = "0.0.0" # placeholder: the app version comes from git describe (core/build.rs, AD-14)
+edition = "2024"
+rust-version = "1.100"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+# Decoders run on bytes from a cable: library code must never panic (Story 3.2 D9).
+# Test files opt out locally.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"

@@ -1,0 +1,2 @@
+// Bad fixture: net
+use std::net::TcpStream;

@@ -1,0 +1,3 @@
+# The conformance vectors must keep LF line endings on every OS (vectors/README.md
+# rule 1); the Windows CI runner checks out with core.autocrlf=true (Story 3.2 D8).
+firmware/common/proto/vectors/*.txt text eol=lf

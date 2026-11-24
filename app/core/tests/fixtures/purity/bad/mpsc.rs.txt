@@ -1,0 +1,2 @@
+// Bad fixture: mpsc
+use std::sync::mpsc::channel;

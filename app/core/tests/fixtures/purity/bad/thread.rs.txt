@@ -1,0 +1,2 @@
+// Bad fixture: thread
+pub fn f() { std::thread::spawn(|| ()); }

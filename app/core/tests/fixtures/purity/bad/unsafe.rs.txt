@@ -1,0 +1,2 @@
+// Bad fixture: unsafe
+pub fn f() { unsafe {} }
