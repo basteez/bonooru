@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ocb_core::link::{LinkEvent, Phase, SendStats, Session, SessionConfig, StatusView};
+use ocb_core::link::{
+    AbandonReason, LinkEvent, Phase, SendStats, Session, SessionConfig, StatusView,
+};
 use ocb_core::protocol::consts::HAT_DOWN;
 use ocb_core::protocol::{Info, Mode, NEUTRAL, NakReason, State};
 
@@ -190,6 +192,10 @@ struct Runner<'a, I: Io, O: Owner> {
     playback_done: bool,
     stopped: bool,
     trouble: Option<String>,
+    /// The latest `PieceAbandoned` reason (failsafe tells a wire pull by it).
+    abandoned: Option<AbandonReason>,
+    /// The failsafe tally, printed on every ending (Ctrl+C included).
+    rounds: failsafe::Tally,
     written: u64,
     max_unsent: usize,
     max_unsent_streaming: usize,
@@ -231,6 +237,8 @@ pub fn run<I: Io, O: Owner>(
         playback_done: false,
         stopped: false,
         trouble: None,
+        abandoned: None,
+        rounds: failsafe::Tally::default(),
         written: 0,
         max_unsent: 0,
         max_unsent_streaming: 0,
@@ -260,6 +268,10 @@ pub fn run<I: Io, O: Owner>(
             (EXIT_INTERRUPTED, line)
         }
     };
+    if r.rounds.total > 0 {
+        let line = r.rounds.line();
+        r.owner.say(&line);
+    }
     let summary = r.summary();
     r.owner.say(&summary);
     r.owner.say(&verdict);
@@ -355,13 +367,19 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
                 self.status = Some(st);
                 self.status_at = Some(now);
             }
+            LinkEvent::PlaybackDone if self.watch.active => self.watch_played(now),
             LinkEvent::PlaybackDone => self.playback_done = true,
             LinkEvent::Stopped => self.stopped = true,
             LinkEvent::PieceAbandoned { reason } if self.watch.active => {
                 self.watch_abandon(reason, now);
             }
             LinkEvent::ControllerRebooted if self.watch.active => self.watch_reboot(now),
+            LinkEvent::Refused { reason, ty } if self.watch.active => {
+                self.owner
+                    .say(&format!("type {ty:#04x} refused: NAK {reason:?} (logged)"));
+            }
             LinkEvent::PieceAbandoned { reason } => {
+                self.abandoned = Some(reason);
                 self.trouble
                     .get_or_insert_with(|| format!("piece abandoned: {reason:?}"));
             }

@@ -40,6 +40,9 @@ pub struct SimIo {
     /// A.3: losses to make, one per round, 2 s after the piece starts
     /// playing; the bridge or the wire comes back 1 s later.
     pub loss_plan: Vec<Loss>,
+    /// This many pieces play to the end before the plan starts.
+    pub loss_skip: u32,
+    this_play_skips: bool,
     /// The bridge is unplugged: the port fails.
     pub unplugged: bool,
     playing_since: Option<u64>,
@@ -47,6 +50,9 @@ pub struct SimIo {
     /// H.3: the console sleeps in this window (both directions silent,
     /// the controller reboots at the end, `console_ready` 0 for 1.5 s).
     pub sleep: Option<(u64, u64)>,
+    /// After the sleep the controller comes back with the link down (no
+    /// heartbeat reaches it): its STATUS is not "fresh" and no probe can run.
+    pub wake_link_down: bool,
     /// The debug tail given with `set_debug` (kept across a reboot).
     pub debug_extra: Option<Vec<u8>>,
     /// The controller's bytes are lost in this window (a STATUS gap).
@@ -76,10 +82,13 @@ impl SimIo {
             hooks: Vec::new(),
             silence_at: None,
             loss_plan: Vec::new(),
+            loss_skip: 0,
+            this_play_skips: false,
             unplugged: false,
             playing_since: None,
             restore_at: None,
             sleep: None,
+            wake_link_down: false,
             debug_extra: None,
             down_gap: None,
         }
@@ -106,8 +115,16 @@ impl SimIo {
             self.ctrl.set_link_ok(true);
         }
         if self.ctrl.mode() == ocb_core::protocol::Mode::Playing {
+            if self.playing_since.is_none() {
+                self.this_play_skips = self.loss_skip > 0;
+                self.loss_skip = self.loss_skip.saturating_sub(1);
+            }
             let since = *self.playing_since.get_or_insert(now);
-            if self.restore_at.is_none() && now >= since + 2_000_000 && !self.loss_plan.is_empty() {
+            if self.restore_at.is_none()
+                && !self.this_play_skips
+                && now >= since + 2_000_000
+                && !self.loss_plan.is_empty()
+            {
                 let kind = self.loss_plan.remove(0);
                 if kind != Loss::Wire {
                     self.unplugged = true;
@@ -174,8 +191,12 @@ impl SimIo {
                 self.ctrl.reboot();
                 self.ctrl.set_debug_extra(extra);
                 self.ctrl.set_console_ready(false);
-                self.hooks
-                    .push((now + 1_500_000, Box::new(|c| c.set_console_ready(true))));
+                if self.wake_link_down {
+                    self.ctrl.set_link_ok(false);
+                } else {
+                    self.hooks
+                        .push((now + 1_500_000, Box::new(|c| c.set_console_ready(true))));
+                }
             }
         }
         if let Some((a, b)) = self.down_gap {
@@ -355,10 +376,11 @@ pub fn run_with(
     (out, owner)
 }
 
-/// A fw-debug style debug tail (v1 + v2, 21 bytes) with `dropped_bytes`
-/// = `rx_err_bytes` = `dropped` (the boot break).
+/// A Story 3.5 debug tail (v1 + v2, an empty v3 window, v4, v5: 70
+/// bytes) with `dropped_bytes` = `rx_err_bytes` = `dropped` (the boot
+/// break); the fake controller fills the v5 block itself.
 pub fn debug_tail(dropped: u16) -> Vec<u8> {
-    let mut t = vec![0u8; 21];
+    let mut t = vec![0u8; 70];
     t[3..5].copy_from_slice(&dropped.to_le_bytes());
     t[7..9].copy_from_slice(&dropped.to_le_bytes());
     t
@@ -368,7 +390,6 @@ pub fn debug_tail(dropped: u16) -> Vec<u8> {
 /// block with `in_max_us` and `in_slow`.
 pub fn debug_tail_v4(in_max_us: u16, in_slow: u16) -> Vec<u8> {
     let mut t = debug_tail(1);
-    t.resize(24 + 41, 0);
     t[23] = 0; // p2_log_n
     t[24 + 28..24 + 30].copy_from_slice(&in_max_us.to_le_bytes());
     t[24 + 30..24 + 32].copy_from_slice(&in_slow.to_le_bytes());

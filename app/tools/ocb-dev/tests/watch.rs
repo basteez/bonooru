@@ -61,7 +61,7 @@ fn a_scripted_h3_passes() {
         "{text}"
     );
     assert!(text.contains("STATUS silences: 1 ("), "{text}");
-    assert!(text.contains("reboot seen, ready after yes"), "{text}");
+    assert!(text.contains("reboot seen, ready after it yes"), "{text}");
     assert!(text.contains("controller rebooted (session): 1"), "{text}");
     assert!(text.contains("in_max_us 9000, in_slow 3"), "{text}");
     let probes: Vec<&str> = text
@@ -76,11 +76,15 @@ fn a_scripted_h3_passes() {
 #[test]
 fn a_slow_fall_fails() {
     let mut io = h3();
-    // The STATUS frames around OFF are lost for about 200 ms: the fall shows late (but STATUS is not silent).
-    io.down_gap = Some((4_995_000, 5_200_000));
+    // A controller whose stall rule fires 80 ms late (181 ms at the fall).
+    io.ctrl.set_fall_delay_ms(80);
     let (out, owner) = run(&mut io, 19_000_000);
     assert_eq!(out.code, EXIT_FAIL, "{}", owner.text());
-    assert!(out.verdict.contains("1 -> 0 edge took"), "{}", out.verdict);
+    assert!(
+        out.verdict.contains("ms after the last poll"),
+        "{}",
+        out.verdict
+    );
 }
 
 #[test]
@@ -106,15 +110,52 @@ fn no_sleep_fails() {
 
 #[test]
 fn a_reboot_the_session_never_sees_fails() {
-    // After the sleep the controller stays not ready and the link down, so
-    // no probe can run and the session cannot learn of the reboot.
+    // After the sleep the controller comes back with the link down, so no
+    // probe can run and its STATUS is not fresh: the session cannot learn
+    // of the reboot.
     let mut io = h3();
-    io.hooks
-        .push((14_000_500, Box::new(|c| c.set_link_ok(false))));
+    io.wake_link_down = true;
     let (out, owner) = run(&mut io, 19_000_000);
     assert_eq!(out.code, EXIT_FAIL, "{}", owner.text());
     assert!(
         out.verdict.contains("without a reported reboot"),
+        "{}",
+        out.verdict
+    );
+}
+
+#[test]
+fn a_controller_ready_before_the_handshake_fails() {
+    let mut io = h3();
+    io.ctrl.set_console_ready(true);
+    let (out, _) = run(&mut io, 19_000_000);
+    assert_eq!(out.code, EXIT_FAIL);
+    assert!(
+        out.verdict.contains("was not console_ready 0"),
+        "{}",
+        out.verdict
+    );
+}
+
+#[test]
+fn no_ready_after_wired_on_fails() {
+    let mut io = SimIo::clean(ControllerConfig::default());
+    io.set_debug(Some(common::debug_tail_v4(9_000, 3)));
+    io.ctrl.set_console_ready(false);
+    io.hooks
+        .push((1_000_000, Box::new(|c| c.set_console_ready(true))));
+    io.hooks
+        .push((5_000_000, Box::new(|c| c.set_console_ready(false))));
+    io.sleep = Some((11_000_000, 14_000_000));
+    // The sleep's reboot brings ready back, but the OFF fall at 5 s is
+    // followed only by the post-wake rise: still a rise after the fall, so
+    // keep the console off after the wake too.
+    io.hooks
+        .push((15_600_000, Box::new(|c| c.set_console_ready(false))));
+    let (out, owner) = run(&mut io, 19_000_000);
+    assert_eq!(out.code, EXIT_FAIL, "{}", owner.text());
+    assert!(
+        out.verdict.contains("not 1 again after a fall"),
         "{}",
         out.verdict
     );

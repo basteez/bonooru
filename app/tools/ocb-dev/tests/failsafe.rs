@@ -58,7 +58,15 @@ fn unplug_and_wire_rounds_pass() {
         );
     }
     assert!(
-        text.contains("FAILSAFE: 6 rounds, 3 unplug, 3 wire, 0 failed"),
+        text.contains(
+            "FAILSAFE: 6 of 6 rounds done, 3 unplug, 3 wire, 0 failed, longest loss to neutral 5.00 ms"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "loss break → neutral within 5.00 ms (limit 100); watchdog_trips +1, rx_be +1"
+        ),
         "{text}"
     );
     assert!(
@@ -98,19 +106,47 @@ fn a_loss_the_controller_does_not_notice_fails_the_round() {
 }
 
 #[test]
-fn a_piece_that_ends_before_the_loss_fails() {
-    let mut io = rig(Vec::new());
-    let (out, _) = common::run(
+fn a_piece_that_ends_before_the_loss_fails_that_round_only() {
+    let mut io = rig(vec![Loss::Wire]);
+    io.loss_skip = 1;
+    let (out, owner) = common::run(
+        &mut io,
+        Piece::Failsafe { rounds: 2 },
+        Some(1_000_000),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let text = owner.text();
+    assert_eq!(out.code, EXIT_FAIL, "{text}");
+    assert!(
+        text.contains("ROUND 1: FAIL the piece ended before"),
+        "{text}"
+    );
+    assert!(
+        text.contains("ROUND 2: wire PASS"),
+        "the run goes on: {text}"
+    );
+    assert!(
+        out.verdict.contains("1 of 2 rounds failed"),
+        "{}",
+        out.verdict
+    );
+}
+
+#[test]
+fn a_neutral_later_than_100_ms_fails_the_round() {
+    let mut io = rig(vec![Loss::Wire]);
+    io.ctrl.set_loss_age_10us(10_001);
+    let (out, owner) = common::run(
         &mut io,
         Piece::Failsafe { rounds: 1 },
         Some(1_000_000),
         Arc::new(AtomicBool::new(false)),
     );
-    assert_eq!(out.code, EXIT_FAIL);
+    let text = owner.text();
+    assert_eq!(out.code, EXIT_FAIL, "{text}");
     assert!(
-        out.verdict.contains("the piece ended before"),
-        "{}",
-        out.verdict
+        text.contains("ROUND 1: wire FAIL loss break → neutral within 100.01 ms"),
+        "{text}"
     );
 }
 
@@ -126,7 +162,8 @@ fn failsafe_needs_debug_counters() {
     );
     assert_eq!(out.code, EXIT_FAIL);
     assert!(
-        out.verdict.contains("needs the debug counters"),
+        out.verdict
+            .contains("needs the debug counters with the v5 block"),
         "{}",
         out.verdict
     );
@@ -151,5 +188,10 @@ fn ctrl_c_mid_run_stops() {
         owner.text()
     );
     assert!(io.written_of(MSG_STOP).iter().any(|&t| t >= 16_000_000));
+    assert!(
+        owner.text().contains("FAILSAFE: "),
+        "the tally on Ctrl+C: {}",
+        owner.text()
+    );
     assert_eq!(io.ctrl.mode(), Mode::Idle);
 }

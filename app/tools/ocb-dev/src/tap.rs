@@ -30,6 +30,13 @@ pub struct DebugCounters {
     pub in_max_us: Option<u16>,
     /// v4: intervals longer than 1.5 × the median (missed polls).
     pub in_slow: Option<u16>,
+    /// v5 (Story 3.5): the last link loss, from the last heartbeat to the
+    /// abort, in 10 µs units (0 before any loss).
+    pub loss_age_10us: Option<u16>,
+    /// v5: 0 no loss yet, 1 heartbeat timeout, 2 break.
+    pub loss_kind: Option<u8>,
+    /// v5: ms since the last console poll when the STATUS was built.
+    pub in_age_ms: Option<u16>,
 }
 
 impl DebugCounters {
@@ -59,6 +66,13 @@ impl DebugCounters {
             if extra.len() >= v4 + 41 {
                 d.in_max_us = u16_at(v4 + 28);
                 d.in_slow = u16_at(v4 + 30);
+            }
+            // v5, right after the 41-byte v4 block (5 bytes).
+            let v5 = v4 + 41;
+            if extra.len() >= v5 + 5 {
+                d.loss_age_10us = u16_at(v5);
+                d.loss_kind = extra.get(v5 + 2).copied();
+                d.in_age_ms = u16_at(v5 + 3);
             }
         }
         Some(d)

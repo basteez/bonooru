@@ -81,6 +81,50 @@ The numbering is that of the `epics.md` list ("UX open questions", OQ-3 and OQ-4
 - [x] **Task 7: bench tool and H-row review, recorded before the bench (retro action #27)**
 - [ ] **Task 8: the OQ-3/OQ-4 decision (AC: 4)** — present the H.3 data and a recommendation, the owner decides; write `EXPERIENCE.md` (Open Question 3 resolved, the coupling-table gap closed, the "Play gating" row and the `console_ready` row updated for the 100 ms rule). If the owner changes the 100 ms rule: AD-19 in the spine, `OCB_CONSOLE_POLL_STALL_MS` in `firmware/common/proto/include/ocb_proto/consts.h`, its app twin and the docs.
 
+### Review Findings
+
+gds-code-review, 2026-11-24, three parallel reviewers (Blind Hunter, Edge Case Hunter, Acceptance Auditor): 14 IMPORTANT fixed (one by an owner decision), 5 MINOR fixed, 4 MINOR recorded.
+
+**Owner decision (2026-11-24):** two AC numbers were not measurable with what the controller exposed. Both were judged only indirectly, as in H.16:
+- AC1 neutral within 100 ms: the tool saw that the watchdog fired, not when.
+- AC3 `console_ready` 0 within 150 ms of OFF: the tool saw the gap between two STATUS frames, not the stall.
+
+The owner chose to add debug data. The **debug STATUS v5 block** (5 bytes, debug builds only, no wire or `PROTO_VERSION` change) holds:
+- `loss_age_10us` and `loss_kind` of the last link loss, measured by the watchdog from the last heartbeat to the abort and NEUTRAL, which happen in the same pass;
+- `in_age_ms`, the clock of the 100 ms stall rule.
+
+D1 is overruled accordingly. Host tests F.16 (timeout and break kinds, ages, saturation, 120-byte frame), F.31 and F.22 (docs constants) are updated, and the ELF gates were re-run on fw-debug-o3, fw-debug and fw-release.
+
+IMPORTANT (fixed, each with a test that fails on the old code):
+
+- **I-1** AC3's OFF criterion measured the STATUS spacing; a late stall rule passed (all three reviewers). It now uses v5 `in_age_ms` ≤ 150 ms at the first not-ready STATUS. Test: `a_slow_fall_fails`, with a controller that reports 181 ms.
+- **I-2** AC1's 100 ms was not measured per round (Acceptance Auditor). It now uses v5 `loss_age_10us` ≤ 10 000. Test: `a_neutral_later_than_100_ms_fails_the_round`.
+- **I-3** "0 until the handshake" and "1 again after ON" were printed but not judged (Acceptance Auditor). Both are judged now, and "ready after a silence" must follow the reported reboot. Tests: `a_controller_ready_before_the_handshake_fails`, `no_ready_after_wired_on_fails`.
+- **I-4** A probe answered by `PLAYBACK_DONE` left `probe_pending` set forever (Blind Hunter, Edge Case Hunter). It is cleared now and counted as "played". The scripted H.3 now contains such a probe and passes.
+- **I-5** A probe answered by a reboot was discounted only in one event order (Blind Hunter). It is now discounted in both orders.
+- **I-6** The reboot probe was not rate-limited (Blind Hunter, Edge Case Hunter). It now goes out every 500 ms at most, and at most 5 per silence. The NOT_READY probe interval is also 500 ms, so the short not-ready window after wake gets probes (Acceptance Auditor).
+- **I-7** A port error in `watch` discarded the analysis (Blind Hunter, Edge Case Hunter). It is now recorded, judged and named.
+- **I-8** `failsafe` swallowed every pump error (Blind Hunter). Only a port loss ends a round now; other errors end the run with their reason.
+- **I-9** A wire pull was recognised by a substring of the first trouble (Blind Hunter). It is now recognised by the latest `AbandonReason::LinkLost`.
+- **I-10** Writes blocked while the bridge had no controller link (Edge Case Hunter): the bridge stops reading USB, the OS queue fills, and a 1 s write timeout failed `watch` and the wire recovery. A chunk is now dropped when more than 4096 bytes are queued, or after 1 s without progress; the session resends everything that matters.
+- **I-11** The old port descriptor kept its exclusive lock, so `reopen` could never succeed (Edge Case Hunter). The port is dropped at the first error and before every reopen.
+- **I-12** A bounce during the replug ended the run (Edge Case Hunter). The tool now goes back to waiting for the port.
+- **I-13** A round that ended without a loss ended the whole run, and Ctrl+C printed no tally (Acceptance Auditor). Such a round now fails alone, and the `FAILSAFE:` tally (with the longest loss-to-neutral) prints on every ending. Tests: `a_piece_that_ends_before_the_loss_fails_that_round_only`, and the tally in `ctrl_c_mid_run_stops`.
+- **I-14** The OQ-4 polling maximum would be the OFF stall itself (Acceptance Auditor, Edge Case Hunter). `in_max_us` and `in_slow` are now taken from the last STATUS before the first OFF fall.
+
+MINOR fixed:
+- The STATUS interval statistics now cover only the time with the link up and after INFO.
+- Edge lines carry the gap from the previous STATUS.
+- A `Refused` event is logged in `watch`.
+- The wire recovery waits for the latest STATUS with the link up, not the first one after the loss.
+- The README no longer says `watch` has "no limit" (it is capped at 30 minutes).
+
+MINOR recorded (not fixed):
+- **M-1** The `watchdog_trips` round check has no test of its own: the first-STATUS checks fail first in the only missed-loss scenario of the dry run.
+- **M-2** `reopen` needs exactly one `/dev/cu.usbmodem*` node when the old name is gone: a second CDC board on the Mac blocks the fallback. Not the case on this bench.
+- **M-3** For an unplug round, the first STATUS judged follows the tool's new HELLO, so its IDLE says nothing. The v5 age and kind carry the round.
+- **M-4** The dry run models no write back-pressure, no dead `/dev` node and no line rate. `SerialIo`'s guard, its drop path and the reopen are exercised only at the bench.
+
 ## Dev Notes
 
 ### What exists today
@@ -105,7 +149,7 @@ The numbering is that of the `epics.md` list ("UX open questions", OQ-3 and OQ-4
 
 ### Decisions (made autonomously, 2026-11-24; the owner can overrule any of them)
 
-- **D1. No firmware change.** "Neutral within 100 ms" is checked per round by the controller's own data and by ear:
+- **D1. No firmware change** (overruled by the owner at the code review, 2026-11-24: the debug STATUS v5 block measures both numbers; see Review Findings). "Neutral within 100 ms" is checked per round by the controller's own data and by ear:
   - the round's abort is the link watchdog's (`last_event` LINK_LOST, `watchdog_trips` + 1, `abort_count` + 1), and the piece was not still playing when the link came back (mode IDLE);
   - the watchdog's timing is fixed by design (80 ms, or immediate on a break) and was measured on silicon (H.9);
   - the owner listens for the stop.
@@ -186,10 +230,12 @@ Tools: `app/target/release/ocb-dev` (changed: `failsafe`, `watch`, `Io::reopen`)
 
 - **Flash `fw-debug-o3` on the controller.** Owner: hold BOOT on the controller Zero and plug it into the Mac. Agent: `picotool load -x build/fw-debug-o3/controller/controller.uf2` (built in `firmware/`), then the owner moves it to the console when asked.
 - **H.1, bridge-unpowered part.** Owner: unplug the bridge's USB; the controller in the console (on); multimeter DC V on the bridge's GP1 and GND. Expected ≈ 0 V.
+- **Flash note (review):** the controller needs a Story 3.5 build (debug STATUS v5): `fw-debug-o3` rebuilt at the review fixes.
 - **A.3, unplug run.**
   - Agent: `ocb-dev "$P" failsafe` with stdin from a FIFO; Enter is sent after the owner confirms the ocarina is open (round 1 only).
   - Owner, per round: when the log shows `ROUND n/20: playing` (the agent relays it), unplug the bridge's USB during the melody, listen, plug it back. Twenty times.
-  - Expected: `ROUND n: unplug PASS` × 20, then `PASS`.
+  - Round 1: the owner also reads GP0 on the controller with the meter while the bridge is unplugged (≈ 0 V: TX released).
+  - Expected: `ROUND n: unplug PASS` × 20 with `loss break → neutral within … ms` ≤ 100, then `PASS`.
   - Risk: the port name changes on replug (handled by D7). If the bridge is replugged into another Mac port, the name may change again (also handled).
 - **A.3, wire run.**
   - Same command. Owner, per round: pull the bridge-TX → controller-GP1 wire during the melody, listen, push it back.
@@ -214,7 +260,11 @@ Tools: `app/target/release/ocb-dev` (changed: `failsafe`, `watch`, `Io::reopen`)
 - `app/tools/ocb-dev/src/runner.rs` → `src/runner/mod.rs` (moved, modified), `src/runner/failsafe.rs`, `src/runner/watch.rs` (new)
 - `app/tools/ocb-dev/src/serial.rs`, `src/tap.rs`, `src/main.rs`, `README.md` (modified)
 - `app/tools/ocb-dev/tests/common/mod.rs` (modified), `tests/failsafe.rs`, `tests/watch.rs` (new)
-- `app/sim/src/controller.rs` (modified: link losses in the debug tail)
+- `app/sim/src/controller.rs` (modified: link losses in the debug tail, the v5 block, `set_loss_age_10us`, `set_fall_delay_ms`)
+- `firmware/controller/link/include/ocb_link/watchdog.h`, `firmware/controller/link/watchdog.c` (modified: the last loss's age and kind)
+- `firmware/controller/link/include/ocb_link/config.h`, `firmware/controller/link/tx_debug.c` (modified: debug STATUS v5)
+- `firmware/tests/test_link_tx.c`, `firmware/tests/test_link_dbglog.c`, `firmware/tests/test_docs_constants.py` (modified)
+- `docs/link-protocol.md` (modified: v5 block, sizes)
 - `docs/test-plan.md` (modified: H.3, A.3, C.18, C.19, A.3 / H.3 bench rig)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`, this file
 
@@ -222,3 +272,4 @@ Tools: `app/target/release/ocb-dev` (changed: `failsafe`, `watch`, `Io::reopen`)
 
 - 2026-11-24: Story created (gds-create-story).
 - 2026-11-24: Tooling implemented (`ocb-dev failsafe` and `watch`, dry runs C.18 and C.19); bench and the OQ decision pending.
+- 2026-11-24: Code review: 14 IMPORTANT and 5 MINOR fixed, 4 MINOR recorded; owner decision: debug STATUS v5 block in the controller firmware (loss age and kind, the age of the last console poll).

@@ -157,19 +157,20 @@ static void test_status_tail(void)
     /* 21 counters, then total 9 (09 00), n 9, records kind/id oldest first. */
     static const uint8_t tail[3 + 18] = {0x09, 0x00, 0x09, 0x07, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03, 0x01,
                                          0x02, 0x01, 0x04, 0x06, 0x00, 0x02, 0x02, 0x04, 0x11};
-    OCB_CHECK(m.extra_len == 21u + sizeof tail + 41u, "extra %zu", m.extra_len);
-    if (m.extra_len == 21u + sizeof tail + 41u) {
+    OCB_CHECK(m.extra_len == 21u + sizeof tail + 41u + 5u, "extra %zu", m.extra_len);
+    if (m.extra_len == 21u + sizeof tail + 41u + 5u) {
         OCB_CHECK_MEM(&m.extra[21], sizeof tail, tail, sizeof tail, "v3 tail");
     }
-    /* A full window: 16 records, the largest STATUS (11 + 56 + 41 = 108
-     * bytes, story 2.5 v4 block of 41 bytes included). */
+    /* A full window: 16 records, the largest STATUS (11 + 56 + 41 + 5 = 113
+     * bytes: the story 2.5 v4 block of 41 bytes and the story 3.5 v5 block
+     * of 5 included). */
     for (unsigned i = 0; i < 40u; i++) {
         (void)ocb_dbglog_push(&r, 0x02, (uint8_t)(0x40u + i));
     }
     (void)ocb_dbglog_drain(ocb_link_dbglog_window(&h.link), &r);
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && m.extra_len == 97u, "full window: extra %zu", m.extra_len);
-    if (m.extra_len == 97u) {
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 102u, "full window: extra %zu", m.extra_len);
+    if (m.extra_len == 102u) {
         OCB_CHECK(m.extra[21] == 49u && m.extra[22] == 0u && m.extra[23] == 16u, "total 49, n 16");
         OCB_CHECK(m.extra[24] == 0x02 && m.extra[25] == 0x58 && m.extra[54] == 0x02 && m.extra[55] == 0x67,
                   "oldest 0x58, newest 0x67");
@@ -251,8 +252,8 @@ static void test_v4_block(void)
         ocb_msg_status m;
         OCB_CHECK(get_status(&h, &m), "n=%u: no STATUS", ns[k]);
         const size_t off = 24u + 2u * ns[k];
-        OCB_CHECK(m.extra_len == off + 41u, "n=%u: extra %zu, wanted %zu", ns[k], m.extra_len, off + 41u);
-        if (m.extra_len == off + 41u) {
+        OCB_CHECK(m.extra_len == off + 41u + 5u, "n=%u: extra %zu, wanted %zu", ns[k], m.extra_len, off + 46u);
+        if (m.extra_len == off + 41u + 5u) {
             OCB_CHECK(m.extra[23] == ns[k], "n=%u: p2_log_n %u", ns[k], m.extra[23]);
             OCB_CHECK_MEM(&m.extra[off], 41u, k_v4, sizeof k_v4, "v4 block");
         }

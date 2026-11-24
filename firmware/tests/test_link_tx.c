@@ -312,26 +312,28 @@ static void test_debug_counters(void)
     if (!found) {
         return;
     }
-    OCB_CHECK(m.extra_len == 65u, "debug: %zu extra bytes", m.extra_len);
-    if (m.extra_len == 65u) {
+    OCB_CHECK(m.extra_len == 70u, "debug: %zu extra bytes", m.extra_len);
+    if (m.extra_len == 70u) {
         /* By hand: gap 1234 ms, trips 0, dropped 4 + 8 + 300 = 312, tx_dropped
          * 2, then rx_err 4, overflow 8, overlong 300, FE 2, PE 1, BE 1, OE 1;
          * story 2.3: an empty P2 log window (total 0, n 0); story 2.5: a v4
          * block of 41 zero bytes (no run, no core 0 numbers, power-on). */
         const uint8_t want[65] = {0xD2u, 0x04u, 0u,  0x38u, 0x01u, 2u,  0u, 4u, 0u, 8u, 0u,
                                   0x2Cu, 0x01u, 2u, 0u,    1u,    0u, 1u, 0u, 1u, 0u, 0u, 0u, 0u};
-        OCB_CHECK_MEM(m.extra, m.extra_len, want, sizeof want, "debug counters");
+        OCB_CHECK_MEM(m.extra, 65u, want, sizeof want, "debug counters");
+        /* story 3.5: the v5 block, no link loss yet (age 0, kind 0). */
+        OCB_CHECK(m.extra[65] == 0u && m.extra[66] == 0u && m.extra[67] == 0u, "v5: no loss yet");
     }
     /* Saturation at 65535. */
     h.link.max_app_gap_us = 0xFFFFFFFFu;
     h.link.cnt.tx_dropped = 70000u;
     h.link.cnt.rx_err_bytes = 80000u;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && m.extra_len == 65u, "debug: second STATUS");
-    if (m.extra_len == 65u) {
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 70u, "debug: second STATUS");
+    if (m.extra_len == 70u) {
         const uint8_t sat[65] = {0xFFu, 0xFFu, 0u,    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 8u, 0u,
                                  0x2Cu, 0x01u, 2u,    0u,    1u,    0u,    1u,    0u,    1u,    0u, 0u, 0u, 0u};
-        OCB_CHECK_MEM(m.extra, m.extra_len, sat, sizeof sat, "saturated counters");
+        OCB_CHECK_MEM(m.extra, 65u, sat, sizeof sat, "saturated counters");
     }
     /* A HELLO restarts max_app_gap_ms. */
     lh_hello(&h);
@@ -469,7 +471,7 @@ static void test_watchdog_status(void)
     lh_link_up(&h);
     ocb_msg_status m;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra_len == 65u && m.extra[2] == 0u,
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra_len == 70u && m.extra[2] == 0u,
               "link up: STATUS link_ok 1, watchdog_trips 0");
     /* Loss by silence. */
     h.auto_hb = false;
@@ -488,9 +490,17 @@ static void test_watchdog_status(void)
               ocb_link_counters_get(&h.link)->tx_dropped - dropped);
     lh_open_gate(&h);
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) == 0u && m.extra_len == 65u && m.extra[2] == 1u &&
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) == 0u && m.extra_len == 70u && m.extra[2] == 1u &&
                   m.abort_count == 1u && m.last_event == OCB_EVT_LINK_LOST,
               "after the loss: STATUS link_ok 0, watchdog_trips 1");
+    /* Story 3.5, v5: the loss was a heartbeat timeout, the abort at
+     * timeout + 1 us after the last heartbeat (10 us units, rounded down). */
+    if (m.extra_len == 70u) {
+        const unsigned age10 = (unsigned)m.extra[65] | ((unsigned)m.extra[66] << 8);
+        const unsigned want10 = ((unsigned)OCB_LINK_TIMEOUT_MS * 1000u + 1u) / 10u;
+        OCB_CHECK(age10 == want10 && m.extra[67] == OCB_WD_LINK_TIMEOUT, "v5 loss: age %u x 10 us (want %u), kind %u",
+                  age10, want10, m.extra[67]);
+    }
     /* Recovery. */
     h.auto_hb = true;
     lh_hb_now(&h);
@@ -499,8 +509,49 @@ static void test_watchdog_status(void)
               "after the recovery: STATUS link_ok 1, watchdog_trips still 1");
 }
 
-/* Story 2.5 D13, D31: the largest debug STATUS (16 log records and the v4
- * block: body 108 bytes) fits an empty 128-byte UART TX ring in one frame,
+/* Story 3.5: the v5 block. A break 7 ms after the last heartbeat gives
+ * kind 2 and age 700 x 10 us; the age of the last console poll counts in
+ * ms from the ready clock; both saturate at 65535. */
+static void test_v5_block(void)
+{
+    static lh h;
+    lh_init_cfg(&h, 8u, true);
+    lh_open_gate(&h);
+    lh_hello(&h);
+    lh_discard_tx(&h);
+    lh_link_up(&h);
+    h.auto_hb = false;
+    lh_hb_now(&h);
+    const uint64_t hb = ocb_link_last_heartbeat_us(&h.link);
+    h.now = hb + 7000u;
+    ocb_link_rx_entry(&h.link, OCB_LINK_RX_BE, h.now);
+    ocb_link_poll(&h.link, h.now);
+    lh_discard_tx(&h);
+    ocb_link_tx_settled(&h.link, h.now, true);
+    lh_open_gate(&h);
+    h.link.ready.last_in_change_us = h.now - 137500u;
+    ocb_msg_status m;
+    lh_advance(&h, 50000u);
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 70u, "v5: STATUS with 70 extra bytes");
+    if (m.extra_len == 70u) {
+        const unsigned age10 = (unsigned)m.extra[65] | ((unsigned)m.extra[66] << 8);
+        const unsigned in_age = (unsigned)m.extra[68] | ((unsigned)m.extra[69] << 8);
+        OCB_CHECK(age10 == 700u && m.extra[67] == OCB_WD_BREAK, "v5 break: age %u x 10 us, kind %u", age10,
+                  m.extra[67]);
+        OCB_CHECK(in_age >= 187u && in_age <= 188u, "v5 in_age %u ms (137.5 ms + the 50 ms advance)", in_age);
+    }
+    /* Saturation: a loss age above 655 ms and a poll age above 65 s. */
+    h.link.wd.last_loss_age_us = 0xFFFFFFFFu;
+    h.link.ready.last_in_change_us = 0u;
+    h.now += 70000000u;
+    lh_advance(&h, 50000u);
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 70u && m.extra[65] == 0xFFu && m.extra[66] == 0xFFu &&
+                  m.extra[68] == 0xFFu && m.extra[69] == 0xFFu,
+              "v5 saturates");
+}
+
+/* Story 2.5 D13, D31: the largest debug STATUS (16 log records, the v4
+ * block and the story 3.5 v5 block: body 113 bytes) fits an empty 128-byte UART TX ring in one frame,
  * leaves at the 50 ms cadence, and is never split into a smaller cap. */
 static void test_largest_status_fits_uart_ring(void)
 {
@@ -531,13 +582,13 @@ static void test_largest_status_fits_uart_ring(void)
         h.now += 500u;
         ocb_link_poll(&h.link, h.now);
     }
-    /* 11 + 97 = 108 body bytes, 3 header, 2 CRC, 1 COBS, 1 delimiter. */
-    OCB_CHECK(first == 115u, "largest debug STATUS on the wire: %zu bytes, wanted 115", first);
+    /* 11 + 102 = 113 body bytes, 3 header, 2 CRC, 1 COBS, 1 delimiter. */
+    OCB_CHECK(first == 120u, "largest debug STATUS on the wire: %zu bytes, wanted 120", first);
     OCB_CHECK(sent == 4 || sent == 5, "%d STATUS frames in 200 ms at a 50 ms cadence", sent);
-    /* A cap of 114 (one byte short): pending, nothing written. */
+    /* A cap of 119 (one byte short): pending, nothing written. */
     h.now += 50000u;
-    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, 114u) == 0u, "the 115-byte STATUS split into 114");
-    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, sizeof wire) == 115u, "then sent whole");
+    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, 119u) == 0u, "the 120-byte STATUS split into 119");
+    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, sizeof wire) == 120u, "then sent whole");
 }
 
 static void test_two_links(void)
@@ -570,6 +621,7 @@ int main(void)
     test_gate();
     test_gate_rearms_nak();
     test_watchdog_status();
+    test_v5_block();
     test_two_links();
     const int f = ocb_test_failures();
     if (f != 0) {
