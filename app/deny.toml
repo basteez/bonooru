@@ -1,11 +1,10 @@
-# Licence gate (AD-21, Story 3.2): `cargo deny check licenses`, run by CI on
-# ubuntu, windows and macos. The allow list is NFR-07 as amended 2026-11-19:
+# Licence and network-crate gate (AD-21, Stories 3.2 and 4.1):
+# `cargo deny check licenses bans`, run by CI on ubuntu, windows and macos. The allow list is NFR-07 as amended 2026-11-19:
 # own code MIT; dependencies under permissive licences (MIT, BSD, Apache,
 # ISC, Zlib), or weak copyleft used unmodified (MPL-2.0 file-level; LGPL only
 # when dynamically linked, which a static Rust binary is not, so LGPL is not
 # listed). Dev-dependencies stay in the graph (stricter than needed).
-# OFL-1.1 and Ubuntu-font-1.0 join when egui and its default fonts arrive
-# (Epic 4, AD-18). Adding a licence here is an NFR-07 decision for the owner.
+# Adding a licence here is an NFR-07 decision for the owner.
 
 [graph]
 all-features = true
@@ -24,7 +23,43 @@ allow = [
     # permissive OSI licence; it reaches the graph through `unicode-ident`
     # (proc-macro2, used by serialport's thiserror and later by egui).
     "Unicode-3.0",
+    # NFR-07 as amended 2026-11-19 (AD-18): egui's default fonts. They reach
+    # the graph through `epaint_default_fonts` ((MIT OR Apache-2.0) AND
+    # OFL-1.1 AND Ubuntu-font-1.0: Hack, Ubuntu-Light, the egui-icons subset
+    # of emoji-icon-font). The bundled Cormorant Garamond and Nunito Sans
+    # TTFs are files, not crates: their OFL texts are in
+    # gui/assets/licenses/ with the other font licences (Story 4.1).
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    # Owner decision 2026-11-26 (Story 4.1, NFR-07): BSL-1.0 (Boost, OSI
+    # approved, permissive). It comes from `clipboard-win` and `error-code`,
+    # the Windows clipboard backend of `arboard`, through eframe's
+    # `clipboard` feature (Windows only). Its notice obligation covers source
+    # copies only, not binaries.
+    "BSL-1.0",
 ]
 confidence-threshold = 0.93
 # The list is the policy, not the current graph.
 unused-allowed-license = "allow"
+
+# AD-21: the app opens no network connections. No HTTP/network client, no
+# WebSocket and no TLS crate may enter the graph. Duplicate versions are
+# allowed: the egui graph has some, and this gate is about network crates.
+[bans]
+multiple-versions = "allow"
+deny = [
+    { crate = "reqwest", reason = "AD-21: the app opens no network connections" },
+    { crate = "ureq", reason = "AD-21: the app opens no network connections" },
+    { crate = "hyper", reason = "AD-21: the app opens no network connections" },
+    { crate = "h2", reason = "AD-21: the app opens no network connections" },
+    { crate = "ehttp", reason = "AD-21: the app opens no network connections" },
+    { crate = "isahc", reason = "AD-21: the app opens no network connections" },
+    { crate = "curl", reason = "AD-21: the app opens no network connections" },
+    { crate = "attohttpc", reason = "AD-21: the app opens no network connections" },
+    { crate = "minreq", reason = "AD-21: the app opens no network connections" },
+    { crate = "surf", reason = "AD-21: the app opens no network connections" },
+    { crate = "tungstenite", reason = "AD-21: the app opens no network connections" },
+    { crate = "rustls", reason = "AD-21: the app opens no network connections (TLS)" },
+    { crate = "native-tls", reason = "AD-21: the app opens no network connections (TLS)" },
+    { crate = "openssl", reason = "AD-21: the app opens no network connections (TLS)" },
+]

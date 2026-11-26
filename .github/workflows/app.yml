@@ -1,8 +1,11 @@
-# App CI (Story 3.2, AD-14, AD-18, AD-21): the Cargo workspace in app/ on the
-# three desktop OS. Gates: rustfmt, cargo test (the shared conformance
-# vectors, C.1 to C.5), clippy with -D warnings and the cargo-deny licence
-# check against the NFR-07 allow-list. No path filter, like firmware.yml: the
-# vectors are shared, so a firmware change must run the app job too.
+# App CI (Stories 3.2 and 4.1, AD-14, AD-18, AD-21): the Cargo workspace in
+# app/ on the three desktop OS. Gates: rustfmt, cargo test (the shared
+# conformance vectors C.1 to C.20 and the GUI tests G.1 to G.6, no GPU),
+# clippy with -D warnings, the eframe/egui version pin, the Linux
+# no-Wayland feature check (G.8), the smoke run of the real window (G.7) and
+# the cargo-deny licence and network-crate gate (G.9). No path filter, like
+# firmware.yml: the vectors are shared, so a firmware change must run the app
+# job too.
 name: app
 
 on:
@@ -21,8 +24,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  core:
-    name: app core (${{ matrix.os }})
+  app:
+    name: app (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,6 +48,18 @@ jobs:
           rustc --version
           rustc --version | grep -q '^rustc 1\.100\.0 ' || { echo "::error::expected rustc 1.100.0"; exit 1; }
 
+      # What eframe/wgpu/winit need to build and to run under Xvfb (X11
+      # only, AD-18; lavapipe gives wgpu a software Vulkan adapter). No
+      # Wayland, udev or ALSA: those return with Stories 4.4 and 5.11.
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            xvfb mesa-vulkan-drivers libegl1 libgl1-mesa-dri
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app -> target
@@ -52,27 +67,73 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      - name: Test (vectors, properties, purity, version)
+      - name: Test (vectors, properties, purity, version, GUI G.1-G.6)
         run: cargo test --locked --workspace
 
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      - name: eframe and egui pinned at 0.37.0 (AC 1)
+        run: |
+          cargo tree --locked -p ocb-app -i eframe --depth 0 | tee pins.txt
+          cargo tree --locked -p ocb-app -i egui --depth 0 | tee -a pins.txt
+          grep -qx 'eframe v0.37.0' pins.txt || { echo "::error::eframe is not v0.37.0"; exit 1; }
+          grep -qx 'egui v0.37.0' pins.txt || { echo "::error::egui is not v0.37.0"; exit 1; }
+
+      # G.8 (AD-18): eframe built without its wayland feature. (winit's own
+      # wayland feature is on through accesskit_winit; the app forces X11 at
+      # run time, checked by the smoke run below.)
+      - name: No eframe wayland feature (G.8)
+        if: runner.os == 'Linux'
+        run: |
+          cargo tree --locked -p ocb-app -e features -i eframe --target x86_64-unknown-linux-gnu | tee /tmp/eframe-features.txt
+          if grep -q 'eframe feature "wayland"' /tmp/eframe-features.txt; then
+            echo "::error::eframe is built with its wayland feature (AD-18)"
+            exit 1
+          fi
+
+      - name: Build the app
+        run: cargo build --locked -p ocb-app
+
+      # G.7: the real window on each OS. On Linux under Xvfb with a bogus
+      # WAYLAND_DISPLAY: the app must still open on X11 (AC 7).
+      - name: Smoke run (G.7)
+        timeout-minutes: 5
+        run: |
+          for args in "--smoke-test" "--smoke-test --gallery"; do
+            if [ "$RUNNER_OS" = Linux ]; then
+              WAYLAND_DISPLAY=ocb-no-such-socket xvfb-run -a target/debug/bonooru $args | tee smoke.txt
+              pattern='^OCB_SMOKE ok .*backend=(Xlib|Xcb)$'
+            else
+              target/debug/bonooru $args | tee smoke.txt
+              pattern='^OCB_SMOKE ok '
+            fi
+            rc=${PIPESTATUS[0]}
+            [ "$rc" -eq 0 ] || { echo "::error::bonooru $args exited $rc"; exit 1; }
+            grep -Eq "$pattern" smoke.txt || { echo "::error::no OCB_SMOKE ok line for $args"; exit 1; }
+            cat smoke.txt >> smoke-all.txt
+          done
+
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny@0.22.0
 
-      - name: Licence gate (NFR-07, AD-21)
-        run: cargo deny --locked check licenses
+      - name: Licence and network-crate gate (NFR-07, AD-21)
+        run: cargo deny --locked check licenses bans
 
       - name: Job summary
         run: |
           version="$(cargo test --locked -q --test version -- --nocapture 2>/dev/null | sed -n 's/^OCB_APP_VERSION=//p')"
           {
-            echo "## App core (${{ matrix.os }})"
+            echo "## App (${{ matrix.os }})"
             echo
             echo "| Item | Value |"
             echo "|---|---|"
             echo "| App version | \`${version}\` |"
             echo "| rustc | \`$(rustc --version)\` |"
+            if [ -f smoke-all.txt ]; then
+              while IFS= read -r line; do
+                echo "| Smoke | \`${line}\` |"
+              done < smoke-all.txt
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
