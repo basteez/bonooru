@@ -7,8 +7,10 @@
 #  (b) no line (code or comment) may name a heap, I/O, clock, sleep,
 #      multicore, process-exit (exit( abort( ...), file (fopen), strdup,
 #      alloca or inline-assembly identifier of libc or the SDK, a raw
-#      register address (a hex literal cast to a pointer, or an RP2040
-#      peripheral-window literal 0x40/0x50/0xd0/0xe0xxxxxx), or a section
+#      register address (a hex literal right after a pointer cast, the
+#      cast possibly qualified or doubled, or an 8-digit literal in an
+#      RP2040 register or XIP window 0x10-0x15/0x18/0x40/0x50/0xd0/0xe0;
+#      exact forms and known false positives in tools/pure-rules.sh), or a section
 #      attribute outside a file named ramfunc.h.
 # The identifier rules come from tools/pure-rules.sh (story 4.0 D1), shared
 # by all five purity gates; the self-test fails if this gate keeps a

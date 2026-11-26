@@ -86,6 +86,23 @@ Origin: Epic 3 retrospective action item 4 (`epic-3-retro-2026-11-26.md` §5, §
   - [x] 9.3 If `arm-none-eabi-gcc` is installed (`firmware/tools/toolchain.env`): build fw-release, fw-debug, fw-debug-o3 and run the ELF gates as CI does; otherwise say so in the Completion Notes and rely on CI.
   - [x] 9.4 `sprint-status.yaml`: story to `review`; action items E2-A4, E2-A5 and E3-A4 to `done` when the PR merges (they track #20, #25 and this story). PR body: `Closes #20`, `Closes #25`.
 
+### Review Findings
+
+Code review 2026-11-26 (gds-code-review, `main...HEAD` at 2032bb8; layers: Blind Hunter, Edge Case Hunter, Acceptance Auditor). Severity: IMPORTANT = a verdict that cannot go red or an AC gap that hides a real regression; MINOR = everything else. Verified green on the host: ctest 44/44 (sanitized), `cargo test --workspace`, the five gates on the real trees, `docs_constants_check`. The size arithmetic (72 / 104 / 115 / 122 bytes), the `put_u16` saturation, the static asserts and the v4-only / v5 / v6 / truncated tail handling in `link_probe.py`, `tap.rs` and the C tests all check out. One rule was mutation-tested at a time (each deleted from `pure-rules.sh`): every alternative turns a self-test red except `__builtin_alloca`.
+
+- [x] [Review][Patch] IMPORTANT: the `__builtin_alloca` fixture cannot fail for its own rule [firmware/tests/core_pure_fixtures/bad/builtin_alloca.c:1]. Line 1 is the comment "(the compiler builtin of alloca)". Its bare `alloca)` already matches the plain `alloca` alternative. Code line 5 (`__builtin_alloca(4)`) is not matched by `alloca`, because of the `_` before it and `nb`. Failure scenario (reproduced): delete `|__builtin_alloca` from `pure-rules.sh:19`, and all five self-tests stay green, so a real `__builtin_alloca(n)` in `controller/core` passes the gate. Fix: drop the word "alloca" from the comment, and assert that each bad fixture is flagged on a non-comment line (or on an expected line number). **Fixed: the fixture comment no longer contains the word; every self-test now fails a bad fixture that is flagged only on a comment line (red proof R2 in the Debug Log).**
+- [x] [Review][Patch] IMPORTANT: the shared-list guard checks only `banned_word_re=`, and the proto, p2 and bridge gates have no fixture for the section or register rules (link has no register fixture) [firmware/tests/core_pure_selftest.sh:42-51, link_pure_selftest.sh:42-51, p2_pure_selftest.sh:42-51, proto_pure_selftest.sh:41-50, bridge_pure_selftest.sh:56-65]. The guard only needs a `. "${script_dir}/pure-rules.sh"` line and no line starting with `banned_word_re=`. Failure scenario (reproduced by the Edge Case Hunter): in `check-p2-pure.sh`, `check-proto-pure.sh` or `check-bridge-pure.sh`, replace `pure_ident_hits "${f}"` with a grep of `banned_word_re` only. Or reassign `raw_addr_re='^$'` / `section_re` after sourcing, or use `banned_word_re+=` / `readonly banned_word_re=`. In every case the self-test stays green while that tree stops enforcing two of the three rule families. This defeats D1/AC3 ("cannot drift"). Fix: give each gate a `section_attr.c` and a `register_*.c` bad fixture; make the guard require a `pure_ident_hits "${f}"` call and refuse any assignment of `nb`, `banned_word_re`, `section_re`, `raw_addr_re` or a `pure_ident_hits()` definition in the gate. **Fixed: `section_attr.c` and `register_cast.c` bad fixtures in every gate; the guard requires the `pure_ident_hits "${f}"` call and refuses any `=` / `+=` of `nb`, `banned_word_re`, `section_re`, `raw_addr_re` (also behind `readonly`) and a local `pure_ident_hits` (red proof R3).**
+- [x] [Review][Patch] MINOR: p2check skips the `p2_queue_full` note on its early-return failure paths [firmware/tools/link_probe.py:2067, :2074]. The `c.note(p2_queue_full_note(link.status))` at :2098 is reached only when the run gets to the end. Failure scenario: the console never reaches `console_ready 1`, but STATUS frames with a v6 block did arrive. p2check prints FAIL with no overflow count, even though that is the run where dropped replies matter most (issue #25). Fix: emit the note before every `return c.finish()`; it stays a note, not a check (D5). **Fixed: the note is printed before both early `return c.finish()` (no INFO, no `console_ready`) (red proof R4).**
+- [x] [Review][Patch] MINOR: the alloca deny list misses `__builtin_alloca_with_align` (and `__builtin_alloca_with_align_and_max`) [firmware/tools/pure-rules.sh:19]. Both are followed by `_`, so neither `alloca` nor `__builtin_alloca` matches under the `([^A-Za-z0-9_]|$)` tail. Failure scenario: `return __builtin_alloca_with_align(4, 8);` passes all five gates (checked with BSD grep). Fix: `__builtin_alloca[A-Za-z0-9_]*` plus a fixture. **Fixed: `__builtin_alloca[A-Za-z0-9_]*` and fixture `builtin_alloca_align.c` (red proof R1).**
+- [x] [Review][Patch] MINOR: the good fixtures lack the AC2 look-alike `section "Controller modes"` and any prefixed call-form look-alike (`ocb_exit(`, `ocb_core_abort(`, `my_asm(`) [firmware/tests/*_pure_fixtures/good/allowed.c:19-28]. `ocb_fixture_aborted` and `ocb_exit_code` have no `(`, so they never reach the call-form alternatives. Failure scenario: someone loosens or removes `nb` in front of the exit group, every good fixture still passes, and the false positive is found only when a real tree breaks. AC4 lists these look-alikes explicitly. **Fixed: every `good/allowed.c` has `section "Controller modes"` in a comment, `ocb_exit(`, `ocb_core_abort(`, `my_asm(`, `ocb_fixture_section(` and `0x1FFFFFFFu` (red proof R5: they catch a rule with the word boundary dropped).**
+- [x] [Review][Patch] MINOR: `firmware/controller/README.md` does not describe the new gate rules where it describes the core and link gates [firmware/controller/README.md:15-18, :46-48]. Those paragraphs still say only "allow-list / no clock / no I/O". AC8 asks for the gate rules there; Task 8.3 narrowed this to v6 only, so the task and the AC disagree. **Fixed: the core and link paragraphs describe the shared rules.**
+- [x] [Review][Patch] MINOR: the test plan keeps stale STATUS sizes [docs/test-plan.md:903 (F.31 "its largest form (67-byte body)"), :889 (F.17 "debug STATUS frames reach their 67-byte maximum")]. F.31 now says both 67 and 115 bytes. F.17 was not updated although `test_link_fuzz.c`'s matching comment was (now 104). A reader takes the wrong maximum from the row. **Fixed: F.17 and F.31 give the 104-byte tail / 115-byte body.**
+- [x] [Review][Decision] MINOR: the scope of the register-address rule — XIP registers and qualified casts are not caught [firmware/tools/pure-rules.sh:29]. The windows are 0x40/0x50/0xd0/0xe0 only, so `XIP_CTRL_BASE 0x14000000` and `XIP_SSI_BASE 0x18000000` (RP2040 datasheet 2.2, also peripheral registers) pass. The cast branch needs `*` right before `)`, so `*(volatile uint32_t * const)0x20041000`, `(volatile uint32_t *)(uintptr_t)0x20041000` and typedef'd pointer casts also pass when the address is outside the windows. This matches AC1 to the letter, but the README and gate comments say "a hex literal cast to a pointer" without that caveat. Owner decision: add the 0x14/0x18 windows and a `*[[:space:]]*(const|volatile)?[[:space:]]*\)` variant, or state the limits in the docs. **Fixed (owner: widen): qualified casts (`const`, `volatile`, `restrict` after `*`), one extra cast (`(T *)(uintptr_t)0x...`) and the XIP windows 0x10-0x15 and 0x18; fixtures `register_cast_const.c`, `register_cast_double.c`, `register_flash.c`, `register_xip.c`, `register_xip_ssi.c`; look-alikes stay legal; `pure-rules.sh`, the gate headers, `firmware/README.md` and F.13 say exactly what is matched, and name the typedef-cast gap (red proof R1).**
+- [x] [Review][Decision] MINOR: false positives the "call form only" wording does not warn about [firmware/tools/pure-rules.sh:9-13, :19, :23, :29]. `[[:space:]]*\(` lets prose such as `/* on abort (D7) */` or `/* see section (2.2) */` trip the gates. The bare `asm` alternative flags any comment with the word "asm". The window literal flags legitimate high-bit masks `0x40000000u` (bit 30), `0xE0000000u` and `0x50000000`. The real trees pass today. Owner decision: accept this and document it in the header (rephrase the comment, or use `(1u << 30)`), or tighten the rules (for example no space before `(`, or no window match on masks). **Fixed (owner: document, no matching change): the `pure-rules.sh` header lists `abort (` / `exit (` / `section (` in a comment, the word `asm`, and window masks (`0x40000000u`, `0x10000000u`, `0x12345678`), each with its workaround; `firmware/README.md` points to it.**
+- [x] [Review][Defer] MINOR: the fake controller writes v6 at the fixed offset 70 and ignores the P2 log window [app/sim/src/controller.rs:641-644]. It copies the pre-existing v5 assumption (fixed offset 65, Story 3.5). A sim test whose `set_debug_extra` tail has `t[23] = n > 0` gets `p2_queue_full` written into the v4 block, while `tap.rs` reads v6 at `24 + 2n + 46` and decodes the caller's bytes. No current test uses n > 0. Deferred, pre-existing; fix v5 and v6 together by reading byte 23. **Deferred (owner, 2026-11-26): code left as is.**
+
+Dismissed (2): "a profile restart resets `p2_queue_full`": false, because `ocb_p2_restart` (`profile_p2/p2.c:170-179`) does not touch `cnt`, so "since boot" holds. "The `ramfunc.h` exemption works by basename in any tree": this is what AC2 / Story 2.4 D12 specify.
+
 ## Dev Notes
 
 ### Scope in one paragraph
@@ -340,6 +357,48 @@ After the v6 bullet: `docs_constants_check (F.22): ok`.
 - In `app/` (toolchain 1.100.0): `cargo fmt --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test --workspace` 131 passed, 0 failed.
 - ARM toolchain present (`firmware/.tools/arm-gnu-toolchain-15.2.Rel1`, picotool 2.3.1): fw-release, fw-debug, fw-debug-o3 built with no warning; `check-release-nolog.sh` ok on fw-release and `--expect-present` ok on fw-debug and fw-debug-o3; `check-barrier.sh --self-test` and all three ELFs ok; `check-ram-hot-path.sh` ok (23 hot functions in RAM) on all three; `check-stack.sh` ok: fw-release 1240, fw-debug 1196, fw-debug-o3 1248 bytes (limit 1536; `ocb_link_tx_status_debug_` frame 408 / 392 / 408 bytes).
 
+**Review fixes (2026-11-26), red proofs R1 to R5.** Pre-fix code = commit 2032bb8; mutated copies of the gates and of `pure-rules.sh` live in the scratchpad, the self-tests and fixtures are the repo's.
+
+R1, new core fixtures on the 2032bb8 rules (new self-tests in place):
+```
+### core_pure_selftest.sh (rules of 2032bb8)
+FAIL: bad fixture not reported (rc=0): ./tests/core_pure_fixtures/bad/builtin_alloca_align.c
+FAIL: bad fixture not reported (rc=0): ./tests/core_pure_fixtures/bad/register_cast_const.c
+FAIL: bad fixture not reported (rc=0): ./tests/core_pure_fixtures/bad/register_cast_double.c
+FAIL: bad fixture not reported (rc=0): ./tests/core_pure_fixtures/bad/register_flash.c
+FAIL: bad fixture not reported (rc=0): ./tests/core_pure_fixtures/bad/register_xip_ssi.c
+FAIL: bad fixture not reported (rc=0): ./tests/core_pure_fixtures/bad/register_xip.c
+```
+(The proto, link, p2 and bridge `section_attr.c` / `register_cast.c` fixtures are flagged by the 2032bb8 rules, as they should be; their red is in R3, where a gate stops applying the shared rules.) The first draft of the comment-line check treated a dereference line `*(volatile ...)` as a comment continuation and failed every `register_cast.c`; the detector was narrowed to `/*`, `//` or `*` followed by a space, `/` or end of line.
+
+R2, the `__builtin_alloca` fixture and the comment-line check, with `|__builtin_alloca|` deleted from a copy of `pure-rules.sh`:
+- 2032bb8 fixture comment, 2032bb8 self-test: no failure for `builtin_alloca.c` (the comment's word `alloca` satisfied the gate: the finding).
+- 2032bb8 fixture comment, new self-test: `FAIL: bad fixture flagged only on a comment line: .../builtin_alloca.c`.
+- new fixture comment, new self-test: `FAIL: bad fixture not reported (rc=0): .../builtin_alloca.c`.
+
+R3, the tightened guard. Each mutation on a copy of the gate (beside a copy of `pure-rules.sh`): `call` = `pure_ident_hits "${f}"` replaced by a grep of `banned_word_re` only; `raw` = `raw_addr_re='ocb_never_matches'` after the source line; `plus` = `banned_word_re+='|ocb_never_matches'`; `readonly` = `readonly section_re='ocb_never_matches'`; `func` = a local `pure_ident_hits() { grep banned_word_re; }`. The 2032bb8 self-test with the 2032bb8 fixtures stays green on every mutation of the proto, link, p2 and bridge gates (core: green on `plus` and `raw`; its `call`, `readonly` and `func` already lost `section_dunder.c`). The new self-test fails each one:
+```
+proto/link/p2/bridge/core  call      FAIL: check-<g>-pure.sh does not call pure_ident_hits "${f}"   (+ register_cast.c and section_attr.c not reported)
+proto/link/p2/bridge/core  raw       FAIL: check-<g>-pure.sh assigns a shared rule (nb, banned_word_re, section_re or raw_addr_re)   (+ register_cast.c not reported)
+proto/link/p2/bridge/core  plus      FAIL: check-<g>-pure.sh assigns a shared rule (nb, banned_word_re, section_re or raw_addr_re)
+proto/link/p2/bridge/core  readonly  FAIL: check-<g>-pure.sh assigns a shared rule (nb, banned_word_re, section_re or raw_addr_re)   (+ section_attr.c not reported)
+proto/link/p2/bridge/core  func      FAIL: check-<g>-pure.sh defines its own pure_ident_hits   (+ register_cast.c and section_attr.c not reported)
+```
+(An earlier draft of `raw` / `readonly` used `'^$'`; that matches blank lines, so the old self-test also failed on it, and the mutation was replaced by a never-matching value.)
+
+R4, the p2check note on the early FAIL paths, new tests against the 2032bb8 `cmd_p2check`:
+```
+FAIL: test_p2check_negative_controls       'P2 reply-queue overflows (p2_queue_full): 0' not found in '... FAIL console_ready 1 within ...'
+FAIL: test_p2check_no_info_still_notes_p2_queue_full   'p2_queue_full: not reported' not found in '... FAIL INFO received ...'
+```
+Green after the fix; `link_probe_selftest` 61 tests OK.
+
+R5, the good look-alikes, against a copy of `pure-rules.sh` with the word boundary dropped (`banned_word_re` += `|(exit|abort)[[:space:]]*\(|asm`, `section_re` without `nb`): the 2032bb8 `good/allowed.c` passes (`check-core-pure: ok (1 files)`), the new one is reported on `ocb_exit(`, `ocb_core_abort(`, `my_asm(`, `ocb_fixture_section(` (8 lines). On the real rules both pass.
+
+Green after the review fixes: `proto_pure_selftest: ok (7 bad fixtures ...)`, `core ... (45 ...)`, `link ... (15 ...)`, `p2 ... (15 ...)`, `bridge ... (19 ...)`, identical with GNU grep 3.11 (`ubuntu:24.04`). Spot checks of the widened rule: flagged `__builtin_alloca_with_align_and_max(4,8,16)`, `*(io_rw_32 *const)0x40014000`, `(volatile uint32_t*)(unsigned long)(0x20041000)`; legal `(void *)0`, `0x400140001`, `0x1FFFFFFFu`, `0x80000000u`, `0xEDB88320u`, `(uint32_t)0x22345678` (`(uint32_t)0x12345678` is flagged: 0x12 is an XIP alias window, a documented false positive).
+
+Re-verification after the review fixes: ctest `100% tests passed out of 44`; the five gates ok on the real trees (14 / 18 / 20 / 9 / 12 files), `check-pins: ok`, `check-proto-version: ok`, `docs_constants_check (F.22): ok`; `cargo fmt --check` clean, `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo test --workspace` 131 passed, 0 failed; fw-release, fw-debug, fw-debug-o3 rebuilt, `check-release-nolog.sh`, `check-barrier.sh` (with `--self-test`), `check-ram-hot-path.sh` and `check-stack.sh` ok (1240 / 1196 / 1248 bytes, limit 1536; no C source changed in the fixes).
+
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created.
@@ -352,6 +411,8 @@ After the v6 bullet: `docs_constants_check (F.22): ok`.
 - Small deviations: `test_link_ready.c` needed a 14th zero in the positional `ocb_usb_mailbox` initializer of `test_rebase` (`-Wmissing-field-initializers`); `test_link_fuzz.c`'s "67-byte maximum" comment was already stale and now says 104 bytes. The p2check STATUS line is not printed by `p2check` itself, so the end-to-end test asserts the note only; the `| v6:` STATUS text is covered by `test_debug_v5_v6`.
 - Task 9.4: story set to `review` here; the action items E2-A4, E2-A5 and E3-A4 stay `open` in `sprint-status.yaml` until the PR merges, as the task says. PR body must carry `Closes #20` and `Closes #25`.
 - Not done here (owner's call): no PR opened, no push.
+
+- Review fixes (2026-11-26): findings 1 to 9 fixed (8 widened and 9 documented as the owner decided), finding 10 deferred; see Review Findings and red proofs R1 to R5. Status stays `review`.
 
 ### File List
 
@@ -384,6 +445,19 @@ New:
 - firmware/tests/p2_pure_fixtures/bad/calls_abort.c
 - firmware/tests/proto_pure_fixtures/bad/calls_abort.c
 - firmware/tests/bridge_pure_fixtures/bad/calls_abort.c
+- firmware/tests/core_pure_fixtures/bad/builtin_alloca_align.c
+- firmware/tests/core_pure_fixtures/bad/register_cast_const.c
+- firmware/tests/core_pure_fixtures/bad/register_cast_double.c
+- firmware/tests/core_pure_fixtures/bad/register_flash.c
+- firmware/tests/core_pure_fixtures/bad/register_xip.c
+- firmware/tests/core_pure_fixtures/bad/register_xip_ssi.c
+- firmware/tests/proto_pure_fixtures/bad/register_cast.c
+- firmware/tests/proto_pure_fixtures/bad/section_attr.c
+- firmware/tests/link_pure_fixtures/bad/register_cast.c
+- firmware/tests/p2_pure_fixtures/bad/register_cast.c
+- firmware/tests/p2_pure_fixtures/bad/section_attr.c
+- firmware/tests/bridge_pure_fixtures/bad/register_cast.c
+- firmware/tests/bridge_pure_fixtures/bad/section_attr.c
 - app/sim/tests/debug_tail.rs
 
 Modified:
@@ -432,3 +506,4 @@ Modified:
 
 - 2026-11-26: Story created (gds-create-story), from Epic 3 retro action 4 and issues #20, #25.
 - 2026-11-26: Implemented (gds-dev-story): shared purity rules in `tools/pure-rules.sh` used by all five gates, 26 new bad fixtures and legal look-alikes; debug STATUS v6 (`p2_queue_full`) in the firmware, `link_probe.py` (v5 and v6 decoding, p2check note), `ocb-dev` and `ocb-sim`; docs and test plan (F.43, C.20 new). Host verification green; status review.
+- 2026-11-26: Code review fixes: comment-free `__builtin_alloca` fixture and a code-line check in every purity self-test; a stronger shared-list guard and section / register fixtures in every gate; `__builtin_alloca*`; the register rule widened to qualified and double casts and the XIP windows; the accepted false positives documented in `pure-rules.sh`; AC4 look-alikes; p2check's note on its early FAIL paths; controller README and stale F.17 / F.31 sizes. The fake controller's fixed v6 offset is deferred. Status stays review.

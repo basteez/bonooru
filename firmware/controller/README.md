@@ -15,7 +15,13 @@ IDLE / DIRECT / PLAYING (AD-8), the event queue, the scheduler pass, the abort l
 PLAYING safety mask (AD-9). It reads no clock and does no I/O: every call gets the time and the
 profile's `ready()` as arguments, so it runs unchanged on the PC. It includes only the standard
 headers on its allow-list, `ocb_proto/` and `ocb_core/` (`tools/check-core-pure.sh`, ctest
-`core_pure_check`, its own CI step). Its tests (F.3 to F.6, F.12 in `docs/test-plan.md`) run with
+`core_pure_check`, its own CI step). Since Story 4.0 the gate also applies the shared rules of
+`tools/pure-rules.sh`: no heap, I/O, clock, sleep or multicore name, no process exit in call form
+(`exit(`, `abort(` and the like), no `fopen`, `strdup`, `strndup`, `alloca` or
+`__builtin_alloca*`, no inline assembly, no raw register address (a hex literal after a pointer
+cast, or an 8-digit literal in an RP2040 register or XIP window), and no `section(` attribute
+except in `ramfunc.h`; the exact forms and the accepted false positives are in
+`firmware/README.md` and the header of `tools/pure-rules.sh`. Its tests (F.3 to F.6, F.12 in `docs/test-plan.md`) run with
 the host preset: `cmake --preset host-tests && cmake --build --preset host-tests && ctest --preset host-tests`.
 Since Story 2.6 the link layer drives it on core 1; Stories 2.5, 2.3 and 2.7 wire it to the
 timer, USB and the watchdog.
@@ -45,7 +51,9 @@ mailbox, the TX slots (EVENT > NAK > INFO > ACK > STATUS), STATUS with its caden
 counters, and the TX gate state machine (AD-20). It reads no clock, does no I/O and allocates
 nothing: the glue passes RX entries and the time and pulls whole wire frames. Its rules are in
 `docs/link-protocol.md`, "Rules the controller link applies (Story 2.6)". Purity:
-`tools/check-link-pure.sh` (ctest `link_pure_check`, its own CI step). Tests F.1, F.2, F.10,
+`tools/check-link-pure.sh` (ctest `link_pure_check`, its own CI step), with the same allow-list
+idea plus `ocb_link/` and the same shared identifier rules as the core gate (Story 4.0); a
+section attribute belongs in `ocb_core/ramfunc.h` only (`OCB_CORE_RAMFUNC`). Tests F.1, F.2, F.10,
 F.14 to F.17 in `docs/test-plan.md`, under the host preset.
 
 ## `platform/`: the glue on core 1 (Story 2.6)

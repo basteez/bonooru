@@ -1367,6 +1367,16 @@ class P2BenchSteps(unittest.TestCase):
         self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
         self.assertIn("P2 reply-queue overflows (p2_queue_full): 3", text)
 
+    def test_p2check_no_info_still_notes_p2_queue_full(self):
+        """Story 4.0 review: no INFO (the controller is not there): FAIL, and
+        the closing note still says whether p2_queue_full was reported."""
+        port, console = self.port_with_console()
+        port.unplug()
+        rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=1.0)
+        self.assertEqual(rc, 1, text)
+        self.assertIn("FAIL INFO received", last_line(text))
+        self.assertIn("p2_queue_full: not reported", text)
+
     def test_p2check_refuses_the_mac(self):
         """Story 2.5 D36: macOS completes the handshake itself and polls at
         2000 us; p2check is for the console and says so."""
@@ -1383,6 +1393,8 @@ class P2BenchSteps(unittest.TestCase):
         rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=3.0)
         self.assertEqual(rc, 1, text)
         self.assertIn("FAIL console_ready 1 within", last_line(text))
+        # Story 4.0 review: the overflow note is printed on this early FAIL too.
+        self.assertIn("P2 reply-queue overflows (p2_queue_full): 0", text)
         # A 100 us interval is outside 500..20000.
         port, console = self.port_with_console(period_us=100)
         rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=10.0)

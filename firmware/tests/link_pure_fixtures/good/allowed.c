@@ -27,3 +27,17 @@ int ocb_fixture_allowed(void)
 bool ocb_fixture_aborted;
 int ocb_exit_code;
 void *ocb_fixture_null = (void *)0;
+/* Controller modes are described in core.h, section "Controller modes". */
+void ocb_exit(int code);
+void ocb_core_abort(int cause);
+void my_asm(void);
+void ocb_fixture_section(void);
+#define OCB_FIXTURE_MASK29 0x1FFFFFFFu
+void ocb_fixture_calls(void);
+void ocb_fixture_calls(void)
+{
+    ocb_exit(0);
+    ocb_core_abort(1);
+    my_asm();
+    ocb_fixture_section();
+}

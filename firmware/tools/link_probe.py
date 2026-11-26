@@ -2064,6 +2064,7 @@ def cmd_p2check(port, args):
     t0 = port.now()
     info = link.hello(timeout=args.wait_s)  # HELLO every 100 ms while the controller boots
     if not c.check(info is not None, "INFO received (the controller is powered and the link answers)"):
+        c.note(p2_queue_full_note(link.status))  # story 4.0 review: on every exit
         return c.finish()
     c.check(info["hid_profile"] == HID_PROFILE_P2, "INFO hid_profile %d (want 2, P2)" % info["hid_profile"])
     left = max(0.5, args.wait_s - (port.now() - t0))
@@ -2071,6 +2072,7 @@ def cmd_p2check(port, args):
     if not c.check(st is not None, "console_ready 1 within %.0f s of the prompt%s" % (
             args.wait_s, (" (%.1f s)" % (link.status_t - t0)) if st else "")):
         c.note("P2 log so far: %s" % _p2_sequence(link.p2log.since(t0)))
+        c.note(p2_queue_full_note(link.status))
         return c.finish()
     base = link.status
     link.wait(P2_STABLE_S)

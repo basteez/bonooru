@@ -96,13 +96,22 @@ pin number anywhere else in the firmware sources; use the `OCB_PIN_*` names.
 - Purity gates (AD-2): five scripts, one per pure C99 library, share their identifier rules
   through `tools/pure-rules.sh` (sourced, Story 4.0 D1), so the deny list exists once. No line
   (code or comment) may name a heap, I/O, clock, sleep or multicore identifier, a process exit
-  in call form (`exit(`, `_exit(`, `_Exit(`, `quick_exit(`, `abort(`), `fopen`, `strdup`,
-  `strndup`, `alloca`, `__builtin_alloca`, inline assembly (`asm`, `__asm`, `__asm__`), a raw
-  register address (a hex literal cast to a pointer, or an RP2040 peripheral-window literal
-  `0x40xxxxxx`, `0x50xxxxxx`, `0xd0xxxxxx`, `0xe0xxxxxx`), or a `section(` / `__section__(`
-  attribute outside a file named `ramfunc.h` (the hook of `OCB_CORE_RAMFUNC`). Each gate keeps
-  its own include allow-list and CMake rule, and its self-test fails if the gate stops sourcing
-  the shared file or defines a private `banned_word_re`.
+  in call form (`exit(`, `_exit(`, `_Exit(`, `quick_exit(`, `abort(`, a space before `(`
+  allowed), `fopen`, `strdup`, `strndup`, `alloca`, any `__builtin_alloca*` builtin, inline
+  assembly (`asm`, `__asm`, `__asm__`), a raw register address, or a `section(` /
+  `__section__(` attribute outside a file named `ramfunc.h` (the hook of `OCB_CORE_RAMFUNC`).
+  A raw register address is (a) a hex literal right after a pointer cast: `(T *)0x...`,
+  `(T * const)0x...` (also `volatile`, `restrict`), `(T *)(0x...)` or `(T *)(uintptr_t)0x...`;
+  or (b) an 8-digit hex literal, `u` / `l` suffix allowed, in an RP2040 register or XIP window:
+  `0x10`-`0x13` (XIP flash and aliases), `0x14` (XIP_CTRL), `0x15` (XIP SRAM), `0x18` (XIP_SSI),
+  `0x40` (APB), `0x50` (AHB-Lite), `0xd0` (SIO), `0xe0` (Cortex-M0+ PPB). `0x80000000`,
+  `0xFFFFFFFF`, `0x1FFFFFFF` and `0xEDB88320` stay legal. The rules are plain greps and accept a
+  few false positives on purpose (a comment saying `abort (` or `section (`, the word `asm` in
+  prose, a mask such as `0x40000000u` in a window); `tools/pure-rules.sh` lists them with their
+  workarounds. Each gate keeps its own include allow-list and CMake rule. Its self-test checks
+  that every bad fixture is flagged on a code line (not only on its comment), and that the gate
+  sources the shared file, calls `pure_ident_hits "${f}"`, assigns none of `nb`,
+  `banned_word_re`, `section_re`, `raw_addr_re` and defines no `pure_ident_hits` of its own.
 - `tools/check-proto-pure.sh`: `common/proto/` (`.c .h`) includes only `<stdint.h> <stddef.h>
   <stdbool.h> <string.h> <limits.h>` and `ocb_proto/*` headers, and since Story 4.0 also
   passes the shared identifier rules (CI step; ctest `proto_pure_check` with a self-test).
