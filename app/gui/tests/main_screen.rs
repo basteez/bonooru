@@ -85,15 +85,21 @@ fn g1_regions_are_filled_in_reading_order_with_their_colours() {
 
 #[test]
 fn g1_rects_in_points_do_not_depend_on_ppp() {
+    // What is painted (not the pure `regions()` of the same rect, which is
+    // ppp-independent by construction), including the fractional Windows
+    // scales 1.25 and 1.75 where 6 pt = 7.5 px / 10.5 px.
     let at = |ppp| {
         let h = harness(1280.0, 800.0, ppp);
         assert_eq!(h.ctx.pixels_per_point(), ppp);
-        (regions(h.ctx.content_rect()), filled_rects(&h))
+        filled_rects(&h)
     };
-    let (r1, s1) = at(1.0);
-    for ppp in [1.5, 2.0] {
-        let (r, s) = at(ppp);
-        assert_eq!(r, r1, "regions at ppp {ppp}");
-        assert_eq!(s, s1, "painted rects at ppp {ppp}");
+    let base = at(1.0);
+    assert!(
+        base.len() >= 7,
+        "frame + 6 region fills expected, got {}",
+        base.len()
+    );
+    for ppp in [1.25, 1.5, 1.75, 2.0] {
+        assert_eq!(at(ppp), base, "painted rects at ppp {ppp}");
     }
 }

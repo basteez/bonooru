@@ -41,3 +41,28 @@ fn g2_keyboard_zoom_off() {
     assert!(!ctx.options(|o| o.zoom_with_keyboard));
     assert_eq!(ctx.zoom_factor(), 1.0);
 }
+
+/// G.7 in a harness: smoke mode reports once, after 3 completed frames, and
+/// its verdict is judged on what the frame really has: the kittest frame
+/// has no window handle, so the run must fail on the backend, not print ok.
+#[test]
+fn g7_smoke_mode_judges_the_real_frame() {
+    use ocb_app::smoke::{Outcome, OutcomeCell, Smoke};
+    let cell = OutcomeCell::default();
+    let smoke_cell = cell.clone();
+    let mut h = Harness::builder()
+        .with_size(vec2(1280.0, 800.0))
+        .with_theme(Theme::Light)
+        .build_eframe(move |cc| App::with_smoke(cc, Mode::Gallery, Smoke::new(smoke_cell)));
+    h.run_steps(6);
+    let report = h
+        .state()
+        .smoke()
+        .and_then(|s| s.report())
+        .cloned()
+        .expect("a report");
+    assert!(report.frames >= 3, "frames {}", report.frames);
+    assert!(report.dark);
+    assert_eq!(report.backend, "none");
+    assert_eq!(cell.get(), Outcome::Fail);
+}

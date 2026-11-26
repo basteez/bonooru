@@ -186,6 +186,62 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Calls of `strong` in Rust source: the identifier `strong` (whole word)
+/// followed by optional whitespace (line breaks included) and `(`. Catches
+/// `.strong()`, `.strong ()`, a line break before or after `.`, and
+/// `RichText::strong(x)`. Line comments are skipped (prose may name the
+/// method); string literals are not, which errs on the strict side.
+fn strong_calls(source: &str) -> usize {
+    let code: String = source
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bytes = code.as_bytes();
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let word = b"strong";
+    let mut hits = 0;
+    let mut i = 0;
+    while let Some(pos) = code[i..].find("strong") {
+        let at = i + pos;
+        let end = at + word.len();
+        let before_ok = at == 0 || !ident(bytes[at - 1]);
+        let after_ok = end == bytes.len() || !ident(bytes[end]);
+        let mut j = end;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if before_ok && after_ok && bytes.get(j) == Some(&b'(') {
+            hits += 1;
+        }
+        i = end;
+    }
+    hits
+}
+
+#[test]
+fn g4_strong_scan_self_test() {
+    for bad in [
+        "t.strong()",
+        "t.strong ()",
+        "t\n    .strong()",
+        "t.\n    strong\n    ()",
+        "egui::RichText::strong(t)",
+        "RichText :: strong (t)",
+    ] {
+        assert_eq!(strong_calls(bad), 1, "missed: {bad:?}");
+    }
+    for good in [
+        "// never .strong() here",
+        "let strongest = 1;",
+        "fn strong_calls() {}",
+        "t.strongly()",
+        "let s = strong;",
+    ] {
+        assert_eq!(strong_calls(good), 0, "false hit: {good:?}");
+    }
+}
+
 /// `strong()` only changes the colour in egui; weights come from `wght`.
 #[test]
 fn g4_no_strong_in_the_sources() {
@@ -195,9 +251,8 @@ fn g4_no_strong_in_the_sources() {
         &mut files,
     );
     assert!(files.len() >= 5, "scan found too few files: {files:?}");
-    let needle = [".strong", "("].concat();
     for f in files {
         let text = std::fs::read_to_string(&f).unwrap();
-        assert!(!text.contains(&needle), "{} uses {needle}", f.display());
+        assert_eq!(strong_calls(&text), 0, "{} calls strong()", f.display());
     }
 }

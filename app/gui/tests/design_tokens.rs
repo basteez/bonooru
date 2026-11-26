@@ -54,11 +54,14 @@ struct Section {
     nested: BTreeMap<String, BTreeMap<String, String>>,
 }
 
-fn section(lines: &[&str], name: &str) -> Section {
+/// Parses one top-level section. Fails loudly on any shape the comparison
+/// would not see: a duplicate key or field, an indentation other than two
+/// (key) or four (field) spaces, a field without a parent.
+fn section(lines: &[&str], name: &str) -> Result<Section, String> {
     let start = lines
         .iter()
         .position(|l| *l == format!("{name}:"))
-        .unwrap_or_else(|| panic!("no `{name}:` section"));
+        .ok_or_else(|| format!("no `{name}:` section"))?;
     let mut out = Section::default();
     let mut current: Option<String> = None;
     for line in &lines[start + 1..] {
@@ -68,31 +71,71 @@ fn section(lines: &[&str], name: &str) -> Section {
         if !line.starts_with(' ') {
             break; // next top-level key
         }
+        let indent = line.len() - line.trim_start().len();
         let (k, v) = line
             .trim()
             .split_once(':')
-            .unwrap_or_else(|| panic!("bad line: {line}"));
-        if line.starts_with("    ") {
-            let parent = current
-                .clone()
-                .unwrap_or_else(|| panic!("orphan field: {line}"));
-            out.nested
-                .entry(parent)
-                .or_default()
-                .insert(key(k), value(v));
-        } else {
-            let k = key(k);
-            let v = value(v);
-            if v.is_empty() {
-                out.nested.entry(k.clone()).or_default();
-                current = Some(k);
-            } else {
-                out.flat.insert(k, v);
-                current = None;
+            .ok_or_else(|| format!("{name}: bad line: {line}"))?;
+        match indent {
+            4 => {
+                let parent = current
+                    .clone()
+                    .ok_or_else(|| format!("{name}: field without a group: {line}"))?;
+                let group = out.nested.entry(parent.clone()).or_default();
+                if group.insert(key(k), value(v)).is_some() {
+                    return Err(format!("{name}.{parent}: duplicate field `{}`", key(k)));
+                }
+            }
+            2 => {
+                let k = key(k);
+                let v = value(v);
+                if out.flat.contains_key(&k) || out.nested.contains_key(&k) {
+                    return Err(format!("{name}: duplicate key `{k}`"));
+                }
+                if v.is_empty() {
+                    out.nested.insert(k.clone(), BTreeMap::new());
+                    current = Some(k);
+                } else {
+                    out.flat.insert(k, v);
+                    current = None;
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "{name}: unsupported indentation ({indent}): {line}"
+                ));
             }
         }
     }
-    out
+    Ok(out)
+}
+
+/// A section of `key: value` tokens only (colors, rounded, spacing): a
+/// nested group (or a value the parser reads as empty, such as an unquoted
+/// `#hex`) is an error, never silently skipped.
+fn flat_section(lines: &[&str], name: &str) -> Result<BTreeMap<String, String>, String> {
+    let s = section(lines, name)?;
+    if let Some(k) = s.nested.keys().next() {
+        return Err(format!(
+            "{name}.{k}: nested group or empty value, not a token"
+        ));
+    }
+    Ok(s.flat)
+}
+
+/// A section of groups only (typography, components): a one-line entry is
+/// an error.
+fn grouped_section(
+    lines: &[&str],
+    name: &str,
+) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
+    let s = section(lines, name)?;
+    if let Some(k) = s.flat.keys().next() {
+        return Err(format!(
+            "{name}.{k}: one-line entry, expected a group of fields"
+        ));
+    }
+    Ok(s.nested)
 }
 
 fn px(v: &str, token: &str) -> f32 {
@@ -148,11 +191,11 @@ fn report(errs: &[String]) {
 fn g3_colors() {
     let doc = design_md();
     let lines = frontmatter(&doc);
-    let s = section(&lines, "colors");
+    let flat = flat_section(&lines, "colors").unwrap_or_else(|e| panic!("{e}"));
     let tokens = theme::color_tokens();
-    let mut errs = missing("colors", s.flat.keys(), tokens.iter().map(|t| t.name));
+    let mut errs = missing("colors", flat.keys(), tokens.iter().map(|t| t.name));
     for t in tokens {
-        if let Some(v) = s.flat.get(t.name) {
+        if let Some(v) = flat.get(t.name) {
             let want = hex(v, t.name);
             if want != t.rgba {
                 errs.push(format!(
@@ -176,14 +219,14 @@ fn g3_colors() {
 fn compare_sizes(section_name: &str, theme_tokens: &[(&'static str, f32)]) {
     let doc = design_md();
     let lines = frontmatter(&doc);
-    let s = section(&lines, section_name);
+    let flat = flat_section(&lines, section_name).unwrap_or_else(|e| panic!("{e}"));
     let mut errs = missing(
         section_name,
-        s.flat.keys(),
+        flat.keys(),
         theme_tokens.iter().map(|(n, _)| *n),
     );
     for (name, val) in theme_tokens {
-        if let Some(v) = s.flat.get(*name) {
+        if let Some(v) = flat.get(*name) {
             let want = px(v, name);
             if want != *val {
                 errs.push(format!(
@@ -209,15 +252,11 @@ fn g3_spacing() {
 fn g3_typography() {
     let doc = design_md();
     let lines = frontmatter(&doc);
-    let s = section(&lines, "typography");
+    let groups = grouped_section(&lines, "typography").unwrap_or_else(|e| panic!("{e}"));
     let tokens = theme::typography_tokens();
-    let mut errs = missing(
-        "typography",
-        s.nested.keys(),
-        tokens.iter().map(|(n, _)| *n),
-    );
+    let mut errs = missing("typography", groups.keys(), tokens.iter().map(|(n, _)| *n));
     for (name, style) in tokens {
-        let Some(fields) = s.nested.get(*name) else {
+        let Some(fields) = groups.get(*name) else {
             continue;
         };
         if *name == "code" {
@@ -291,6 +330,23 @@ fn g3_typography() {
     report(&errs);
 }
 
+/// Component sizes the screens draw from `theme::components`.
+#[test]
+fn g3_component_sizes() {
+    let doc = design_md();
+    let lines = frontmatter(&doc);
+    let groups = grouped_section(&lines, "components").unwrap_or_else(|e| panic!("{e}"));
+    let led = groups
+        .get("status-led")
+        .and_then(|g| g.get("size"))
+        .expect("components.status-led.size");
+    assert_eq!(
+        px(led, "status-led.size"),
+        theme::components::STATUS_LED_SIZE,
+        "components.status-led.size"
+    );
+}
+
 /// The parser itself: a comment after a quoted hex is stripped, a `#`
 /// inside quotes is kept, nested fields land under their parent.
 #[test]
@@ -307,11 +363,76 @@ fn g3_parser_self_test() {
         "rounded:",
         "  '1': 4px",
     ];
-    let c = section(&lines, "colors");
-    assert_eq!(c.flat.len(), 2);
-    assert_eq!(hex(&c.flat["a"], "a"), 0x1122_33ff);
-    assert_eq!(hex(&c.flat["b"], "b"), 0x1122_3344);
-    let t = section(&lines, "typography");
-    assert_eq!(t.nested["t"]["fontWeight"], "700");
-    assert_eq!(section(&lines, "rounded").flat["1"], "4px");
+    let c = flat_section(&lines, "colors").unwrap();
+    assert_eq!(c.len(), 2);
+    assert_eq!(hex(&c["a"], "a"), 0x1122_33ff);
+    assert_eq!(hex(&c["b"], "b"), 0x1122_3344);
+    let t = grouped_section(&lines, "typography").unwrap();
+    assert_eq!(t["t"]["fontWeight"], "700");
+    assert_eq!(flat_section(&lines, "rounded").unwrap()["1"], "4px");
+}
+
+/// Shapes the comparison would not see fail loudly (review finding 7).
+#[test]
+fn g3_parser_rejects_unknown_shapes() {
+    let cases: &[(&[&str], &str, &str)] = &[
+        // A nested group inside a flat section.
+        (
+            &["colors:", "  a: '#112233'", "  group:", "    b: '#445566'"],
+            "colors",
+            "colors.group: nested group",
+        ),
+        // An unquoted hex reads as empty (YAML comment) and is not a token.
+        (
+            &["colors:", "  a: #112233"],
+            "colors",
+            "colors.a: nested group or empty value",
+        ),
+        // A duplicate key.
+        (
+            &["colors:", "  a: '#112233'", "  a: '#445566'"],
+            "colors",
+            "colors: duplicate key `a`",
+        ),
+        // A one-line typography entry.
+        (
+            &[
+                "typography:",
+                "  t:",
+                "    fontSize: 13px",
+                "  inline: 13px",
+            ],
+            "typography",
+            "typography.inline: one-line entry",
+        ),
+        // A duplicate typography field.
+        (
+            &[
+                "typography:",
+                "  t:",
+                "    fontSize: 13px",
+                "    fontSize: 14px",
+            ],
+            "typography",
+            "typography.t: duplicate field `fontSize`",
+        ),
+        // A deeper nesting level.
+        (
+            &["typography:", "  t:", "    font:", "      size: 13px"],
+            "typography",
+            "typography: unsupported indentation (6)",
+        ),
+    ];
+    for (lines, name, want) in cases {
+        let got = if *name == "typography" {
+            grouped_section(lines, name).map(|_| ())
+        } else {
+            flat_section(lines, name).map(|_| ())
+        };
+        let err = got.expect_err(&format!("accepted: {lines:?}"));
+        assert!(
+            err.starts_with(want),
+            "{lines:?}: got `{err}`, want `{want}...`"
+        );
+    }
 }

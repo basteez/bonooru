@@ -101,8 +101,9 @@ fn status_strip(ui: &mut Ui, bg_name: &str, bg: Color32, items: &[(&str, Color32
                 );
                 for (name, color) in items {
                     ui.add_space(theme::spacing::S4);
-                    let (rect, _) = ui.allocate_exact_size(vec2(11.0, 11.0), Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 5.5, *color);
+                    let led = theme::components::STATUS_LED_SIZE;
+                    let (rect, _) = ui.allocate_exact_size(vec2(led, led), Sense::hover());
+                    ui.painter().circle_filled(rect.center(), led / 2.0, *color);
                     ui.label(theme::rich(&theme::BODY_STRONG, *name).color(*color));
                 }
             });
@@ -153,7 +154,7 @@ fn ring_sample(ui: &mut Ui, bg_name: &str, bg: Color32) {
         theme::INK,
     );
     p.text(
-        rect.left_top() + vec2(6.0, 4.0),
+        rect.left_top() + vec2(theme::spacing::CARD_INSET, theme::spacing::S1),
         Align2::LEFT_TOP,
         bg_name,
         font,
@@ -213,27 +214,34 @@ fn text_score(ui: &mut Ui) {
         });
 }
 
+/// One row per typography token: its exact name (queryable by tests), a
+/// specimen in the token, and its family, size and weight.
 fn typography(ui: &mut Ui) {
-    for (name, style) in theme::typography_tokens() {
-        let spec = format!(
-            "{name} {} {} {}",
-            style.family.design_name(),
-            style.size,
-            style.weight
-        );
-        let sample = if style.size > 60.0 {
-            "3".to_owned()
-        } else {
-            format!("Song of Storms, {spec}")
-        };
-        let text = if style.letter_spacing_em > 0.0 {
-            sample.to_uppercase()
-        } else {
-            sample
-        };
-        ui.label(theme::rich(style, text).color(theme::TEXT));
-        if style.size > 60.0 {
-            ui.label(theme::rich(&theme::SMALL, spec).color(theme::TEXT_MUTED));
-        }
-    }
+    egui::Grid::new("gallery-typography")
+        .num_columns(3)
+        .spacing(vec2(theme::spacing::S4, theme::spacing::S2))
+        .show(ui, |ui| {
+            for (name, style) in theme::typography_tokens() {
+                ui.label(theme::rich(&theme::BODY_STRONG, *name).color(theme::TEXT_MUTED));
+                let sample = if style.size > 60.0 {
+                    "3"
+                } else {
+                    "Song of Storms"
+                };
+                let text = if style.letter_spacing_em > 0.0 {
+                    sample.to_uppercase()
+                } else {
+                    sample.to_owned()
+                };
+                ui.label(theme::rich(style, text).color(theme::TEXT));
+                let spec = format!(
+                    "{} {} pt, wght {}",
+                    style.family.design_name(),
+                    style.size,
+                    style.weight
+                );
+                ui.label(theme::rich(&theme::SMALL, spec).color(theme::TEXT_MUTED));
+                ui.end_row();
+            }
+        });
 }

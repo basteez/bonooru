@@ -18,10 +18,10 @@ From `app/`:
 ```sh
 cargo run -p ocb-app                    # the main screen
 cargo run -p ocb-app -- --gallery       # the token gallery (design review)
-cargo run -p ocb-app -- --smoke-test    # 3 frames, one OCB_SMOKE line, exit 0 (watchdog: exit 3 after 60 s)
+cargo run -p ocb-app -- --smoke-test    # 3 frames, one OCB_SMOKE ok/fail line: exit 0 ok, 4 fail, 3 watchdog (60 s)
 ```
 
-On Linux the build needs the X11 development packages listed in the `app` CI workflow (`.github/workflows/app.yml`, step "Linux system dependencies").
+`gui/ci/check-smoke.sh <file> <backend-regex>` re-checks a smoke line (CI). On Linux the build needs the X11 development packages listed in the `app` CI workflow (`.github/workflows/app.yml`, step "Linux system dependencies").
 
 ## Bundled fonts
 

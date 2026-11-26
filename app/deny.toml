@@ -62,4 +62,10 @@ deny = [
     { crate = "rustls", reason = "AD-21: the app opens no network connections (TLS)" },
     { crate = "native-tls", reason = "AD-21: the app opens no network connections (TLS)" },
     { crate = "openssl", reason = "AD-21: the app opens no network connections (TLS)" },
+    # The -sys and alternative TLS crates: a crate can link libcurl or a TLS
+    # library through these alone.
+    { crate = "openssl-sys", reason = "AD-21: the app opens no network connections (TLS)" },
+    { crate = "curl-sys", reason = "AD-21: the app opens no network connections" },
+    { crate = "boring", reason = "AD-21: the app opens no network connections (TLS)" },
+    { crate = "boring-sys", reason = "AD-21: the app opens no network connections (TLS)" },
 ]

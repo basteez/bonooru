@@ -96,21 +96,32 @@ jobs:
         run: cargo build --locked -p ocb-app
 
       # G.7: the real window on each OS. On Linux under Xvfb with a bogus
-      # WAYLAND_DISPLAY: the app must still open on X11 (AC 7).
+      # WAYLAND_DISPLAY: the app must still open on X11 (AC 7). The exit
+      # status is captured right after the command (no pipeline), and
+      # gui/ci/check-smoke.sh checks every field of the line.
       - name: Smoke run (G.7)
         timeout-minutes: 5
         run: |
+          case "$RUNNER_OS" in
+            Linux) backend='(Xlib|Xcb)' ;;
+            macOS) backend='AppKit' ;;
+            Windows) backend='Win32' ;;
+            *) echo "::error::unknown runner OS $RUNNER_OS"; exit 1 ;;
+          esac
+          : > smoke-all.txt
           for args in "--smoke-test" "--smoke-test --gallery"; do
+            set +e
             if [ "$RUNNER_OS" = Linux ]; then
-              WAYLAND_DISPLAY=ocb-no-such-socket xvfb-run -a target/debug/bonooru $args | tee smoke.txt
-              pattern='^OCB_SMOKE ok .*backend=(Xlib|Xcb)$'
+              WAYLAND_DISPLAY=ocb-no-such-socket xvfb-run -a target/debug/bonooru $args > smoke.txt 2> smoke-err.txt
             else
-              target/debug/bonooru $args | tee smoke.txt
-              pattern='^OCB_SMOKE ok '
+              target/debug/bonooru $args > smoke.txt 2> smoke-err.txt
             fi
-            rc=${PIPESTATUS[0]}
+            rc=$?
+            set -e
+            cat smoke.txt
+            cat smoke-err.txt >&2
             [ "$rc" -eq 0 ] || { echo "::error::bonooru $args exited $rc"; exit 1; }
-            grep -Eq "$pattern" smoke.txt || { echo "::error::no OCB_SMOKE ok line for $args"; exit 1; }
+            bash gui/ci/check-smoke.sh smoke.txt "$backend"
             cat smoke.txt >> smoke-all.txt
           done
 

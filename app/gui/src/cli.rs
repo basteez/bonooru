@@ -1,5 +1,7 @@
 //! Command-line arguments (hand-written, no clap).
 
+use std::ffi::OsStr;
+
 use crate::app::Mode;
 
 /// Usage text, printed by `--help` (stdout) and on a usage error (stderr).
@@ -22,20 +24,25 @@ pub enum Command {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UsageError(pub String);
 
-/// Parses the arguments after the program name.
+/// Parses the arguments after the program name (`std::env::args_os`, so a
+/// non-UTF-8 argument is a usage error, not a panic).
 ///
 /// # Errors
-/// [`UsageError`] naming the first unknown argument.
+/// [`UsageError`] naming the first unknown or non-UTF-8 argument (lossy).
 pub fn parse<I, S>(args: I) -> Result<Command, UsageError>
 where
     I: IntoIterator<Item = S>,
-    S: AsRef<str>,
+    S: AsRef<OsStr>,
 {
     let mut mode = Mode::Main;
     let mut smoke = false;
     let mut help = false;
     for arg in args {
-        match arg.as_ref() {
+        let arg = arg.as_ref();
+        let Some(text) = arg.to_str() else {
+            return Err(UsageError(arg.to_string_lossy().into_owned()));
+        };
+        match text {
             "--gallery" => mode = Mode::Gallery,
             "--smoke-test" => smoke = true,
             "--help" | "-h" => help = true,
@@ -89,6 +96,22 @@ mod tests {
     fn help_wins() {
         assert_eq!(p(&["--help"]), Ok(Command::Help));
         assert_eq!(p(&["--gallery", "-h"]), Ok(Command::Help));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_argument_is_a_usage_error() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let bad = std::ffi::OsString::from_vec(vec![b'-', b'-', 0xff]);
+        assert_eq!(parse([bad]), Err(UsageError("--\u{fffd}".to_owned())));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn non_utf8_argument_is_a_usage_error() {
+        use std::os::windows::ffi::OsStringExt as _;
+        let bad = std::ffi::OsString::from_wide(&[0x2d, 0x2d, 0xd800]);
+        assert_eq!(parse([bad]), Err(UsageError("--\u{fffd}".to_owned())));
     }
 
     #[test]

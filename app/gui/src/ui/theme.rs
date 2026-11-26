@@ -199,6 +199,13 @@ pub fn spacing_tokens() -> &'static [(&'static str, f32)] {
     ]
 }
 
+/// Component sizes from `DESIGN.md` `components` that screens draw
+/// directly (checked against `DESIGN.md` by G.3).
+pub mod components {
+    /// `components.status-led.size`.
+    pub const STATUS_LED_SIZE: f32 = 11.0;
+}
+
 /// The three bundled type families (UX-DR2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {

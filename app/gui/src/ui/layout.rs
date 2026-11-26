@@ -163,6 +163,37 @@ mod tests {
         );
     }
 
+    /// Below the minimum window size (tiling WMs ignore min-size hints):
+    /// no rect turns negative, the rects still tile without overlap.
+    #[test]
+    fn g1_clamps_below_the_minimum_size() {
+        for (w, h) in [(400.0, 100.0), (100.0, 400.0), (0.0, 0.0), (559.0, 131.0)] {
+            let c = content(w, h);
+            let r = regions(c);
+            let order = r.in_reading_order();
+            let area: f32 = order.iter().map(|(_, x)| x.area()).sum();
+            assert!((area - c.area()).abs() < 1e-3, "gap or overlap at {w}x{h}");
+            for (id, x) in order
+                .iter()
+                .chain([(RegionId::NoteView, r.note_card)].iter())
+            {
+                assert!(
+                    x.width() >= 0.0 && x.height() >= 0.0,
+                    "{id:?} negative at {w}x{h}: {x:?}"
+                );
+                assert!(c.contains_rect(*x), "{id:?} outside at {w}x{h}: {x:?}");
+            }
+            for (i, (a_id, a)) in order.iter().enumerate() {
+                for (b_id, b) in order.iter().skip(i + 1) {
+                    assert!(
+                        !a.intersect(*b).is_positive(),
+                        "{a_id:?} overlaps {b_id:?} at {w}x{h}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn g1_offset_content_rect() {
         let c = Rect::from_min_size(pos2(10.0, 20.0), vec2(1280.0, 800.0));

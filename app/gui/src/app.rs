@@ -39,27 +39,37 @@ impl App {
         }
     }
 
+    /// The smoke state, if this is a smoke run.
+    #[must_use]
+    pub fn smoke(&self) -> Option<&Smoke> {
+        self.smoke.as_ref()
+    }
+
     fn smoke_frame(&mut self, ctx: &Context, frame: &eframe::Frame) {
         let Some(smoke) = self.smoke.as_mut() else {
             return;
         };
-        if smoke.frame() {
+        // Completed frames, not passes: an egui discard (e.g. a new Grid)
+        // runs a second pass in the same frame (review finding 6).
+        let completed = ctx.cumulative_frame_nr();
+        if smoke.due(completed) {
+            // Everything measured from the live window, nothing from the
+            // configuration except the minimum the verdict compares with.
             let inner = ctx
                 .input(|i| i.viewport().inner_rect)
-                .map_or((0.0, 0.0), |r| (r.width(), r.height()));
+                .map(|r| (r.width(), r.height()));
             let handle = frame.window_handle().ok().map(|h| h.as_raw());
-            let report = Report {
-                frames: smoke.frames(),
+            let line = smoke.finish(Report {
+                frames: completed,
                 ppp: ctx.pixels_per_point(),
                 inner,
                 min: (crate::MIN_INNER_SIZE[0], crate::MIN_INNER_SIZE[1]),
                 dark: ctx.theme() == egui::Theme::Dark,
                 backend: smoke::backend_name(handle),
-            };
-            println!("{}", report.line());
-            smoke.mark_reported();
+            });
+            println!("{line}");
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if smoke.frames() < smoke::FRAMES {
+        } else if smoke.report().is_none() {
             ctx.request_repaint();
         }
     }
