@@ -1,6 +1,7 @@
 //! A second reader of the received bytes (the session exposes neither):
 //! the STATUS debug counters (`docs/link-protocol.md`, v1 bytes 0–6, v2
-//! bytes 7–20) and the NAKs by reason.
+//! bytes 7–20, and the v4, v5 and v6 fields this tool uses) and the NAKs
+//! by reason.
 
 use std::collections::BTreeMap;
 
@@ -37,6 +38,8 @@ pub struct DebugCounters {
     pub loss_kind: Option<u8>,
     /// v5: ms since the last console poll when the STATUS was built.
     pub in_age_ms: Option<u16>,
+    /// v6 (Story 4.0): P2 replies dropped on a full reply queue, since boot.
+    pub p2_queue_full: Option<u16>,
 }
 
 impl DebugCounters {
@@ -73,6 +76,11 @@ impl DebugCounters {
                 d.loss_age_10us = u16_at(v5);
                 d.loss_kind = extra.get(v5 + 2).copied();
                 d.in_age_ms = u16_at(v5 + 3);
+            }
+            // v6, right after the 5-byte v5 block (2 bytes).
+            let v6 = v5 + 5;
+            if extra.len() >= v6 + 2 {
+                d.p2_queue_full = u16_at(v6);
             }
         }
         Some(d)
@@ -221,5 +229,65 @@ impl Tap {
             .map(|(r, n)| format!("{:?}x{n}", NakReason::from_u8(*r)))
             .collect::<Vec<_>>()
             .join(" ")
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::DebugCounters;
+
+    /// A debug tail with `n` P2 log records: v1 + v2, the v3 window, v4
+    /// (41 bytes), v5 (5 bytes) and, when `v6`, the 2-byte v6 block holding
+    /// `qfull`.
+    fn tail(n: u8, v6: bool, qfull: u16) -> Vec<u8> {
+        let mut t = vec![0u8; 24 + 2 * usize::from(n) + 41 + 5];
+        t[23] = n;
+        if v6 {
+            t.extend_from_slice(&qfull.to_le_bytes());
+        }
+        t
+    }
+
+    #[test]
+    fn v6_p2_queue_full_after_v5() {
+        let t = tail(0, true, 12_345);
+        assert_eq!(t.len(), 72);
+        assert_eq!(
+            DebugCounters::parse(&t).unwrap().p2_queue_full,
+            Some(12_345)
+        );
+        assert_eq!(
+            DebugCounters::parse(&tail(0, true, u16::MAX))
+                .unwrap()
+                .p2_queue_full,
+            Some(u16::MAX)
+        );
+    }
+
+    #[test]
+    fn v6_absent_from_a_story_3_5_tail() {
+        let t = tail(0, false, 0);
+        assert_eq!(t.len(), 70);
+        let d = DebugCounters::parse(&t).unwrap();
+        assert_eq!(d.p2_queue_full, None);
+        assert_eq!(d.loss_kind, Some(0), "v5 still parsed");
+        let mut short = tail(0, true, 7);
+        short.pop();
+        assert_eq!(DebugCounters::parse(&short).unwrap().p2_queue_full, None);
+    }
+
+    #[test]
+    fn v6_offset_follows_the_p2_log_window() {
+        let t = tail(3, true, 3);
+        assert_eq!(t.len(), 78);
+        assert_eq!(&t[76..78], &[3, 0]);
+        assert_eq!(DebugCounters::parse(&t).unwrap().p2_queue_full, Some(3));
+        assert_eq!(
+            DebugCounters::parse(&tail(16, true, 9))
+                .unwrap()
+                .p2_queue_full,
+            Some(9)
+        );
     }
 }

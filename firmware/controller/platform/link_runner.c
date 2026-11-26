@@ -75,8 +75,9 @@ static bool s_tl_tried; /* a load failed since the core last left the loadable s
 
 typedef char ocb_queue_cap_fits_u16[(OCB_QUEUE_CAP_DEFAULT <= 0xFFFF) ? 1 : -1];
 /* Story 2.5 D13 (review fix): the largest debug STATUS (header, 11-byte base
- * body, the full debug tail, CRC, one COBS byte, the delimiter) fits the UART
- * driver's TX ring in one frame; tx_debug.c restates the ring size because a
+ * body, the full debug tail, CRC, one COBS byte, the delimiter: 122 bytes
+ * since the story 4.0 v6 block) fits the UART driver's 128-byte TX ring in
+ * one frame; tx_debug.c restates the ring size because a
  * pure library cannot include ocb_hw, this is where both are visible. */
 #define OCB_CTRL_STATUS_WIRE_MAX                                                                                     \
     (OCB_FRAME_HEADER_SIZE + OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_TAIL_MAX_LEN + OCB_FRAME_CRC_SIZE + 2)

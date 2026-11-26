@@ -30,7 +30,9 @@
  * Story 2.5: the reported state is NEUTRAL as soon as core 1 is seen stale
  * (liveness.h, D6); the IN interval spread, the longest pass of this task
  * and the published-state reader's counters go to the mailbox for the
- * debug STATUS v4 (D12, D13), posted when they change.
+ * debug STATUS v4 (D12, D13), posted when they change. Story 4.0: the
+ * profile's reply-queue overflows (cnt.queue_full, since boot) go to the
+ * mailbox the same way, for the debug STATUS v6.
  *
  * USB-down posting (D11, D26): each of suspend, unmount and bus reset
  * restarts the profile and sets the report period to 0; it posts its
@@ -97,6 +99,7 @@ static uint32_t s_period_posted;  /* the report period last put in the mailbox *
 static uint32_t s_pass_max_us;
 static uint32_t s_spread_posted[4]; /* min, p95, max, slow */
 static uint32_t s_core0_posted[3];  /* pass max, seq retries, seq fallbacks */
+static uint32_t s_qfull_posted;     /* story 4.0: the queue_full last posted */
 
 static void log_push(uint8_t kind, uint8_t id)
 {
@@ -128,7 +131,8 @@ static void post_period(uint32_t period)
 }
 
 /* Story 2.5 D12, D13: posts the spread and core 0's numbers when they
- * changed (one store per field, debug STATUS v4 only). */
+ * changed (one store per field, debug STATUS v4 only); story 4.0: the
+ * reply-queue overflows the same way (debug STATUS v6 only). */
 static void post_self_timing(void)
 {
     const uint32_t sp[4] = {ocb_p2_interval_min_us(&s_p2), ocb_p2_interval_p95_us(&s_p2),
@@ -142,6 +146,11 @@ static void post_self_timing(void)
     if (c0[0] != s_core0_posted[0] || c0[1] != s_core0_posted[1] || c0[2] != s_core0_posted[2]) {
         memcpy(s_core0_posted, c0, sizeof c0);
         ocb_usb_mailbox_set_core0(ocb_ctrl_usb_mailbox(), c0[0], c0[1], c0[2]);
+    }
+    const uint32_t qf = s_p2.cnt.queue_full;
+    if (qf != s_qfull_posted) {
+        s_qfull_posted = qf;
+        ocb_usb_mailbox_set_p2_queue_full(ocb_ctrl_usb_mailbox(), qf);
     }
 }
 
@@ -217,6 +226,7 @@ void usb_p2_init(void)
     s_pass_max_us = 0u;
     memset(s_spread_posted, 0, sizeof s_spread_posted);
     memset(s_core0_posted, 0, sizeof s_core0_posted);
+    s_qfull_posted = 0u;
     (void)tud_init(0u);
 }
 

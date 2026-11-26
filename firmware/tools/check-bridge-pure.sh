@@ -6,16 +6,23 @@
 #      "ocb_bridge/<name>.h";
 #      an include line naming pico, hardware/, tusb, class/ (TinyUSB),
 #      ocb_hw, ocb_link, ocb_core or ocb_version.h is refused in any form;
-#  (b) no line (code or comment) may name a heap, I/O, clock, sleep or
-#      multicore identifier of libc or the SDK: the bridge core takes the time as
+#  (b) no line (code or comment) may name a heap, I/O, clock, sleep,
+#      multicore, process-exit (exit( abort( ...), file (fopen), strdup,
+#      alloca or inline-assembly identifier of libc or the SDK, a raw
+#      register address (a hex literal right after a pointer cast, the
+#      cast possibly qualified or doubled, or an 8-digit literal in an
+#      RP2040 register or XIP window 0x10-0x15/0x18/0x40/0x50/0xd0/0xe0;
+#      exact forms and known false positives in tools/pure-rules.sh), or a section
+#      attribute outside a file named ramfunc.h: the bridge core takes the time as
 #      an argument, allocates nothing and does no I/O (USB, UART and alarm glue
 #      live in bridge/platform);
 #  (c) a CMakeLists.txt in the tree must not link or name an SDK, hardware
 #      or board library (pico_*, hardware_*, tinyusb*, cmsis*, ocb_hw,
 #      ocb_link, ocb_core) outside a # comment;
 #      ocb_proto is allowed.
-# The banned identifier list (banned_word_re) is identical to the one in
-# check-core-pure.sh; tests/bridge_pure_selftest.sh fails if they drift.
+# The identifier rules come from tools/pure-rules.sh (story 4.0 D1), shared
+# by all five purity gates; the self-test fails if this gate keeps a
+# private banned_word_re.
 # Scanned: *.c *.h *.cpp *.cc *.S *.inc (rules a and b) and CMakeLists.txt
 # (rule c).
 #
@@ -47,10 +54,9 @@ fi
 include_re='^[[:space:]]*#[[:space:]]*include'
 allowed_re='^[[:space:]]*#[[:space:]]*include[[:space:]]*(<(stdint|stddef|stdbool|string|limits)\.h>|"ocb_(proto|bridge)/[A-Za-z0-9_]+\.h")[[:space:]]*(/[*/].*)?$'
 banned_include_re='pico|hardware/|tusb|class/|ocb_hw|ocb_link|ocb_core|ocb_version\.h'
-# Identifiers: a word boundary is spelled out (no \b in POSIX ERE), so
-# names like ocb_queue_free( stay legal while a bare free( does not.
-nb='(^|[^A-Za-z0-9_])'
-banned_word_re="${nb}(malloc|calloc|realloc|free[[:space:]]*\\(|[a-z]*printf|time_us|get_absolute_time|clock_gettime|gettimeofday|sleep_|busy_wait|multicore_|mutex_|spin_lock|__not_in_flash_func|stdio_|(puts|putchar)([^A-Za-z0-9_]|\$))"
+# Identifiers (rule b): nb, banned_word_re, section_re, raw_addr_re and
+# pure_ident_hits come from the shared rule file.
+. "${script_dir}/pure-rules.sh"
 # CMake: an SDK, hardware or board library named on a non-comment line.
 cmake_comment_re='^[0-9]+:[[:space:]]*#'
 cmake_banned_re="${nb}(pico_|hardware_|ocb_hw|tinyusb|ocb_link|ocb_core|cmsis)"
@@ -66,7 +72,7 @@ while IFS= read -r f; do
         hits="$( {
             grep -n -E "${include_re}" "${f}" | grep -v -E "^[0-9]+:${allowed_re#^}" || true
             grep -n -E "${include_re}" "${f}" | grep -E "${banned_include_re}" || true
-            grep -n -E "${banned_word_re}" "${f}" || true
+            pure_ident_hits "${f}"
         } | LC_ALL=C sort -t: -k1,1n -u)"
     fi
     if [ -n "${hits}" ]; then
@@ -82,7 +88,7 @@ if [ "${count}" -eq 0 ]; then
     exit 1
 fi
 if [ "${found}" -ne 0 ]; then
-    echo "check-bridge-pure: ocb_bridge_core must stay pure C99 (AD-2): allowed includes are <stdint.h> <stddef.h> <stdbool.h> <string.h> <limits.h>, \"ocb_proto/...\" and \"ocb_bridge/...\"; no heap, I/O, clock, sleep or multicore identifiers; no SDK, hardware or board library in CMakeLists.txt" >&2
+    echo "check-bridge-pure: ocb_bridge_core must stay pure C99 (AD-2): allowed includes are <stdint.h> <stddef.h> <stdbool.h> <string.h> <limits.h>, \"ocb_proto/...\" and \"ocb_bridge/...\"; no heap, I/O, clock, sleep, multicore, process-exit, assembly, section or register-address identifiers; no SDK, hardware or board library in CMakeLists.txt" >&2
     exit 1
 fi
 echo "check-bridge-pure: ok (${count} files)"

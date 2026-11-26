@@ -53,9 +53,15 @@ typedef struct {
     volatile uint32_t core0_pass_max_us; /* longest core 0 pass since the restart (or boot) */
     volatile uint32_t seq_retries;       /* published-state reads that needed a retry */
     volatile uint32_t seq_fallbacks;     /* published-state reads that fell back to NEUTRAL */
+    /* Story 4.0: the P2 replies dropped because the profile's reply queue
+     * was full, since boot (the profile's cnt.queue_full), for the debug
+     * STATUS v6. A value, not an event counter: one aligned store by core
+     * 0, core 1 only copies it into the STATUS. */
+    volatile uint32_t p2_queue_full; /* core 0 only */
 } ocb_usb_mailbox;
 
-/* Zeroes the counters, the report period and the self-timing fields. Call
+/* Zeroes the counters, the report period, the self-timing fields and
+ * p2_queue_full. Call
  * once, before either core uses the mailbox. */
 void ocb_usb_mailbox_init(ocb_usb_mailbox *m);
 
@@ -74,6 +80,8 @@ void ocb_usb_mailbox_set_in_spread(ocb_usb_mailbox *m, uint32_t min_us, uint32_t
  * published-state reader's counters, one store per field. */
 void ocb_usb_mailbox_set_core0(ocb_usb_mailbox *m, uint32_t pass_max_us, uint32_t seq_retries,
                                uint32_t seq_fallbacks);
+/* Core 0 (Story 4.0): the profile's reply-queue overflows, one store. */
+void ocb_usb_mailbox_set_p2_queue_full(ocb_usb_mailbox *m, uint32_t n);
 
 /* USB-down events returned by ocb_ready_poll (a bit mask). */
 #define OCB_READY_DOWN_SUSPEND 0x01u

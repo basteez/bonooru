@@ -8,8 +8,8 @@
  * with bit flips, truncations, junk insertions and later duplicates, 0x00
  * runs, 300-byte non-zero runs, error flags, ring overflows, clock jumps,
  * core aborts, USB mailbox events (story 2.3: the measured report period,
- * and P2 debug log records that lengthen the debug STATUS to its 67-byte
- * maximum), TX-gate releases, then valid HELLO and
+ * and P2 debug log records that lengthen the debug STATUS tail to its
+ * maximum, 104 bytes since story 4.0), TX-gate releases, then valid HELLO and
  * traffic again. Invariants after every step: core fields in range (mode,
  * latch implies IDLE and an empty queue, IDLE implies NEUTRAL, queue count
  * <= cap); `expected` changes only when a frame was delivered, and then to
