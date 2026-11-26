@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 11-20-2026 16:09
-last_updated: 11-24-2026
+last_updated: 11-26-2026
 project: bonooru
 project_key: NOKEY
 tracking_system: file-system
@@ -154,11 +154,11 @@ action_items:
   - id: E2-A1
     source: epic-2-retrospective
     action: Review the bench tools and H-row commands, and dry-run new or changed tools against the simulated model, before every bench session (#27)
-    status: open
+    status: done
   - id: E2-A2
     source: epic-2-retrospective
     action: Reflash the current bridge Zero with the Story 3.1 firmware (2wiCC_Comms v1.1 release kept as fallback) (#28)
-    status: open
+    status: done
   - id: E2-A3
     source: epic-2-retrospective
     action: Run the dock/undock re-enumeration test (R13) when the dock is available (#29)
@@ -174,4 +174,32 @@ action_items:
   - id: E2-A6
     source: epic-2-retrospective
     action: Pick and label a known-good USB data cable for flashing
+    status: done
+  - id: E3-A1
+    source: epic-3-retrospective
+    action: AC measurability at create-story - every AC number names the bench tool and field that measure it ("AC -> measurement" table in Dev Notes before dev-story); if none can, ask the owner then
+    status: open
+  - id: E3-A2
+    source: epic-3-retrospective
+    action: A red proof for every verdict branch of every new or changed bench tool, listed in the story's Debug Log
+    status: open
+  - id: E3-A3
+    source: epic-3-retrospective
+    action: Bench start checklist in each rig block (console auto-sleep off; close a returning connection screen with link_probe.py press --button A; boards plugged before tools start; SIGINT to the tool's own PID via pgrep -x)
+    status: open
+  - id: E3-A4
+    source: epic-3-retrospective
+    action: Cleanup story before Epic 4 for issues #20 (purity gates) and #25 (P2 reply-queue overflows in the debug STATUS), host tests only
+    status: open
+  - id: E3-A5
+    source: epic-3-retrospective
+    action: Story 4.4 Dev Notes carry cross-OS discovery, the serialport libudev feature with libudev-dev in Linux CI, and the SerialIo lessons (reopen after unplug, clear stale input, non-blocking writes, macOS port rename)
+    status: open
+  - id: E3-A6
+    source: epic-3-retrospective
+    action: Keep M4 TODO in roadmap.md until the bridge discovery is verified on all three OS
+    status: open
+  - id: E3-A7
+    source: epic-3-retrospective
+    action: Dock / undock re-enumeration test (R13) when the dock is available (#29)
     status: open
