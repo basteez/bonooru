@@ -93,20 +93,31 @@ pin number anywhere else in the firmware sources; use the `OCB_PIN_*` names.
 
 - `tools/check-proto-version.sh`: every `common/proto/vectors/*.txt` header equals
   `OCB_PROTO_VERSION` in `consts.h` (CI step; ctest `proto_version_check` with a self-test).
-- `tools/check-proto-pure.sh`: `common/proto/` includes only `<stdint.h> <stddef.h>
-  <stdbool.h> <string.h> <limits.h>` and `ocb_proto/*` headers (CI step; ctest
-  `proto_pure_check` with a self-test).
+- Purity gates (AD-2): five scripts, one per pure C99 library, share their identifier rules
+  through `tools/pure-rules.sh` (sourced, Story 4.0 D1), so the deny list exists once. No line
+  (code or comment) may name a heap, I/O, clock, sleep or multicore identifier, a process exit
+  in call form (`exit(`, `_exit(`, `_Exit(`, `quick_exit(`, `abort(`), `fopen`, `strdup`,
+  `strndup`, `alloca`, `__builtin_alloca`, inline assembly (`asm`, `__asm`, `__asm__`), a raw
+  register address (a hex literal cast to a pointer, or an RP2040 peripheral-window literal
+  `0x40xxxxxx`, `0x50xxxxxx`, `0xd0xxxxxx`, `0xe0xxxxxx`), or a `section(` / `__section__(`
+  attribute outside a file named `ramfunc.h` (the hook of `OCB_CORE_RAMFUNC`). Each gate keeps
+  its own include allow-list and CMake rule, and its self-test fails if the gate stops sourcing
+  the shared file or defines a private `banned_word_re`.
+- `tools/check-proto-pure.sh`: `common/proto/` (`.c .h`) includes only `<stdint.h> <stddef.h>
+  <stdbool.h> <string.h> <limits.h>` and `ocb_proto/*` headers, and since Story 4.0 also
+  passes the shared identifier rules (CI step; ctest `proto_pure_check` with a self-test).
 - `tools/check-core-pure.sh`: `controller/core/` (`.c .h .cpp .cc .S .inc`) includes only the
-  same standard headers, `ocb_proto/*` and `ocb_core/*`, names no heap, I/O, clock, sleep or
-  multicore identifier, and its `CMakeLists.txt` links no `pico_*`, `hardware_*` or `ocb_hw`
-  library (CI step; ctest `core_pure_check` with a self-test).
+  same standard headers, `ocb_proto/*` and `ocb_core/*`, passes the shared identifier rules,
+  and its `CMakeLists.txt` links no `pico_*`, `hardware_*` or `ocb_hw` library (CI step; ctest
+  `core_pure_check` with a self-test).
 - `tools/check-link-pure.sh`: the same rules for `controller/link/` (`ocb_link`), which may also
-  include `ocb_link/*`; its banned identifier list must equal the core gate's (CI step; ctest
-  `link_pure_check` with a self-test and the drift check).
+  include `ocb_link/*` (CI step; ctest `link_pure_check` with a self-test).
 - `tools/check-p2-pure.sh` (Story 2.3): the same rules for `controller/profile_p2/` (`ocb_p2`),
   with a narrower allow-list (`ocb_proto/*` and `ocb_p2/*`, never `ocb_core` or `ocb_link`) and
-  no TinyUSB (`tusb`, `class/hid`, `tinyusb*`); banned list in step with the core gate (CI step;
-  ctest `p2_pure_check`).
+  no TinyUSB (`tusb`, `class/hid`, `tinyusb*`) (CI step; ctest `p2_pure_check`).
+- `tools/check-bridge-pure.sh` (Story 3.1): the same rules for `bridge/core/`
+  (`ocb_bridge_core`), allow-list `ocb_proto/*` and `ocb_bridge/*` (CI step; ctest
+  `bridge_pure_check`).
 - `tools/check-release-nolog.sh ELF` (Story 2.3 AC5a, Story 2.5): the release controller ELF has
   no symbol of the P2 debug log (`ocb_dbglog_*`, `ocb_ctrl_dbglog`), of the test melody
   (`ocb_testtl_*`) or of the hang injectors (`debug_hang_*`); `--expect-present[=dbglog,testtl,hang]`

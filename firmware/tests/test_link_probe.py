@@ -216,6 +216,43 @@ class Vectors(unittest.TestCase):
         self.assertIn("boot=CORE1_STALE reboots=5 stall_to_reset=21340 us", probe.v4_str(v))
         self.assertNotIn("late_hist", probe.dbg_str(d))
 
+    def test_debug_v5_v6(self):
+        """Story 3.5 / 4.0: the v5 block (5 bytes) right after v4 and the v6
+        block (2 bytes, p2_queue_full) right after v5, by hand, after an
+        empty window and after a 3-record window; a block is decoded only
+        when the tail holds all of it."""
+        v4 = bytes(41)
+        v5 = bytes([0xBC, 0x02, 2, 0xBB, 0x00])  # loss 700 x 10 us, break, in_age 187 ms
+        v6 = bytes([0x39, 0x30])                 # p2_queue_full 12345
+        for n in (0, 3):
+            head = bytes(21) + bytes([n, 0, n]) + bytes([0x02, 0x40]) * n
+            d = probe.debug_counters(head + v4 + v5 + v6)
+            self.assertEqual(len(head + v4 + v5 + v6), 72 + 2 * n)
+            self.assertEqual(d["v5"], {"loss_age_us": 7000, "loss_kind": 2, "in_age_ms": 187}, n)
+            self.assertEqual(d["v6"], {"p2_queue_full": 12345}, n)
+            line = probe.describe(probe.STATUS, 0, bytes(11) + head + v4 + v5 + v6)
+            self.assertIn("| v5: last loss break age=7000 us | in_age=187 ms", line)
+            self.assertIn("| v6: p2_queue_full=12345", line)
+        # A Story 3.5 tail (70 bytes): v5, no v6. 69 bytes: neither.
+        d = probe.debug_counters(bytes(24) + v4 + v5)
+        self.assertIn("v5", d)
+        self.assertNotIn("v6", d)
+        self.assertNotIn("v6:", probe.describe(probe.STATUS, 0, bytes(11) + bytes(24) + v4 + v5))
+        d = probe.debug_counters(bytes(24) + v4 + v5[:4])
+        self.assertNotIn("v5", d)
+        self.assertNotIn("v6", d)
+        self.assertEqual(probe.v6_str({"p2_queue_full": 65535}), "p2_queue_full=65535")
+
+    def test_p2_queue_full_note(self):
+        """Story 4.0 (issue #25): p2check's closing line, both branches."""
+        v4v5 = bytes(24) + bytes(41) + bytes(5)
+        with_v6 = {"extra": v4v5 + bytes([3, 0])}
+        self.assertEqual(probe.p2_queue_full_note(with_v6), "P2 reply-queue overflows (p2_queue_full): 3")
+        self.assertEqual(probe.p2_queue_full_note({"extra": v4v5, "dbg": probe.debug_counters(v4v5)}),
+                         "p2_queue_full: not reported (a debug build before Story 4.0, or a release build)")
+        for st in (None, {"extra": b""}, {"extra": v4v5}):
+            self.assertIn("p2_queue_full: not reported", probe.p2_queue_full_note(st))
+
     def test_selfplay_verdict(self):
         """Story 2.5: each limit of a selfplay run fails on its own."""
         good = dict(late_n=158, late_max_us=40, late_sum_us=1000, late_hist=[158, 0, 0, 0, 0, 0], loop_max_us=45,
@@ -695,6 +732,7 @@ def load_sim():
     lib.sim_core0.argtypes = [ctypes.c_uint32] * 3
     lib.sim_self_timing.argtypes = [ctypes.c_uint32] * 2
     lib.sim_set_boot.argtypes = [ctypes.c_uint8, ctypes.c_uint8, ctypes.c_uint32]
+    lib.sim_set_p2_queue_full.argtypes = [ctypes.c_uint32]
     return lib
 
 
@@ -1309,6 +1347,25 @@ class P2BenchSteps(unittest.TestCase):
         self.assertIn("usb 80 05, usb 80 01, usb 80 02, sub 03, usb 80 04, HANDSHAKE", text)
         self.assertIn("sub 01, arg 04, sub 21, arg 21, sub 30", text)
         self.assertNotIn("refused by the profile", text)
+        # Story 4.0: the closing note, from the last STATUS's v6 block.
+        self.assertIn("P2 reply-queue overflows (p2_queue_full): 0", text)
+
+    def test_p2check_prints_p2_queue_full(self):
+        """Story 4.0 (issue #25): core 0 posts 3 dropped replies; p2check
+        prints them and its verdict does not change."""
+        port, console = self.port_with_console()
+        orig = console.tick
+
+        def tick(t):
+            was = console.connected
+            orig(t)
+            if console.connected and not was:
+                self.lib.sim_set_p2_queue_full(3)
+
+        console.tick = tick
+        rc, text = run_cmd(port, probe.cmd_p2check, user=ConsoleUser(port, console), wait_s=10.0)
+        self.assertEqual((rc, last_line(text)), (0, "PASS"), text)
+        self.assertIn("P2 reply-queue overflows (p2_queue_full): 3", text)
 
     def test_p2check_refuses_the_mac(self):
         """Story 2.5 D36: macOS completes the handshake itself and polls at

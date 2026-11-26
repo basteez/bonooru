@@ -7,6 +7,8 @@
  * the mailbox into INFO and the core's LATE threshold. Story 2.5 D13: the
  * v4 self-timing block after the window, hand-written bytes at offset
  * 24 + 2 n for n = 0, 1, 16, saturation, and release still 11 bytes.
+ * Story 3.5 / 4.0: the v5 (5 bytes) and v6 (2 bytes) blocks follow v4, so
+ * the tail is 72 bytes with an empty window and 104 with a full one.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -157,20 +159,20 @@ static void test_status_tail(void)
     /* 21 counters, then total 9 (09 00), n 9, records kind/id oldest first. */
     static const uint8_t tail[3 + 18] = {0x09, 0x00, 0x09, 0x07, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03, 0x01,
                                          0x02, 0x01, 0x04, 0x06, 0x00, 0x02, 0x02, 0x04, 0x11};
-    OCB_CHECK(m.extra_len == 21u + sizeof tail + 41u + 5u, "extra %zu", m.extra_len);
-    if (m.extra_len == 21u + sizeof tail + 41u + 5u) {
+    OCB_CHECK(m.extra_len == 21u + sizeof tail + 41u + 5u + 2u, "extra %zu", m.extra_len);
+    if (m.extra_len == 21u + sizeof tail + 41u + 5u + 2u) {
         OCB_CHECK_MEM(&m.extra[21], sizeof tail, tail, sizeof tail, "v3 tail");
     }
-    /* A full window: 16 records, the largest STATUS (11 + 56 + 41 + 5 = 113
-     * bytes: the story 2.5 v4 block of 41 bytes and the story 3.5 v5 block
-     * of 5 included). */
+    /* A full window: 16 records, the largest STATUS (11 + 56 + 41 + 5 + 2 =
+     * 115 bytes: the story 2.5 v4 block of 41 bytes, the story 3.5 v5 block
+     * of 5 and the story 4.0 v6 block of 2 included). */
     for (unsigned i = 0; i < 40u; i++) {
         (void)ocb_dbglog_push(&r, 0x02, (uint8_t)(0x40u + i));
     }
     (void)ocb_dbglog_drain(ocb_link_dbglog_window(&h.link), &r);
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && m.extra_len == 102u, "full window: extra %zu", m.extra_len);
-    if (m.extra_len == 102u) {
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 104u, "full window: extra %zu", m.extra_len);
+    if (m.extra_len == 104u) {
         OCB_CHECK(m.extra[21] == 49u && m.extra[22] == 0u && m.extra[23] == 16u, "total 49, n 16");
         OCB_CHECK(m.extra[24] == 0x02 && m.extra[25] == 0x58 && m.extra[54] == 0x02 && m.extra[55] == 0x67,
                   "oldest 0x58, newest 0x67");
@@ -210,6 +212,7 @@ static void fill_v4_inputs(lh *h)
     t->hist[5] = 70000u; /* saturates to FF FF */
     ocb_usb_mailbox_set_in_spread(&h->mb, 7950u, 8050u, 16000u, 3u);
     ocb_usb_mailbox_set_core0(&h->mb, 412u, 0x10203u, 300u); /* retries saturate, fallbacks saturate to FF */
+    ocb_usb_mailbox_set_p2_queue_full(&h->mb, 3u);            /* story 4.0: the v6 block */
     ocb_link_set_self_timing(&h->link, 37u, 1100u);
     h->link.cfg.boot_cause = 2u;
     h->link.cfg.reboot_count = 5u;
@@ -252,10 +255,13 @@ static void test_v4_block(void)
         ocb_msg_status m;
         OCB_CHECK(get_status(&h, &m), "n=%u: no STATUS", ns[k]);
         const size_t off = 24u + 2u * ns[k];
-        OCB_CHECK(m.extra_len == off + 41u + 5u, "n=%u: extra %zu, wanted %zu", ns[k], m.extra_len, off + 46u);
-        if (m.extra_len == off + 41u + 5u) {
+        OCB_CHECK(m.extra_len == off + 41u + 5u + 2u, "n=%u: extra %zu, wanted %zu", ns[k], m.extra_len,
+                  off + 48u);
+        if (m.extra_len == off + 41u + 5u + 2u) {
             OCB_CHECK(m.extra[23] == ns[k], "n=%u: p2_log_n %u", ns[k], m.extra[23]);
             OCB_CHECK_MEM(&m.extra[off], 41u, k_v4, sizeof k_v4, "v4 block");
+            /* story 4.0: v6 follows v5 (fill_v4_inputs posts 3). */
+            OCB_CHECK(m.extra[off + 46u] == 3u && m.extra[off + 47u] == 0u, "n=%u: v6 p2_queue_full", ns[k]);
         }
     }
     /* Release: still the 11-byte STATUS, the v4 inputs set or not. */

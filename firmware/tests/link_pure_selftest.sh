@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Self-test of check-link-pure.sh (story 2.6 Task 8.2, test F.18): every
 # bad fixture must be reported, the good fixture and the real
-# controller/link tree must pass, a usage error exits 2, and the banned
-# identifier list must be identical to check-core-pure.sh's (D16: the two
-# copies may not drift).
+# controller/link tree must pass, a usage error exits 2, and the gate must
+# take its identifier rules from tools/pure-rules.sh (story 4.0 D1: no
+# private copy that could drift).
 # Usage: link_pure_selftest.sh CHECK_LINK_PURE_SH FIRMWARE_DIR
 set -euo pipefail
 
@@ -39,15 +39,16 @@ rc=0
 bash "${check}" a b >/dev/null 2>&1 || rc=$?
 [ "${rc}" -eq 2 ] || { echo "FAIL: usage error must exit 2 (got ${rc})"; fail=1; }
 
-# Drift guard: the banned identifier line of both gates must be identical.
-core_line="$(grep -E '^banned_word_re=' "${fw}/tools/check-core-pure.sh" || true)"
-link_line="$(grep -E '^banned_word_re=' "${check}" || true)"
-if [ -z "${core_line}" ] || [ "${core_line}" != "${link_line}" ]; then
-    echo "FAIL: banned_word_re differs between check-core-pure.sh and check-link-pure.sh"
-    echo "  core: ${core_line}"
-    echo "  link: ${link_line}"
+# Shared-list guard (story 4.0 D1): the gate sources tools/pure-rules.sh
+# and keeps no private banned_word_re that could drift from the others.
+if ! grep -q -E '^[[:space:]]*\.[[:space:]]+"\$\{script_dir\}/pure-rules\.sh"' "${check}"; then
+    echo "FAIL: $(basename "${check}") does not source tools/pure-rules.sh"
+    fail=1
+fi
+if grep -q -E '^[[:space:]]*banned_word_re=' "${check}"; then
+    echo "FAIL: $(basename "${check}") defines a private banned_word_re"
     fail=1
 fi
 
-[ "${fail}" -eq 0 ] && echo "link_pure_selftest: ok (${count} bad fixtures, banned list in step with the core gate)"
+[ "${fail}" -eq 0 ] && echo "link_pure_selftest: ok (${count} bad fixtures, rules from tools/pure-rules.sh)"
 exit "${fail}"

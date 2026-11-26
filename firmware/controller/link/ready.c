@@ -26,6 +26,7 @@ void ocb_usb_mailbox_init(ocb_usb_mailbox *m)
     m->core0_pass_max_us = 0u;
     m->seq_retries = 0u;
     m->seq_fallbacks = 0u;
+    m->p2_queue_full = 0u;
 }
 
 /* Single writer per counter: a plain load, add and store (no RMW atomics
@@ -75,6 +76,11 @@ void ocb_usb_mailbox_set_core0(ocb_usb_mailbox *m, uint32_t pass_max_us, uint32_
     m->core0_pass_max_us = pass_max_us;
     m->seq_retries = seq_retries;
     m->seq_fallbacks = seq_fallbacks;
+}
+
+void ocb_usb_mailbox_set_p2_queue_full(ocb_usb_mailbox *m, uint32_t n)
+{
+    m->p2_queue_full = n;
 }
 
 void ocb_ready_init(ocb_ready *r, const ocb_usb_mailbox *m, uint64_t now_us)

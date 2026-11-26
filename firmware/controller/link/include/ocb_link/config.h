@@ -61,10 +61,16 @@
  *     1 heartbeat timeout, 2 break), 3 in_age_ms u16 (time since the last
  *     IN report or handshake when the STATUS was built, ms: the clock of
  *     the 100 ms polling-stall rule).
- * Debug tail: 70 bytes with an empty window, at most 102; the largest
- * debug STATUS body is 11 + 102 = 113 bytes. */
+ * v1 to v5: 70 bytes with an empty window, at most 102. */
 #define OCB_LINK_DEBUG_V5_LEN 5
-#define OCB_LINK_DEBUG_TAIL_MAX_LEN 102
+/* v6 (story 4.0): one fixed block right after v5:
+ *   0 p2_queue_full u16 (the P2 replies dropped because the profile's
+ *     4-entry reply queue was full, since boot, saturating; posted by core
+ *     0 through the USB mailbox).
+ * Debug tail: 72 bytes with an empty window, at most 104; the largest
+ * debug STATUS body is 11 + 104 = 115 bytes. */
+#define OCB_LINK_DEBUG_V6_LEN 2
+#define OCB_LINK_DEBUG_TAIL_MAX_LEN 104
 
 /* RX ring entry layout: the PL011 data register value (dr & 0x0FFF). */
 #define OCB_LINK_RX_DATA_MASK 0x00FFu

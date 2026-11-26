@@ -376,10 +376,18 @@ pub fn run_with(
     (out, owner)
 }
 
-/// A Story 3.5 debug tail (v1 + v2, an empty v3 window, v4, v5: 70
+/// A Story 4.0 debug tail (v1 + v2, an empty v3 window, v4, v5, v6: 72
 /// bytes) with `dropped_bytes` = `rx_err_bytes` = `dropped` (the boot
-/// break); the fake controller fills the v5 block itself.
+/// break); the fake controller fills the v5 and v6 blocks itself.
 pub fn debug_tail(dropped: u16) -> Vec<u8> {
+    let mut t = debug_tail_3_5(dropped);
+    t.resize(72, 0);
+    t
+}
+
+/// A Story 3.5 debug tail (no v6 block: 70 bytes), so the shorter tail of
+/// an older debug build stays covered.
+pub fn debug_tail_3_5(dropped: u16) -> Vec<u8> {
     let mut t = vec![0u8; 70];
     t[3..5].copy_from_slice(&dropped.to_le_bytes());
     t[7..9].copy_from_slice(&dropped.to_le_bytes());

@@ -63,7 +63,9 @@ high-water scan, both into the debug STATUS v4); no sleep, no blocking call, no 
 the scheduler is the polled 1 MHz timer (no alarm interrupt). Core 1 is the only UART TX writer (a
 debug-build assertion). Since Story 2.3 the P2 glue on core 0 posts to the USB mailbox
 (handshake, IN reports, suspend / unmount / bus reset, the measured report period; Story 2.5: the
-IN interval spread, its own longest pass and the handoff counters); `ocb_ctrl_published_read()`
+IN interval spread, its own longest pass and the handoff counters; Story 4.0: the P2 reply-queue
+overflows, `p2_queue_full`, for the debug STATUS v6 after the v4 and Story 3.5 v5 blocks);
+`ocb_ctrl_published_read()`
 is the state the profile reports: core 1's published state through the seqlock double buffer of
 `link/pubstate.c`, in every build (Story 2.5 D4: 3 tries, then NEUTRAL). In debug builds
 `ocb_ctrl_link_step()` drains the P2 debug log into the debug STATUS. Bench sender:

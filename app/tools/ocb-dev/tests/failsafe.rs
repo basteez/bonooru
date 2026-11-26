@@ -86,6 +86,24 @@ fn unplug_and_wire_rounds_pass() {
     assert_eq!(io.ctrl.mode(), Mode::Idle);
 }
 
+/// Story 4.0: a Story 3.5 debug build (a 70-byte tail, no v6 block) still
+/// runs `failsafe`: it reads v5 only.
+#[test]
+fn a_story_3_5_tail_without_v6_still_passes() {
+    let mut io = SimIo::clean(ControllerConfig::default());
+    io.set_debug(Some(common::debug_tail_3_5(1)));
+    io.loss_plan = vec![Loss::Unplug, Loss::Wire];
+    let (out, owner) = common::run(
+        &mut io,
+        Piece::Failsafe { rounds: 2 },
+        Some(1_000_000),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let text = owner.text();
+    assert_eq!(out.code, EXIT_PASS, "{}\n{text}", out.verdict);
+    assert!(text.contains("ROUND 2: wire PASS"), "{text}");
+}
+
 #[test]
 fn a_loss_the_controller_does_not_notice_fails_the_round() {
     let mut io = rig(vec![Loss::UnplugUnnoticed]);

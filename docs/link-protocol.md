@@ -326,7 +326,14 @@ The firmware's `controller/link` (`ocb_link`) sits between the UART and the core
     | 2 | `loss_kind u8` | 0 no loss yet, 1 heartbeat timeout, 2 break |
     | 3 | `in_age_ms u16` | the time since the last IN report taken by the host (or the handshake) when this STATUS was built: the clock of the 100 ms polling-stall rule of `console_ready` |
 
-    With v5 the debug tail is 70 bytes with an empty window, at most 102; the largest debug STATUS body is 113 bytes (120 bytes on the wire), which fits the controller's 128-byte UART TX ring in one frame.
+    With v5 the debug tail is 70 bytes with an empty window, at most 102.
+  - v6, right after the v5 block (Story 4.0): one fixed block of 2 bytes, the P2 profile's reply-queue overflows (issue #25). Core 0 posts the profile's counter through the USB mailbox; the u16 saturates at 65535.
+
+    | Offset | Field | Meaning |
+    |---|---|---|
+    | 0 | `p2_queue_full u16` | P2 replies dropped because the profile's 4-entry reply queue was full, counted since boot (a profile restart does not reset it) |
+
+    With v6 the debug tail is 72 bytes with an empty window, at most 104; the largest debug STATUS body is 115 bytes (122 bytes on the wire), which fits the controller's 128-byte UART TX ring in one frame.
   - These are debug aids, not wire values: no `PROTO_VERSION` change, and a later debug layout may append more.
 - **TX gate (AD-20).** At power-up the controller's RX has an internal pull-down and its TX pad stays high-Z. TX is driven only after RX has been high (idle) continuously for 1 ms (a value to confirm at the bench, test plan H.7); while TX is not allowed, pending replies are discarded, so no stale burst leaves when it opens. The link watchdog releases TX again on a break or link loss, after the `EVENT LINK_LOST` has left (Story 2.7, below).
 - **Who drives first (both boards powered).** AD-20 as amended (2026-11-22, Story 2.6 D25, applied by Story 2.7) states this rule. Applied to both boards, "TX high-Z until RX sees idle-high" deadlocks: each RX is held low by its own pull-down and neither side ever drives. The rule is therefore asymmetric: the **bridge leads**, the controller follows. The controller keeps the gate above. The bridge (powered by the PC, Story 3.1), while its own RX does not show a live controller, probes: it drives TX idle-high for about 5 ms every 500 ms (≤ 1 % duty) and returns to high-Z in between; once its RX shows the controller (idle-high, or a valid frame), it keeps TX enabled, and it goes back to probing after a break or link loss. So the controller never drives a bridge that has not shown idle-high (the C5 case of an unplugged bridge fed by a Switch-powered controller), and the bridge drives an unpowered controller only in short probe pulses. The probe values are Story 3.1's to set and H.1 measures the result; if the unpowered side's 3V3 rail still rises, 1 kΩ series resistors in both data lines are the fallback (a wiring change, the owner's decision).

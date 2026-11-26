@@ -307,7 +307,7 @@ static void test_rebase(void)
     ocb_ready_init(&h.link.ready, &h.mb, h.now); /* what ocb_link_init does */
     ocb_link_poll(&h.link, h.now);
     OCB_CHECK(!ocb_link_console_ready(&h.link, h.now), "snapshot baseline: pre-init handshake counted");
-    static const ocb_usb_mailbox zero = {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    static const ocb_usb_mailbox zero = {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
     ocb_link_ready_rebase(&h.link, &zero, h.now);
     ocb_link_poll(&h.link, h.now);
     OCB_CHECK(ocb_link_console_ready(&h.link, h.now), "zero baseline: pre-init handshake lost");
@@ -360,11 +360,34 @@ static void test_self_timing_fields(void)
     OCB_CHECK(m->in_max_us == 0u && m->seq_fallbacks == 0u, "init zeroes the self-timing fields");
 }
 
+/* Story 4.0: p2_queue_full starts at 0 whatever the memory held, is stored
+ * as given, and never touches `ready`. */
+static void test_p2_queue_full_field(void)
+{
+    ocb_usb_mailbox mb;
+    memset(&mb, 0xA5, sizeof mb);
+    ocb_usb_mailbox_init(&mb);
+    OCB_CHECK(mb.p2_queue_full == 0u, "mailbox init: p2_queue_full %u, wanted 0", mb.p2_queue_full);
+    static lh h;
+    fake_profile p;
+    setup(&h, &p);
+    ocb_usb_mailbox_set_p2_queue_full(&h.mb, 70000u);
+    OCB_CHECK(h.mb.p2_queue_full == 70000u, "p2_queue_full stored: %u", h.mb.p2_queue_full);
+    poll(&h);
+    expect_ready(&h, false, "p2_queue_full is not a handshake");
+    fp_handshake(&p);
+    poll(&h);
+    ocb_usb_mailbox_set_p2_queue_full(&h.mb, 70001u);
+    poll(&h);
+    expect_ready(&h, true, "a p2_queue_full change is not a USB-down event");
+}
+
 int main(void)
 {
     test_handshake_and_down();
     test_report_period_field();
     test_self_timing_fields();
+    test_p2_queue_full_field();
     test_stall();
     test_flags_and_wrap();
     test_rebase();

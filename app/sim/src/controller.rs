@@ -123,6 +123,7 @@ pub struct FakeController {
     link_losses: u16,
     loss_age_10us: u16,
     loss_kind: u8,
+    p2_queue_full: u16,
     ready_false_since: Option<u64>,
     fall_delay_ms: u16,
     now_us: u64,
@@ -170,6 +171,7 @@ impl FakeController {
             link_losses: 0,
             loss_age_10us: 0,
             loss_kind: 0,
+            p2_queue_full: 0,
             ready_false_since: None,
             fall_delay_ms: 0,
             now_us: 0,
@@ -225,6 +227,13 @@ impl FakeController {
     /// v5 (Story 3.5): the loss-to-neutral age the next losses report.
     pub fn set_loss_age_10us(&mut self, age: u16) {
         self.loss_age_10us = age;
+    }
+
+    /// v6 (Story 4.0): the P2 reply-queue overflows the debug STATUS
+    /// reports (default 0), written when the debug tail is at least 72
+    /// bytes long.
+    pub fn set_p2_queue_full(&mut self, n: u16) {
+        self.p2_queue_full = n;
     }
 
     /// v5: how much later than the 100 ms rule the controller reports a
@@ -628,6 +637,10 @@ impl FakeController {
             if let Some(x) = t.get_mut(65..70) {
                 x.copy_from_slice(&[a0, a1, self.loss_kind, i0, i1]);
             }
+        }
+        // v6 right after v5 (Story 4.0): offset 70.
+        if let Some(x) = t.get_mut(70..72) {
+            x.copy_from_slice(&self.p2_queue_full.to_le_bytes());
         }
         if let (Some(&lo), Some(&hi)) = (t.get(17), t.get(18)) {
             let be = u16::from_le_bytes([lo, hi]).wrapping_add(n).to_le_bytes();

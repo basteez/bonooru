@@ -212,31 +212,38 @@ def core_late_fallback():
 
 
 def check_story_2_5(link_doc, cfg, live, late_fallback):
-    """Story 2.5: the STATUS v4 sizes and table, the liveness numbers, the LATE fallback."""
+    """Story 2.5: the STATUS v4 sizes and table, the liveness numbers, the LATE fallback.
+    Story 3.5 / 4.0: the v5 and v6 blocks and the sizes they give."""
     errors = []
     rules = section(link_doc, "Rules the controller link applies (Story 2.6)")
     v4 = cfg["LINK_DEBUG_V4_LEN"]
     v5 = cfg["LINK_DEBUG_V5_LEN"]
+    v6 = cfg["LINK_DEBUG_V6_LEN"]
+    v3max = cfg["LINK_DEBUG_V3_MAX_LEN"]
     empty3 = cfg["LINK_DEBUG_COUNTERS_LEN"] + cfg["LINK_DEBUG_V3_HEADER_LEN"]
-    if cfg["LINK_DEBUG_V3_MAX_LEN"] + v4 + v5 != cfg["LINK_DEBUG_TAIL_MAX_LEN"]:
-        errors.append("config.h: V3_MAX_LEN + V4_LEN + V5_LEN != TAIL_MAX_LEN")
+    if v3max + v4 + v5 + v6 != cfg["LINK_DEBUG_TAIL_MAX_LEN"]:
+        errors.append("config.h: V3_MAX_LEN + V4_LEN + V5_LEN + V6_LEN != TAIL_MAX_LEN")
     sizes = [int(x) for x in re.findall(r"one fixed block of (\d+) bytes", rules)]
-    if sizes != [v4, v5]:
-        errors.append("link doc: the v4 / v5 block sizes %s differ from config.h (%d, %d)" % (sizes, v4, v5))
+    if sizes != [v4, v5, v6]:
+        errors.append("link doc: the v4 / v5 / v6 block sizes %s differ from config.h (%d, %d, %d)" % (
+            sizes, v4, v5, v6))
     m = re.search(r"With v4 the debug tail is (\d+) bytes with an empty window, at most (\d+)\.", rules)
-    if m is None or (int(m.group(1)), int(m.group(2))) != (empty3 + v4, cfg["LINK_DEBUG_V3_MAX_LEN"] + v4):
-        errors.append("link doc: the v4 tail sizes differ from config.h (%d, %d)" % (
-            empty3 + v4, cfg["LINK_DEBUG_V3_MAX_LEN"] + v4))
+    if m is None or (int(m.group(1)), int(m.group(2))) != (empty3 + v4, v3max + v4):
+        errors.append("link doc: the v4 tail sizes differ from config.h (%d, %d)" % (empty3 + v4, v3max + v4))
+    m = re.search(r"With v5 the debug tail is (\d+) bytes with an empty window, at most (\d+)\.", rules)
+    if m is None or (int(m.group(1)), int(m.group(2))) != (empty3 + v4 + v5, v3max + v4 + v5):
+        errors.append("link doc: the v5 tail sizes differ from config.h (%d, %d)" % (
+            empty3 + v4 + v5, v3max + v4 + v5))
     body = 11 + cfg["LINK_DEBUG_TAIL_MAX_LEN"]
     wire = 3 + body + 2 + 2  # header, CRC, one COBS byte (body < 254), the delimiter
-    want = (empty3 + v4 + v5, cfg["LINK_DEBUG_TAIL_MAX_LEN"], body, wire)
-    m = re.search(r"With v5 the debug tail is (\d+) bytes with an empty window, at most (\d+); the largest debug "
+    want = (empty3 + v4 + v5 + v6, cfg["LINK_DEBUG_TAIL_MAX_LEN"], body, wire)
+    m = re.search(r"With v6 the debug tail is (\d+) bytes with an empty window, at most (\d+); the largest debug "
                   r"STATUS body is (\d+) bytes \((\d+) bytes on the wire\)", rules)
     if m is None or tuple(int(g) for g in m.groups()) != want:
-        errors.append("link doc: STATUS v5 sizes differ from ocb_link/config.h (%d, %d, %d, %d)" % want)
+        errors.append("link doc: STATUS v6 sizes differ from ocb_link/config.h (%d, %d, %d, %d)" % want)
     offsets = [int(x) for x in re.findall(r"^    \| (\d+) \| `", rules, re.M)]
-    if offsets != [0, 2, 4, 8, 20, 22, 24, 30, 32, 34, 35, 37, 38, 39, 0, 2, 3]:
-        errors.append("link doc: v4 / v5 table offsets %s differ from the layouts of config.h" % offsets)
+    if offsets != [0, 2, 4, 8, 20, 22, 24, 30, 32, 34, 35, 37, 38, 39, 0, 2, 3, 0]:
+        errors.append("link doc: v4 / v5 / v6 table offsets %s differ from the layouts of config.h" % offsets)
     text = section(link_doc, "Rules the controller applies (Story 2.5)")
     checks = (
         (r"`OCB_LIVE_STALE_US` \((\d+) ms", live["LIVE_STALE_US"] // 1000, "OCB_LIVE_STALE_US"),

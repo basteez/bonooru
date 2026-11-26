@@ -7,8 +7,10 @@
  * core's lateness statistics, core 0's numbers from the USB mailbox, the
  * runner's loop maximum and stack mark, the boot cause from the config) and
  * the v5 block (5 bytes, story 3.5: the last link loss's age and kind, and
- * the age of the last console poll). Built only when cfg.debug_counters is set, in its own
- * function with its own buffers, so the release TX path (tx.c) keeps its
+ * the age of the last console poll) and the v6 block (2 bytes, story 4.0:
+ * the P2 reply-queue overflows core 0 posts through the USB mailbox). Built
+ * only when cfg.debug_counters is set, in its own function with its own
+ * buffers, so the release TX path (tx.c) keeps its
  * stack. Reads the window as plain data: no ocb_dbglog_* function is
  * called here, so a release ELF links none of the debug log.
  */
@@ -25,8 +27,9 @@
 #include "ocb_proto/frame.h"
 #include "ocb_proto/msgs.h"
 
-#define TX_DBG_BODY_MAX (OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_TAIL_MAX_LEN) /* 113 */
-/* header 3 + body 113 + crc 2 = 118 raw bytes, COBS overhead 1, delimiter 1 */
+#define TX_DBG_BODY_MAX (OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_TAIL_MAX_LEN) /* 115 */
+/* header 3 + body 115 + crc 2 = 120 raw bytes, COBS overhead 1, delimiter 1:
+ * 122 bytes on the wire */
 #define TX_DBG_WIRE_MAX (OCB_FRAME_HEADER_SIZE + TX_DBG_BODY_MAX + OCB_FRAME_CRC_SIZE + 2)
 /* The UART driver's TX ring (ocb_hw/uart_link.h, OCB_UART_LINK_TX_RING): a
  * pure library cannot include it, so the size is restated here and pinned
@@ -38,7 +41,8 @@
 typedef char ocb_link_tx_dbg_fits[(OCB_LINK_DEBUG_COUNTERS_LEN + OCB_LINK_DEBUG_V3_HEADER_LEN +
                                        2 * OCB_DBGLOG_WINDOW ==
                                    OCB_LINK_DEBUG_V3_MAX_LEN &&
-                                   OCB_LINK_DEBUG_V3_MAX_LEN + OCB_LINK_DEBUG_V4_LEN + OCB_LINK_DEBUG_V5_LEN ==
+                                   OCB_LINK_DEBUG_V3_MAX_LEN + OCB_LINK_DEBUG_V4_LEN + OCB_LINK_DEBUG_V5_LEN +
+                                           OCB_LINK_DEBUG_V6_LEN ==
                                        OCB_LINK_DEBUG_TAIL_MAX_LEN &&
                                    TX_DBG_BODY_MAX <= OCB_MAX_BODY && TX_DBG_WIRE_MAX <= OCB_MAX_WIRE_FRAME &&
                                    TX_DBG_WIRE_MAX <= TX_DBG_UART_RING)
@@ -98,6 +102,12 @@ static OCB_CORE_RAMFUNC void put_v5(const ocb_link *link, uint64_t now_us, uint8
     put_u16(&p[3], age32 / 1000u);
 }
 
+/* v6 (story 4.0): 2 bytes at p. Layout in ocb_link/config.h. */
+static OCB_CORE_RAMFUNC void put_v6(const ocb_link *link, uint8_t *p)
+{
+    put_u16(&p[0], link->mailbox->p2_queue_full);
+}
+
 OCB_CORE_RAMFUNC size_t ocb_link_tx_status_debug_(ocb_link *link, uint64_t now_us, uint8_t *out, size_t cap)
 {
     uint8_t extra[OCB_LINK_DEBUG_TAIL_MAX_LEN];
@@ -131,6 +141,8 @@ OCB_CORE_RAMFUNC size_t ocb_link_tx_status_debug_(ocb_link *link, uint64_t now_u
     len += (size_t)OCB_LINK_DEBUG_V4_LEN;
     put_v5(link, now_us, &extra[len]);
     len += (size_t)OCB_LINK_DEBUG_V5_LEN;
+    put_v6(link, &extra[len]);
+    len += (size_t)OCB_LINK_DEBUG_V6_LEN;
 
     uint8_t body[TX_DBG_BODY_MAX];
     const int nb = ocb_link_status_body_(link, now_us, extra, len, body, sizeof body);

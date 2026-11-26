@@ -24,6 +24,12 @@ build on the console, with the firmware's self-timing from the debug STATUS
 v4) and hangcheck (H.2a/H.2b: after a liveness reboot, the boot cause the
 firmware reports). Run with -h.
 
+The STATUS line decodes every debug tail block up to v6: v1/v2 counters,
+the v3 P2 log, v4 self-timing, v5 (story 3.5: the last link loss and the
+age of the last console poll) and v6 (story 4.0: p2_queue_full, the P2
+replies dropped on a full reply queue); p2check prints p2_queue_full at
+the end of its run.
+
 console_ready (story 2.3 D15): it now comes only from a real USB host that
 completed the P2 handshake, the Switch 2 or, on the bench Mac,
 `python3 firmware/tools/p2_probe.py handshake --hold 120 &` started in the
@@ -346,6 +352,10 @@ def describe(ftype, seq, body):
                 s += " | p2_log: " + ", ".join(p2_log_str(k, i) for k, i in d["p2_log"])
             if d.get("v4"):
                 s += " | v4: " + v4_str(d["v4"])
+            if d.get("v5"):
+                s += " | v5: " + v5_str(d["v5"])
+            if d.get("v6"):
+                s += " | v6: " + v6_str(d["v6"])
         return s
     return "%s %s (tx seq %d)" % (name, " ".join("%s=%s" % kv for kv in f.items()), seq)
 
@@ -403,12 +413,23 @@ def debug_v4(block):
     return d
 
 
+# v5 (story 3.5): one fixed 5-byte block right after v4: loss_age_10us u16
+# (decoded as loss_age_us), loss_kind u8, in_age_ms u16.
+DEBUG_V5_LEN = 5
+LOSS_KINDS = {0: "none", 1: "timeout", 2: "break"}
+# v6 (story 4.0): one fixed 2-byte block right after v5: p2_queue_full u16,
+# the P2 replies dropped on a full reply queue since boot, saturating.
+DEBUG_V6_LEN = 2
+
+
 def debug_counters(extra):
     """STATUS debug counters (docs/link-protocol.md) as a dict: the v1 prefix
     (7 bytes), when present the v2 split of dropped_bytes (14 more bytes),
     the v3 P2 debug log window (p2_log_total and p2_log, a list of
-    (kind, id)) and the v4 self-timing block ("v4", a dict, story 2.5);
-    None without debug counters."""
+    (kind, id)), the v4 self-timing block ("v4", a dict, story 2.5), the v5
+    hardware-check block ("v5", story 3.5) and the v6 block ("v6", story
+    4.0: p2_queue_full). A block is present when the tail is long enough to
+    hold it (the tail has no version byte). None without debug counters."""
     if len(extra) < 7:
         return None
     d = dict(zip(DEBUG_V1, struct.unpack("<HBHH", extra[:7])))
@@ -422,6 +443,14 @@ def debug_counters(extra):
         off = 24 + 2 * n
         if len(extra) >= off + DEBUG_V4_LEN:
             d["v4"] = debug_v4(extra[off:off + DEBUG_V4_LEN])
+            off += DEBUG_V4_LEN
+            if len(extra) >= off + DEBUG_V5_LEN:
+                age10, kind, age_ms = struct.unpack("<HBH", bytes(extra[off:off + DEBUG_V5_LEN]))
+                d["v5"] = {"loss_age_us": age10 * 10, "loss_kind": kind, "in_age_ms": age_ms}
+                off += DEBUG_V5_LEN
+                if len(extra) >= off + DEBUG_V6_LEN:
+                    (qfull,) = struct.unpack("<H", bytes(extra[off:off + DEBUG_V6_LEN]))
+                    d["v6"] = {"p2_queue_full": qfull}
     return d
 
 
@@ -434,6 +463,28 @@ def v4_str(v):
                 v["core0_pass_max_us"], v["in_min_us"], v["in_p95_us"], v["in_max_us"], v["in_slow"],
                 v["seq_retries"], v["seq_fallbacks"], v["stack_used_max"],
                 BOOT_CAUSES.get(v["boot_cause"], "%d" % v["boot_cause"]), v["reboot_count"], v["stall_reset_us"]))
+
+
+def v5_str(v):
+    """The v5 block as one line."""
+    return "last loss %s age=%d us | in_age=%d ms" % (
+        LOSS_KINDS.get(v["loss_kind"], "kind%d" % v["loss_kind"]), v["loss_age_us"], v["in_age_ms"])
+
+
+def v6_str(v):
+    """The v6 block as one line."""
+    return "p2_queue_full=%d" % v["p2_queue_full"]
+
+
+def p2_queue_full_note(status):
+    """p2check's closing line (story 4.0, issue #25): the P2 reply-queue
+    overflows from the v6 block of a STATUS dict, or why there is none."""
+    d = None
+    if status:
+        d = status["dbg"] if "dbg" in status else debug_counters(status.get("extra", b""))
+    if d and d.get("v6"):
+        return "P2 reply-queue overflows (p2_queue_full): %d" % d["v6"]["p2_queue_full"]
+    return "p2_queue_full: not reported (a debug build before Story 4.0, or a release build)"
 
 
 def dbg_str(d):
@@ -2043,6 +2094,8 @@ def cmd_p2check(port, args):
         c.note("refused by the profile (C7): %s" % " ".join("%02x" % i for i in refused))
     link.out("H.15 median IN interval: %d us (INFO.report_period_us)" % period)
     c.check(link.nak_version == 0, "no NAK VERSION")
+    # Story 4.0 (issue #25): printed, not judged; the verdict is unchanged.
+    c.note(p2_queue_full_note(link.status))
     return c.finish()
 
 

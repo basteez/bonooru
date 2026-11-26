@@ -19,6 +19,8 @@
  * built-in table or a short table for fast tests, the debug STATUS v4 inputs (core 0's IN interval
  * spread, pass maximum and handoff counters through the mailbox, the
  * runner's loop maximum and stack mark, the boot cause in the config).
+ * Story 4.0 (F.32): the P2 reply-queue overflow count core 0 posts to the
+ * mailbox, which the debug STATUS v6 block carries.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -52,6 +54,7 @@ void sim_in_spread(uint32_t min_us, uint32_t p95_us, uint32_t max_us, uint32_t s
 void sim_core0(uint32_t pass_max_us, uint32_t seq_retries, uint32_t seq_fallbacks);
 void sim_self_timing(uint32_t loop_max_us, uint32_t stack_used);
 void sim_set_boot(uint8_t cause, uint8_t count, uint32_t stall_reset_us);
+void sim_set_p2_queue_full(uint32_t n);
 
 /* Story 2.5: a short table for fast probe tests (6 events, 0.5 s): the
  * matching expected-notes file is written by tests/test_link_probe.py. */
@@ -222,6 +225,12 @@ void sim_in_spread(uint32_t min_us, uint32_t p95_us, uint32_t max_us, uint32_t s
 void sim_core0(uint32_t pass_max_us, uint32_t seq_retries, uint32_t seq_fallbacks)
 {
     ocb_usb_mailbox_set_core0(&s_mailbox, pass_max_us, seq_retries, seq_fallbacks);
+}
+
+/* Story 4.0: core 0's post of the profile's reply-queue overflows. */
+void sim_set_p2_queue_full(uint32_t n)
+{
+    ocb_usb_mailbox_set_p2_queue_full(&s_mailbox, n);
 }
 
 /* Story 2.5 D13: the runner's loop maximum and stack mark. */

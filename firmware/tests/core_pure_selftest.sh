@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Self-test of check-core-pure.sh (story 2.4 Task 7.2, test F.13): every bad
 # fixture must be reported, the good fixture and the real controller/core
-# tree must pass, and a usage error exits 2.
+# tree must pass, a usage error exits 2, and the gate must take its
+# identifier rules from tools/pure-rules.sh (story 4.0 D1: no private copy
+# that could drift).
 # Usage: core_pure_selftest.sh CHECK_CORE_PURE_SH FIRMWARE_DIR
 set -euo pipefail
 
@@ -37,5 +39,16 @@ rc=0
 bash "${check}" a b >/dev/null 2>&1 || rc=$?
 [ "${rc}" -eq 2 ] || { echo "FAIL: usage error must exit 2 (got ${rc})"; fail=1; }
 
-[ "${fail}" -eq 0 ] && echo "core_pure_selftest: ok (${count} bad fixtures)"
+# Shared-list guard (story 4.0 D1): the gate sources tools/pure-rules.sh
+# and keeps no private banned_word_re that could drift from the others.
+if ! grep -q -E '^[[:space:]]*\.[[:space:]]+"\$\{script_dir\}/pure-rules\.sh"' "${check}"; then
+    echo "FAIL: $(basename "${check}") does not source tools/pure-rules.sh"
+    fail=1
+fi
+if grep -q -E '^[[:space:]]*banned_word_re=' "${check}"; then
+    echo "FAIL: $(basename "${check}") defines a private banned_word_re"
+    fail=1
+fi
+
+[ "${fail}" -eq 0 ] && echo "core_pure_selftest: ok (${count} bad fixtures, rules from tools/pure-rules.sh)"
 exit "${fail}"

@@ -9,8 +9,11 @@
  * bits; the 21 debug bytes (v1 prefix and the split of dropped_bytes) and,
  * story 2.3, the empty v3 P2 log window after them (24 bytes); story 2.5, the
  * v4 self-timing block (41 bytes, zero on a fresh link: 65 bytes in all), and
- * the largest debug STATUS (108-byte body) fits the 128-byte UART TX ring at
- * 50 ms cadence, never split; slot overflow; a too-small `cap`; the TX gate;
+ * the largest debug STATUS (115-byte body since the story 4.0 v6 block,
+ * 122 bytes on the wire) fits the 128-byte UART TX ring at 50 ms cadence,
+ * never split; story 3.5, the v5 block; story 4.0, the v6 block
+ * (p2_queue_full from the USB mailbox, saturating) and no tail in a
+ * release-config STATUS; slot overflow; a too-small `cap`; the TX gate;
  * two independent links. Every output is decoded as a controller frame.
  * Story 2.7: STATUS link_ok follows a loss and the recovery, debug byte 2 is
  * watchdog_trips, and a gate closed by the watchdog's release discards
@@ -312,8 +315,8 @@ static void test_debug_counters(void)
     if (!found) {
         return;
     }
-    OCB_CHECK(m.extra_len == 70u, "debug: %zu extra bytes", m.extra_len);
-    if (m.extra_len == 70u) {
+    OCB_CHECK(m.extra_len == 72u, "debug: %zu extra bytes", m.extra_len);
+    if (m.extra_len == 72u) {
         /* By hand: gap 1234 ms, trips 0, dropped 4 + 8 + 300 = 312, tx_dropped
          * 2, then rx_err 4, overflow 8, overlong 300, FE 2, PE 1, BE 1, OE 1;
          * story 2.3: an empty P2 log window (total 0, n 0); story 2.5: a v4
@@ -323,14 +326,16 @@ static void test_debug_counters(void)
         OCB_CHECK_MEM(m.extra, 65u, want, sizeof want, "debug counters");
         /* story 3.5: the v5 block, no link loss yet (age 0, kind 0). */
         OCB_CHECK(m.extra[65] == 0u && m.extra[66] == 0u && m.extra[67] == 0u, "v5: no loss yet");
+        /* story 4.0: the v6 block, no P2 reply dropped yet. */
+        OCB_CHECK(m.extra[70] == 0u && m.extra[71] == 0u, "v6: p2_queue_full 0");
     }
     /* Saturation at 65535. */
     h.link.max_app_gap_us = 0xFFFFFFFFu;
     h.link.cnt.tx_dropped = 70000u;
     h.link.cnt.rx_err_bytes = 80000u;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && m.extra_len == 70u, "debug: second STATUS");
-    if (m.extra_len == 70u) {
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 72u, "debug: second STATUS");
+    if (m.extra_len == 72u) {
         const uint8_t sat[65] = {0xFFu, 0xFFu, 0u,    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 8u, 0u,
                                  0x2Cu, 0x01u, 2u,    0u,    1u,    0u,    1u,    0u,    1u,    0u, 0u, 0u, 0u};
         OCB_CHECK_MEM(m.extra, 65u, sat, sizeof sat, "saturated counters");
@@ -471,7 +476,7 @@ static void test_watchdog_status(void)
     lh_link_up(&h);
     ocb_msg_status m;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra_len == 70u && m.extra[2] == 0u,
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) != 0u && m.extra_len == 72u && m.extra[2] == 0u,
               "link up: STATUS link_ok 1, watchdog_trips 0");
     /* Loss by silence. */
     h.auto_hb = false;
@@ -490,12 +495,12 @@ static void test_watchdog_status(void)
               ocb_link_counters_get(&h.link)->tx_dropped - dropped);
     lh_open_gate(&h);
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) == 0u && m.extra_len == 70u && m.extra[2] == 1u &&
+    OCB_CHECK(get_status(&h, &m) && (m.flags & OCB_STATUS_LINK_OK) == 0u && m.extra_len == 72u && m.extra[2] == 1u &&
                   m.abort_count == 1u && m.last_event == OCB_EVT_LINK_LOST,
               "after the loss: STATUS link_ok 0, watchdog_trips 1");
     /* Story 3.5, v5: the loss was a heartbeat timeout, the abort at
      * timeout + 1 us after the last heartbeat (10 us units, rounded down). */
-    if (m.extra_len == 70u) {
+    if (m.extra_len == 72u) {
         const unsigned age10 = (unsigned)m.extra[65] | ((unsigned)m.extra[66] << 8);
         const unsigned want10 = ((unsigned)OCB_LINK_TIMEOUT_MS * 1000u + 1u) / 10u;
         OCB_CHECK(age10 == want10 && m.extra[67] == OCB_WD_LINK_TIMEOUT, "v5 loss: age %u x 10 us (want %u), kind %u",
@@ -532,8 +537,8 @@ static void test_v5_block(void)
     h.link.ready.last_in_change_us = h.now - 137500u;
     ocb_msg_status m;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && m.extra_len == 70u, "v5: STATUS with 70 extra bytes");
-    if (m.extra_len == 70u) {
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 72u, "v5: STATUS with 72 extra bytes");
+    if (m.extra_len == 72u) {
         const unsigned age10 = (unsigned)m.extra[65] | ((unsigned)m.extra[66] << 8);
         const unsigned in_age = (unsigned)m.extra[68] | ((unsigned)m.extra[69] << 8);
         OCB_CHECK(age10 == 700u && m.extra[67] == OCB_WD_BREAK, "v5 break: age %u x 10 us, kind %u", age10,
@@ -545,14 +550,15 @@ static void test_v5_block(void)
     h.link.ready.last_in_change_us = 0u;
     h.now += 70000000u;
     lh_advance(&h, 50000u);
-    OCB_CHECK(get_status(&h, &m) && m.extra_len == 70u && m.extra[65] == 0xFFu && m.extra[66] == 0xFFu &&
+    OCB_CHECK(get_status(&h, &m) && m.extra_len == 72u && m.extra[65] == 0xFFu && m.extra[66] == 0xFFu &&
                   m.extra[68] == 0xFFu && m.extra[69] == 0xFFu,
               "v5 saturates");
 }
 
 /* Story 2.5 D13, D31: the largest debug STATUS (16 log records, the v4
- * block and the story 3.5 v5 block: body 113 bytes) fits an empty 128-byte UART TX ring in one frame,
- * leaves at the 50 ms cadence, and is never split into a smaller cap. */
+ * block, the story 3.5 v5 block and the story 4.0 v6 block: body 115
+ * bytes) fits an empty 128-byte UART TX ring in one frame, leaves at the
+ * 50 ms cadence, and is never split into a smaller cap. */
 static void test_largest_status_fits_uart_ring(void)
 {
     static lh h;
@@ -582,13 +588,47 @@ static void test_largest_status_fits_uart_ring(void)
         h.now += 500u;
         ocb_link_poll(&h.link, h.now);
     }
-    /* 11 + 102 = 113 body bytes, 3 header, 2 CRC, 1 COBS, 1 delimiter. */
-    OCB_CHECK(first == 120u, "largest debug STATUS on the wire: %zu bytes, wanted 120", first);
+    /* 11 + 104 = 115 body bytes, 3 header, 2 CRC, 1 COBS, 1 delimiter. */
+    OCB_CHECK(first == 122u, "largest debug STATUS on the wire: %zu bytes, wanted 122", first);
     OCB_CHECK(sent == 4 || sent == 5, "%d STATUS frames in 200 ms at a 50 ms cadence", sent);
-    /* A cap of 119 (one byte short): pending, nothing written. */
+    /* A cap of 121 (one byte short): pending, nothing written. */
     h.now += 50000u;
-    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, 119u) == 0u, "the 120-byte STATUS split into 119");
-    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, sizeof wire) == 120u, "then sent whole");
+    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, 121u) == 0u, "the 122-byte STATUS split into 121");
+    OCB_CHECK(ocb_link_tx_next(&h.link, h.now, wire, sizeof wire) == 122u, "then sent whole");
+}
+
+/* Story 4.0: the v6 block. extra[70..71] is the P2 reply-queue overflow
+ * count core 0 posts to the USB mailbox, saturating at 65535; a link
+ * without debug counters (a release build) sends the 11 base bytes only. */
+static void test_v6_block(void)
+{
+    static lh h;
+    lh_init_cfg(&h, 8u, true);
+    lh_open_gate(&h);
+    lh_hello(&h);
+    lh_discard_tx(&h);
+    ocb_msg_status m;
+    const uint32_t posted[3] = {0u, 3u, 70000u};
+    const unsigned want[3] = {0u, 3u, 65535u};
+    for (unsigned i = 0; i < 3u; i++) {
+        ocb_usb_mailbox_set_p2_queue_full(&h.mb, posted[i]);
+        lh_advance(&h, 50000u);
+        const bool got = get_status(&h, &m);
+        OCB_CHECK(got && m.extra_len == 72u, "v6: STATUS with 72 extra bytes (posted %u)", (unsigned)posted[i]);
+        if (got && m.extra_len == 72u) {
+            const unsigned v = (unsigned)m.extra[70] | ((unsigned)m.extra[71] << 8);
+            OCB_CHECK(v == want[i], "v6 p2_queue_full %u, wanted %u (posted %u)", v, want[i], (unsigned)posted[i]);
+        }
+    }
+    /* Release config: no debug tail at all, whatever the mailbox holds. */
+    static lh r;
+    lh_init_cfg(&r, 8u, false);
+    lh_open_gate(&r);
+    lh_hello(&r);
+    lh_discard_tx(&r);
+    ocb_usb_mailbox_set_p2_queue_full(&r.mb, 3u);
+    lh_advance(&r, 50000u);
+    OCB_CHECK(get_status(&r, &m) && m.extra_len == 0u, "release STATUS: %zu extra bytes, wanted 0", m.extra_len);
 }
 
 static void test_two_links(void)
@@ -622,6 +662,7 @@ int main(void)
     test_gate_rearms_nak();
     test_watchdog_status();
     test_v5_block();
+    test_v6_block();
     test_two_links();
     const int f = ocb_test_failures();
     if (f != 0) {

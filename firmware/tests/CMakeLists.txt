@@ -71,14 +71,17 @@ add_test(NAME proto_version_check
             "${OCB_FW_DIR}/tools/check-proto-version.sh" "${OCB_FW_DIR}"
             "${CMAKE_CURRENT_BINARY_DIR}/proto_version_selftest")
 
-# ocb_proto includes only the allowed standard headers and ocb_proto/* (AD-2).
+# F.43: ocb_proto includes only the allowed standard headers and ocb_proto/*
+# and names none of the identifiers of tools/pure-rules.sh (AD-2, story 4.0);
+# bad fixtures flagged, good fixture and the real common/proto tree pass.
 add_test(NAME proto_pure_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/proto_pure_selftest.sh"
             "${OCB_FW_DIR}/tools/check-proto-pure.sh" "${OCB_FW_DIR}")
 
-# F.13: ocb_core includes only the allowed headers and uses no heap, I/O or
-# clock identifiers (AD-2, story 2.4 D9); bad fixtures flagged, good fixture
-# and the real controller/core tree pass.
+# F.13: ocb_core includes only the allowed headers and names none of the
+# identifiers of tools/pure-rules.sh (heap, I/O, clock, process exit,
+# assembly, section, register address; AD-2, story 2.4 D9, story 4.0); bad
+# fixtures flagged, good fixture and the real controller/core tree pass.
 add_test(NAME core_pure_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/core_pure_selftest.sh"
             "${OCB_FW_DIR}/tools/check-core-pure.sh" "${OCB_FW_DIR}")
@@ -114,8 +117,9 @@ if(OCB_TEST_ENV)
 endif()
 
 # F.40 (Story 3.1): ocb_bridge_core includes only the allowed headers and
-# uses no heap, I/O or clock identifiers; bad fixtures flagged, the good one
-# and the real bridge/core tree pass; no own tud_cdc_line_coding_cb.
+# names none of the identifiers of tools/pure-rules.sh; bad fixtures
+# flagged, the good one and the real bridge/core tree pass, the gate uses the
+# shared rule file; no own tud_cdc_line_coding_cb.
 add_test(NAME bridge_pure_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/bridge_pure_selftest.sh"
             "${OCB_FW_DIR}/tools/check-bridge-pure.sh" "${OCB_FW_DIR}")
@@ -130,10 +134,10 @@ if(OCB_TEST_ENV)
     set_tests_properties(test_testtl PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
 endif()
 
-# F.18: ocb_link includes only the allowed headers and uses no heap, I/O or
-# clock identifiers (AD-2, story 2.6 D16); bad fixtures flagged, good
-# fixture and the real controller/link tree pass, the banned list equals
-# the core gate's.
+# F.18: ocb_link includes only the allowed headers and names none of the
+# identifiers of tools/pure-rules.sh (AD-2, story 2.6 D16, story 4.0); bad
+# fixtures flagged, good fixture and the real controller/link tree pass, the
+# gate uses the shared rule file.
 add_test(NAME link_pure_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/link_pure_selftest.sh"
             "${OCB_FW_DIR}/tools/check-link-pure.sh" "${OCB_FW_DIR}")
@@ -192,10 +196,10 @@ if(OCB_TEST_ENV)
     set_tests_properties(${OCB_P2_TESTS} PROPERTIES ENVIRONMENT "${OCB_TEST_ENV}")
 endif()
 
-# F.30: ocb_p2 includes only the allowed headers and uses no heap, I/O or
-# clock identifiers (AD-2, story 2.3 D16); bad fixtures flagged, good
-# fixture and the real controller/profile_p2 tree pass, the banned list
-# equals the core gate's.
+# F.30: ocb_p2 includes only the allowed headers and names none of the
+# identifiers of tools/pure-rules.sh (AD-2, story 2.3 D16, story 4.0); bad
+# fixtures flagged, good fixture and the real controller/profile_p2 tree
+# pass, the gate uses the shared rule file.
 add_test(NAME p2_pure_check
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/p2_pure_selftest.sh"
             "${OCB_FW_DIR}/tools/check-p2-pure.sh" "${OCB_FW_DIR}")
