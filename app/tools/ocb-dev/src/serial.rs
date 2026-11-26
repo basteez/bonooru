@@ -55,6 +55,9 @@ impl SerialIo {
             .map_err(|e| format!("{path}: {e}"))?;
         port.write_data_terminal_ready(true)
             .map_err(|e| format!("{path}: DTR: {e}"))?;
+        // Bytes the OS queued before this open (a STATUS of a controller
+        // since unplugged) are not this session's (Story 3.5 H.3 bench).
+        let _ = port.clear(serialport::ClearBuffer::Input);
         Ok(port)
     }
 }

@@ -4,7 +4,7 @@ baseline_commit: d631a08
 
 # Story 3.5: Hardware fail-safe and `console_ready` checks
 
-Status: review
+Status: done
 
 <!-- Ultimate context engine analysis completed - comprehensive developer guide created (gds-create-story, 2026-11-24) -->
 
@@ -76,10 +76,10 @@ The numbering is that of the `epics.md` list ("UX open questions", OQ-3 and OQ-4
 - [x] **Task 5: docs (AC: 1–4)**
   - [x] 5.1 `docs/test-plan.md`: C.18–C.19; rows H.3, A.3 and H.1 finalised with the commands; an "A.3 / H.3 bench rig (Story 3.5)" block.
   - [x] 5.2 `app/tools/ocb-dev/README.md`: the two new modes.
-- [ ] **Task 6: bench (AC: 1–3)** — after Task 7
-  - [ ] 6.1 H.1 bridge-unpowered GP1, A.3 ×20 unplug and ×20 wire (the owner also reads GP0 once with the meter while a wire is pulled, as in H.12), H.3 with `watch`. Record the results in `docs/test-plan.md` and here, with the numbers checked against the logs.
+- [x] **Task 6: bench (AC: 1–3)** — after Task 7
+  - [x] 6.1 H.1 bridge-unpowered GP1, A.3 ×20 unplug and ×20 wire (the owner also reads GP0 once with the meter while a wire is pulled, as in H.12), H.3 with `watch`. Record the results in `docs/test-plan.md` and here, with the numbers checked against the logs.
 - [x] **Task 7: bench tool and H-row review, recorded before the bench (retro action #27)**
-- [ ] **Task 8: the OQ-3/OQ-4 decision (AC: 4)** — present the H.3 data and a recommendation, the owner decides; write `EXPERIENCE.md` (Open Question 3 resolved, the coupling-table gap closed, the "Play gating" row and the `console_ready` row updated for the 100 ms rule). If the owner changes the 100 ms rule: AD-19 in the spine, `OCB_CONSOLE_POLL_STALL_MS` in `firmware/common/proto/include/ocb_proto/consts.h`, its app twin and the docs.
+- [x] **Task 8: the OQ-3/OQ-4 decision (AC: 4)** — present the H.3 data and a recommendation, the owner decides; write `EXPERIENCE.md` (Open Question 3 resolved, the coupling-table gap closed, the "Play gating" row and the `console_ready` row updated for the 100 ms rule). If the owner changes the 100 ms rule: AD-19 in the spine, `OCB_CONSOLE_POLL_STALL_MS` in `firmware/common/proto/include/ocb_proto/consts.h`, its app twin and the docs.
 
 ### Review Findings
 
@@ -216,6 +216,30 @@ Claude Opus 5.5 (claude-opus-5-5), gds-dev-story, 2026-11-24.
 - A first C.19 window for the slow fall (250 ms of lost STATUS) was classified as a silence (> 300 ms between STATUS frames), not as a late fall. The test now loses about 200 ms, so STATUS is late but not silent.
 - Gates: `cargo fmt --all --check`, `cargo test --locked --workspace` (27 test binaries ok), clippy `-D warnings` clean, `cargo deny` ok.
 
+### Bench results (2026-11-26; numbers checked against the session logs)
+
+Rig: `ocb-dev` `95d912b` (release), controller `fw-debug-o3` at `95d912b` (debug STATUS v5, flash id `5303284718F4641C`), bridge `69f4d2c` `fw-release`, Switch 2 with OoT, DT-830B. Full rows in `docs/test-plan.md` (H.1, A.3, H.3, the A.3 / H.3 bench rig).
+
+- **H.1 (bridge unpowered) PASS.** Controller in the console, bridge USB unplugged: bridge GP1 0.26 V (a floating line), bridge 3V3 0 V. No back-powering.
+- **A.3 PASS, 20 unplug + 20 wire.**
+  - Unplug: 19 rounds of the first run passed. Its round 2 failed alone because the melody ended while the owner was reading the instructions (the D2 round-fail path worked as designed). One extra round in a second run made 20.
+  - Every loss was a break. Loss → neutral (v5): 1.19–20.02 ms on unplug, 0.12–19.75 ms on wire, every round under the 100 ms limit. `watchdog_trips`, `abort_count` + 1 and LINK_LOST every round; wire rounds IDLE at relink.
+  - The owner heard the melody stop at once every time.
+  - TX release: GP0 0.09 V with bridge 3V3 0.03 V (unplugged), GP0 0 V (wire out). A first reading of 1.41 V was on the controller's GP1 (its RX), the wrong pin, not GP0.
+- **H.3 PASS** (`watch`, the scripted order):
+  - 0 until the handshake, then 1 (1415 ms after INFO).
+  - Sleep: STATUS silent 9553 ms. At wake the session reported "controller rebooted" (a probe met `NAK VERSION`), then ready 1 1517 ms later.
+  - OFF: the flag fell 144 ms after the console's last poll (v5; limit 150). ON: 1 again.
+  - Probes: 48 sent, 48 `NAK NOT_READY`.
+- **Bench incidents (not findings of the firmware):**
+  - Twice the console needed A from our controller to close its connection screen or to come back from standby (`link_probe.py press --button A`, at the owner's request).
+  - The first `watch` read a stale STATUS the OS had queued before the controller was unplugged. Fixed: `SerialIo` clears the input buffer on open (checked on the real port).
+  - The first `watch` instance needed a second SIGINT to release the port before the restart.
+- **OQ decisions (owner, 2026-11-26):**
+  - OQ-3: STATUS staleness 150 ms (STATUS median 50.0 ms, p99 50.1 ms, max 52.4 ms, n 1852).
+  - OQ-4: the 100 ms rule kept (worst console polling gap 24 ms; OFF detected in 144 ms).
+  - Written into `EXPERIENCE.md` (Open Question 3, the coupling rows and the gap note, the Play gating row) and marked resolved in the `epics.md` OQ list. AD-19 and the firmware constant are unchanged.
+
 ### Decisions made during implementation (D1 to D5 followed; additions below)
 
 - **D6. The runner became a module** (`runner/mod.rs`, `runner/failsafe.rs`, `runner/watch.rs`), so the new modes reach the runner's private state without widening its API.
@@ -253,7 +277,8 @@ Tools: `app/target/release/ocb-dev` (changed: `failsafe`, `watch`, `Io::reopen`)
 - AC1 (tooling): `failsafe` (Task 2), dry run C.18. Bench pending (Task 6).
 - AC2: no tool; a multimeter reading at the bench.
 - AC3 (tooling): `watch` (Task 3), dry run C.19. Bench pending.
-- AC4: after the bench, with the owner (Task 8).
+- AC4: decided by the owner on the H.3 data (OQ-3 150 ms, OQ-4 100 ms kept), written into `EXPERIENCE.md`.
+- Bench 2026-11-26: H.1, A.3 (40 rounds), H.3 PASS.
 
 ### File List
 
@@ -265,7 +290,8 @@ Tools: `app/target/release/ocb-dev` (changed: `failsafe`, `watch`, `Io::reopen`)
 - `firmware/controller/link/include/ocb_link/config.h`, `firmware/controller/link/tx_debug.c` (modified: debug STATUS v5)
 - `firmware/tests/test_link_tx.c`, `firmware/tests/test_link_dbglog.c`, `firmware/tests/test_docs_constants.py` (modified)
 - `docs/link-protocol.md` (modified: v5 block, sizes)
-- `docs/test-plan.md` (modified: H.3, A.3, C.18, C.19, A.3 / H.3 bench rig)
+- `docs/test-plan.md` (modified: H.1, H.3, A.3 with results, the acceptance-tests table gains a Result column, C.18, C.19, A.3 / H.3 bench rig)
+- `_bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/EXPERIENCE.md`, `_bmad-output/planning-artifacts/epics.md` (modified: OQ-3 / OQ-4 resolved)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`, this file
 
 ## Change Log
@@ -273,3 +299,4 @@ Tools: `app/target/release/ocb-dev` (changed: `failsafe`, `watch`, `Io::reopen`)
 - 2026-11-24: Story created (gds-create-story).
 - 2026-11-24: Tooling implemented (`ocb-dev failsafe` and `watch`, dry runs C.18 and C.19); bench and the OQ decision pending.
 - 2026-11-24: Code review: 14 IMPORTANT and 5 MINOR fixed, 4 MINOR recorded; owner decision: debug STATUS v5 block in the controller firmware (loss age and kind, the age of the last console poll).
+- 2026-11-26: Bench: H.1 (bridge unpowered), A.3 (20 unplug + 20 wire, loss → neutral ≤ 20.02 ms), H.3 PASS; OQ-3 150 ms and OQ-4 100 ms kept (owner); `SerialIo` clears stale input on open (found at H.3). Status done.
