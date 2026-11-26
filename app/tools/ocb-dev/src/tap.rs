@@ -24,6 +24,19 @@ pub struct DebugCounters {
     pub rx_overflow_bytes: Option<u16>,
     /// v2: bytes of overlong runs.
     pub overlong_bytes: Option<u16>,
+    /// v2: break characters seen.
+    pub rx_be: Option<u16>,
+    /// v4: the longest interval between two console polls (IN reports), µs.
+    pub in_max_us: Option<u16>,
+    /// v4: intervals longer than 1.5 × the median (missed polls).
+    pub in_slow: Option<u16>,
+    /// v5 (Story 3.5): the last link loss, from the last heartbeat to the
+    /// abort, in 10 µs units (0 before any loss).
+    pub loss_age_10us: Option<u16>,
+    /// v5: 0 no loss yet, 1 heartbeat timeout, 2 break.
+    pub loss_kind: Option<u8>,
+    /// v5: ms since the last console poll when the STATUS was built.
+    pub in_age_ms: Option<u16>,
 }
 
 impl DebugCounters {
@@ -44,6 +57,23 @@ impl DebugCounters {
             d.rx_err_bytes = u16_at(7);
             d.rx_overflow_bytes = u16_at(9);
             d.overlong_bytes = u16_at(11);
+            d.rx_be = u16_at(17);
+        }
+        // v3: the P2 log window (`p2_log_n` records of 2 bytes from byte
+        // 24), then the fixed v4 block: in_max_us at +28, in_slow at +30.
+        if let Some(&n) = extra.get(23) {
+            let v4 = 24 + 2 * usize::from(n);
+            if extra.len() >= v4 + 41 {
+                d.in_max_us = u16_at(v4 + 28);
+                d.in_slow = u16_at(v4 + 30);
+            }
+            // v5, right after the 41-byte v4 block (5 bytes).
+            let v5 = v4 + 41;
+            if extra.len() >= v5 + 5 {
+                d.loss_age_10us = u16_at(v5);
+                d.loss_kind = extra.get(v5 + 2).copied();
+                d.in_age_ms = u16_at(v5 + 3);
+            }
         }
         Some(d)
     }
@@ -136,6 +166,11 @@ impl Tap {
             statuses_plain: 0,
             naks: BTreeMap::new(),
         }
+    }
+
+    /// Forgets a partial frame (a new port after an unplug).
+    pub fn reset_splitter(&mut self) {
+        self.splitter = Splitter::new(RxSide::App);
     }
 
     /// Feeds received bytes.

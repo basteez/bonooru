@@ -63,6 +63,12 @@ typedef struct {
     uint64_t last_hb_us;    /* time of the last valid heartbeat */
     uint32_t breaks_seen;   /* the link's break counter at the last check or arming */
     bool release_owed;      /* a break before the arming heartbeat: release TX (D39) */
+    /* Story 3.5: the last link loss, for the debug STATUS v5. The age is
+     * the time from the last valid heartbeat to the verdict (the abort and
+     * NEUTRAL happen in the same pass): an upper bound of "link gone to
+     * neutral". kind: 0 none yet, OCB_WD_LINK_TIMEOUT or OCB_WD_BREAK. */
+    uint32_t last_loss_age_us;
+    uint8_t last_loss_kind;
 } ocb_wd;
 
 /* link_timeout_ms 0 selects OCB_LINK_TIMEOUT_MS; above OCB_LINK_TIMEOUT_MAX_MS

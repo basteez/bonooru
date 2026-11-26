@@ -5,7 +5,9 @@
  * 11 base bytes, the v1 and v2 debug counters (21 bytes), the v3 P2 debug
  * log window (3 + 2n bytes) and the v4 self-timing block (41 bytes: the
  * core's lateness statistics, core 0's numbers from the USB mailbox, the
- * runner's loop maximum and stack mark, the boot cause from the config). Built only when cfg.debug_counters is set, in its own
+ * runner's loop maximum and stack mark, the boot cause from the config) and
+ * the v5 block (5 bytes, story 3.5: the last link loss's age and kind, and
+ * the age of the last console poll). Built only when cfg.debug_counters is set, in its own
  * function with its own buffers, so the release TX path (tx.c) keeps its
  * stack. Reads the window as plain data: no ocb_dbglog_* function is
  * called here, so a release ELF links none of the debug log.
@@ -23,8 +25,8 @@
 #include "ocb_proto/frame.h"
 #include "ocb_proto/msgs.h"
 
-#define TX_DBG_BODY_MAX (OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_TAIL_MAX_LEN) /* 108 */
-/* header 3 + body 108 + crc 2 = 113 raw bytes, COBS overhead 1, delimiter 1 */
+#define TX_DBG_BODY_MAX (OCB_BODY_LEN_STATUS + OCB_LINK_DEBUG_TAIL_MAX_LEN) /* 113 */
+/* header 3 + body 113 + crc 2 = 118 raw bytes, COBS overhead 1, delimiter 1 */
 #define TX_DBG_WIRE_MAX (OCB_FRAME_HEADER_SIZE + TX_DBG_BODY_MAX + OCB_FRAME_CRC_SIZE + 2)
 /* The UART driver's TX ring (ocb_hw/uart_link.h, OCB_UART_LINK_TX_RING): a
  * pure library cannot include it, so the size is restated here and pinned
@@ -36,7 +38,8 @@
 typedef char ocb_link_tx_dbg_fits[(OCB_LINK_DEBUG_COUNTERS_LEN + OCB_LINK_DEBUG_V3_HEADER_LEN +
                                        2 * OCB_DBGLOG_WINDOW ==
                                    OCB_LINK_DEBUG_V3_MAX_LEN &&
-                                   OCB_LINK_DEBUG_V3_MAX_LEN + OCB_LINK_DEBUG_V4_LEN == OCB_LINK_DEBUG_TAIL_MAX_LEN &&
+                                   OCB_LINK_DEBUG_V3_MAX_LEN + OCB_LINK_DEBUG_V4_LEN + OCB_LINK_DEBUG_V5_LEN ==
+                                       OCB_LINK_DEBUG_TAIL_MAX_LEN &&
                                    TX_DBG_BODY_MAX <= OCB_MAX_BODY && TX_DBG_WIRE_MAX <= OCB_MAX_WIRE_FRAME &&
                                    TX_DBG_WIRE_MAX <= TX_DBG_UART_RING)
                                       ? 1
@@ -83,6 +86,18 @@ static OCB_CORE_RAMFUNC void put_v4(const ocb_link *link, uint8_t *p)
     put_u16(&p[39], link->cfg.stall_reset_us / 10u); /* D31: 10 us units, saturating */
 }
 
+/* v5 (story 3.5): 5 bytes at p. Layout in ocb_link/config.h. */
+static OCB_CORE_RAMFUNC void put_v5(const ocb_link *link, uint64_t now_us, uint8_t *p)
+{
+    put_u16(&p[0], link->wd.last_loss_age_us / 10u);
+    p[2] = link->wd.last_loss_kind;
+    /* 32-bit divide only (as put_v4's stall_reset_us / 10u): no 64-bit
+     * divide on the Cortex-M0+ (story 2.7 D1). */
+    const uint64_t age_us = ocb_wd_elapsed_us(now_us, link->ready.last_in_change_us);
+    const uint32_t age32 = age_us > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)age_us;
+    put_u16(&p[3], age32 / 1000u);
+}
+
 OCB_CORE_RAMFUNC size_t ocb_link_tx_status_debug_(ocb_link *link, uint64_t now_us, uint8_t *out, size_t cap)
 {
     uint8_t extra[OCB_LINK_DEBUG_TAIL_MAX_LEN];
@@ -114,6 +129,8 @@ OCB_CORE_RAMFUNC size_t ocb_link_tx_status_debug_(ocb_link *link, uint64_t now_u
     }
     put_v4(link, &extra[len]);
     len += (size_t)OCB_LINK_DEBUG_V4_LEN;
+    put_v5(link, now_us, &extra[len]);
+    len += (size_t)OCB_LINK_DEBUG_V5_LEN;
 
     uint8_t body[TX_DBG_BODY_MAX];
     const int nb = ocb_link_status_body_(link, now_us, extra, len, body, sizeof body);

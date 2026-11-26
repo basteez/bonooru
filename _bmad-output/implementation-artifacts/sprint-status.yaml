@@ -54,12 +54,12 @@ development_status:
   2-7-controller-link-watchdog: done
   epic-2-retrospective: done
 
-  epic-3: in-progress
+  epic-3: done
   3-1-bridge-firmware-frame-aware-pipe-and-heartbeat: done
   3-2-rust-workspace-and-protocol-codec-ocb-core: done
   3-3-sans-io-link-session: done
   3-4-dev-tool-plays-a-melody-end-to-end: done
-  3-5-hardware-fail-safe-and-console_ready-checks: backlog
+  3-5-hardware-fail-safe-and-console_ready-checks: done
   epic-3-retrospective: optional
 
   epic-4: backlog

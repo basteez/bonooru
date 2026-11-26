@@ -11,9 +11,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ocb_core::link::{LinkEvent, Phase, SendStats, Session, SessionConfig, StatusView};
+use ocb_core::link::{
+    AbandonReason, LinkEvent, Phase, SendStats, Session, SessionConfig, StatusView,
+};
 use ocb_core::protocol::consts::HAT_DOWN;
 use ocb_core::protocol::{Info, Mode, NEUTRAL, NakReason, State};
+
+mod failsafe;
+mod watch;
 
 use crate::soak::Soak;
 use crate::tap::{DebugCounters, Tap};
@@ -29,6 +34,11 @@ pub trait Io {
     fn read(&mut self, until_us: u64, buf: &mut Vec<u8>) -> Result<(), String>;
     /// Writes all of `bytes`.
     fn write(&mut self, bytes: &[u8]) -> Result<(), String>;
+    /// After a port loss (the bridge unplugged): `Ok(true)` once the same
+    /// port is open again (DTR asserted), `Ok(false)` while it is absent.
+    fn reopen(&mut self) -> Result<bool, String>;
+    /// Waits until `t_us` with no port (the bridge is unplugged).
+    fn idle_until(&mut self, t_us: u64);
 }
 
 /// The person at the bench.
@@ -55,6 +65,18 @@ pub enum Piece {
         period_us: u32,
         /// START lead.
         lead_us: u32,
+    },
+    /// A.3 (Story 3.5): the embedded melody, round after round; each round
+    /// ends with a bridge unplug or a wire pull by the owner.
+    Failsafe {
+        /// Rounds to pass.
+        rounds: u32,
+    },
+    /// H.3 (Story 3.5): records `console_ready`, silences and reboots until
+    /// Ctrl+C or `max_us`.
+    Watch {
+        /// Stop by itself after this long.
+        max_us: u64,
     },
 }
 
@@ -147,6 +169,14 @@ enum Stop {
 type Step<T> = Result<T, Stop>;
 
 struct Runner<'a, I: Io, O: Owner> {
+    cfg: SessionConfig,
+    /// A silent controller fails the run (off in `watch`: sleep cuts it).
+    liveness: bool,
+    /// The port failed (read or write error): the bridge was unplugged.
+    port_lost: bool,
+    /// The first STATUS after `mark_loss` (failsafe rounds).
+    first_after_loss: Option<StatusView>,
+    watch: watch::WatchLog,
     io: &'a mut I,
     owner: &'a mut O,
     interrupt: Arc<AtomicBool>,
@@ -162,6 +192,10 @@ struct Runner<'a, I: Io, O: Owner> {
     playback_done: bool,
     stopped: bool,
     trouble: Option<String>,
+    /// The latest `PieceAbandoned` reason (failsafe tells a wire pull by it).
+    abandoned: Option<AbandonReason>,
+    /// The failsafe tally, printed on every ending (Ctrl+C included).
+    rounds: failsafe::Tally,
     written: u64,
     max_unsent: usize,
     max_unsent_streaming: usize,
@@ -183,6 +217,11 @@ pub fn run<I: Io, O: Owner>(
     cfg: SessionConfig,
 ) -> Outcome {
     let mut r = Runner {
+        cfg,
+        liveness: !matches!(piece, Piece::Watch { .. }),
+        port_lost: false,
+        first_after_loss: None,
+        watch: watch::WatchLog::default(),
         io,
         owner,
         interrupt,
@@ -198,6 +237,8 @@ pub fn run<I: Io, O: Owner>(
         playback_done: false,
         stopped: false,
         trouble: None,
+        abandoned: None,
+        rounds: failsafe::Tally::default(),
         written: 0,
         max_unsent: 0,
         max_unsent_streaming: 0,
@@ -206,7 +247,16 @@ pub fn run<I: Io, O: Owner>(
         stats_before: SendStats::default(),
         stats_last: SendStats::default(),
     };
+    let watch_mode = matches!(piece, Piece::Watch { .. });
     let res = r.go(piece);
+    let res = match res {
+        // `watch` ends with Ctrl+C: that is its normal end, then the analysis.
+        Err(Stop::Interrupted) if watch_mode => {
+            r.stop_quietly();
+            r.watch_verdict()
+        }
+        other => other,
+    };
     let (code, verdict) = match res {
         Ok(v) => (EXIT_PASS, v),
         Err(Stop::Fail(why)) => {
@@ -218,6 +268,10 @@ pub fn run<I: Io, O: Owner>(
             (EXIT_INTERRUPTED, line)
         }
     };
+    if r.rounds.total > 0 {
+        let line = r.rounds.line();
+        r.owner.say(&line);
+    }
     let summary = r.summary();
     r.owner.say(&summary);
     r.owner.say(&verdict);
@@ -241,7 +295,7 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         // moment a silent controller counts as gone (`check_alive`).
         // Once that moment has passed it bounds nothing: the endings
         // (`finish_stop`, `one_more_status`) still pump to their deadline.
-        let silent_at = match (self.info, self.status_at) {
+        let silent_at = match (self.info.filter(|_| self.liveness), self.status_at) {
             (Some(_), Some(t)) if t + self.lim.status_silent_us + 1 > now => {
                 t + self.lim.status_silent_us + 1
             }
@@ -256,6 +310,9 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
         self.buf.clear();
         let mut buf = std::mem::take(&mut self.buf);
         let read = self.io.read(wake, &mut buf);
+        if read.is_err() {
+            self.port_lost = true;
+        }
         let now = self.io.now_us();
         if !buf.is_empty() {
             self.tap.feed(&buf);
@@ -267,7 +324,10 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
             self.s.handle_timeout(now);
         }
         while let Some(chunk) = self.s.poll_transmit(now) {
-            self.io.write(&chunk)?;
+            if let Err(e) = self.io.write(&chunk) {
+                self.port_lost = true;
+                return Err(e);
+            }
             self.written += chunk.len() as u64;
         }
         while let Some(e) = self.s.poll_event() {
@@ -298,12 +358,28 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
                 } else {
                     self.ready_since = None;
                 }
+                if self.watch.active {
+                    self.watch_status(&st, now);
+                }
+                if self.first_after_loss.is_none() {
+                    self.first_after_loss = Some(st);
+                }
                 self.status = Some(st);
                 self.status_at = Some(now);
             }
+            LinkEvent::PlaybackDone if self.watch.active => self.watch_played(now),
             LinkEvent::PlaybackDone => self.playback_done = true,
             LinkEvent::Stopped => self.stopped = true,
+            LinkEvent::PieceAbandoned { reason } if self.watch.active => {
+                self.watch_abandon(reason, now);
+            }
+            LinkEvent::ControllerRebooted if self.watch.active => self.watch_reboot(now),
+            LinkEvent::Refused { reason, ty } if self.watch.active => {
+                self.owner
+                    .say(&format!("type {ty:#04x} refused: NAK {reason:?} (logged)"));
+            }
             LinkEvent::PieceAbandoned { reason } => {
+                self.abandoned = Some(reason);
                 self.trouble
                     .get_or_insert_with(|| format!("piece abandoned: {reason:?}"));
             }
@@ -353,7 +429,7 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
     /// Once connected, a controller that sends no STATUS for
     /// `status_silent_us` is gone (unplugged, powered off, hung).
     fn check_alive(&mut self) -> Step<()> {
-        if self.info.is_none() {
+        if self.info.is_none() || !self.liveness {
             return Ok(());
         }
         let now = self.io.now_us();
@@ -411,6 +487,9 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
     // ------------------------------------------------------------ phases
 
     fn go(&mut self, piece: Piece) -> Step<String> {
+        if let Piece::Watch { max_us } = piece {
+            return self.watch(max_us);
+        }
         self.connect()?;
         self.wait_ready()?;
         self.check_queue_empty()?;
@@ -423,6 +502,8 @@ impl<I: Io, O: Owner> Runner<'_, I, O> {
                 self.play(tl.events.into_iter(), n, last, tl.lead_us)?;
                 Ok("PASS".to_owned())
             }
+            Piece::Failsafe { rounds } => self.failsafe(rounds),
+            Piece::Watch { .. } => Err(Stop::Fail("unreachable".to_owned())),
             Piece::Soak {
                 duration_us,
                 period_us,

@@ -52,10 +52,19 @@
  *  34 seq_fallbacks u8, 35 stack_used_max u16, 37 boot_cause u8,
  *  38 reboot_count u8, 39 stall_reset_10us u16 (D31: the board's own
  *  stall-to-reset interval of the last liveness reboot, 10 us units).
- * Debug tail: 65 bytes with an empty window, at most 97; the largest
- * debug STATUS body is 11 + 97 = 108 bytes. */
+ */
 #define OCB_LINK_DEBUG_V4_LEN 41
-#define OCB_LINK_DEBUG_TAIL_MAX_LEN 97
+/* v5 (story 3.5): one fixed block right after v4, the hardware checks'
+ * timing, every u16 saturating:
+ *   0 loss_age_10us u16 (the last link loss: last valid heartbeat to the
+ *     abort, 10 us units; 0 before any loss), 2 loss_kind u8 (0 none,
+ *     1 heartbeat timeout, 2 break), 3 in_age_ms u16 (time since the last
+ *     IN report or handshake when the STATUS was built, ms: the clock of
+ *     the 100 ms polling-stall rule).
+ * Debug tail: 70 bytes with an empty window, at most 102; the largest
+ * debug STATUS body is 11 + 102 = 113 bytes. */
+#define OCB_LINK_DEBUG_V5_LEN 5
+#define OCB_LINK_DEBUG_TAIL_MAX_LEN 102
 
 /* RX ring entry layout: the PL011 data register value (dr & 0x0FFF). */
 #define OCB_LINK_RX_DATA_MASK 0x00FFu

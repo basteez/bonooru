@@ -27,6 +27,8 @@ void ocb_wd_init(ocb_wd *wd, uint16_t link_timeout_ms, uint16_t app_timeout_ms, 
     wd->last_hb_us = 0u;
     wd->breaks_seen = breaks_now;
     wd->release_owed = false;
+    wd->last_loss_age_us = 0u;
+    wd->last_loss_kind = 0u;
 }
 
 uint16_t ocb_wd_link_timeout_ms(const ocb_wd *wd)
@@ -89,6 +91,9 @@ OCB_CORE_RAMFUNC uint8_t ocb_wd_check(ocb_wd *wd, uint64_t now_us, uint8_t mode,
             verdict = (uint8_t)OCB_WD_BREAK;
         }
         if (verdict != 0u) {
+            const uint64_t age = ocb_wd_elapsed_us(now_us, wd->last_hb_us);
+            wd->last_loss_age_us = age > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)age;
+            wd->last_loss_kind = verdict;
             count_trip(wd);
             ocb_wd_note_loss(wd);
             wd->release_owed = false; /* the loss releases TX anyway */

@@ -120,6 +120,12 @@ pub struct FakeController {
     debug_extra: Option<Vec<u8>>,
     table_on_sync: Option<Vec<(u32, State)>>,
     published: State,
+    link_losses: u16,
+    loss_age_10us: u16,
+    loss_kind: u8,
+    ready_false_since: Option<u64>,
+    fall_delay_ms: u16,
+    now_us: u64,
     // timing
     last_status: Option<u64>,
     status_after_ack: bool,
@@ -161,6 +167,12 @@ impl FakeController {
             debug_extra: None,
             table_on_sync: None,
             published: NEUTRAL,
+            link_losses: 0,
+            loss_age_10us: 0,
+            loss_kind: 0,
+            ready_false_since: None,
+            fall_delay_ms: 0,
+            now_us: 0,
             last_status: None,
             status_after_ack: false,
             last_app_frame: 0,
@@ -201,7 +213,25 @@ impl FakeController {
 
     /// Sets `console_ready` (STATUS bit 1 and the `NOT_READY` gate).
     pub fn set_console_ready(&mut self, ready: bool) {
+        if self.console_ready && !ready {
+            self.ready_false_since = Some(self.now_us);
+        }
+        if ready {
+            self.ready_false_since = None;
+        }
         self.console_ready = ready;
+    }
+
+    /// v5 (Story 3.5): the loss-to-neutral age the next losses report.
+    pub fn set_loss_age_10us(&mut self, age: u16) {
+        self.loss_age_10us = age;
+    }
+
+    /// v5: how much later than the 100 ms rule the controller reports a
+    /// stalled console (`in_age_ms` = 101 + this + the time since the
+    /// fall); 0 models the firmware.
+    pub fn set_fall_delay_ms(&mut self, ms: u16) {
+        self.fall_delay_ms = ms;
     }
 
     /// Link loss (`false`: abort with `EVENT LINK_LOST`) or recovery.
@@ -209,6 +239,13 @@ impl FakeController {
     /// (only EVENTs leave until the TX release, Story 2.7).
     pub fn set_link_ok(&mut self, ok: bool) {
         if self.link_ok && !ok {
+            self.link_losses = self.link_losses.wrapping_add(1);
+            // v5 (Story 3.5): a loss is a break 5 ms after the last
+            // heartbeat unless a test set another age.
+            self.loss_kind = 2;
+            if self.loss_age_10us == 0 {
+                self.loss_age_10us = 500;
+            }
             self.tx_naks.clear();
             self.tx_info = None;
             self.tx_ack = None;
@@ -230,7 +267,10 @@ impl FakeController {
 
     /// Debug counters: when set, every STATUS carries these bytes as its
     /// `extra` tail (the debug layout of `docs/link-protocol.md`); `None`
-    /// (the default) sends a release-style STATUS.
+    /// (the default) sends a release-style STATUS. Like the firmware, every
+    /// link loss (`set_link_ok(false)`) adds one to `watchdog_trips`
+    /// (byte 2) and to `rx_be` (bytes 17-18, the break), on top of the
+    /// values given here.
     pub fn set_debug_extra(&mut self, extra: Option<Vec<u8>>) {
         self.debug_extra = extra;
     }
@@ -567,6 +607,37 @@ impl FakeController {
         }
     }
 
+    fn debug_tail(&self) -> Vec<u8> {
+        let mut t = self.debug_extra.clone().unwrap_or_default();
+        let n = self.link_losses;
+        if let Some(b) = t.get_mut(2) {
+            *b = b.wrapping_add(n.to_le_bytes()[0]);
+        }
+        // v5 after v4 (Story 3.5), with an empty P2 log window: offset 65.
+        if t.len() >= 70 {
+            let in_age: u16 = match self.ready_false_since {
+                _ if self.console_ready => 4,
+                Some(since) => {
+                    let ms = (self.now_us.saturating_sub(since) / 1000).min(60_000) as u16;
+                    101u16.saturating_add(self.fall_delay_ms).saturating_add(ms)
+                }
+                None => 101u16.saturating_add(self.fall_delay_ms),
+            };
+            let [a0, a1] = self.loss_age_10us.to_le_bytes();
+            let [i0, i1] = in_age.to_le_bytes();
+            if let Some(x) = t.get_mut(65..70) {
+                x.copy_from_slice(&[a0, a1, self.loss_kind, i0, i1]);
+            }
+        }
+        if let (Some(&lo), Some(&hi)) = (t.get(17), t.get(18)) {
+            let be = u16::from_le_bytes([lo, hi]).wrapping_add(n).to_le_bytes();
+            if let Some(x) = t.get_mut(17..19) {
+                x.copy_from_slice(&be);
+            }
+        }
+        t
+    }
+
     fn status(&mut self, now_us: u64) {
         let now = if self.mode == Mode::Playing && now_us >= self.t0 {
             u32::try_from(now_us - self.t0).unwrap_or(u32::MAX)
@@ -588,7 +659,7 @@ impl FakeController {
             abort_count: self.abort_count,
             last_event: self.last_event,
             flags,
-            extra: self.debug_extra.clone().unwrap_or_default(),
+            extra: self.debug_tail(),
         };
         if let Ok(body) = st.encode() {
             self.send(MSG_STATUS, &body);
@@ -600,6 +671,7 @@ impl FakeController {
     /// Advances the controller to `now_us`: the scheduler (or the sink), the
     /// DIRECT app timeout and the STATUS cadence.
     pub fn tick(&mut self, now_us: u64) {
+        self.now_us = now_us;
         if self.mode == Mode::Playing {
             if let Some(&(t, s)) = self.queue.front()
                 && now_us >= self.t0 + u64::from(t)

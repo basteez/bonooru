@@ -151,8 +151,8 @@ Hardware-risk spikes and roadmap gates (from roadmap / test plan / risk register
 UX open questions to carry as spikes or explicit AC TODOs (not guesses)
 - OQ-1 Ocarina auto-open (D-pad left before Play) vs leaving it to the user — ties to U9; resolve after Spike 1.
 - OQ-2 Fingering chart unverified — all lane-header fingerings, staff glyphs, visualizer captions come from the community hypothesis; must be verified in game (Spike 1) before release copy/screenshots.
-- OQ-3 STATUS staleness timeout (candidate 3 × 50 ms = 150 ms → LEDs `unknown`) — decide with H.3 measurements.
-- OQ-4 `console_ready` 100 ms polling-stall rule unverified on hardware (H.3); Play gating to be revisited after hands-on testing.
+- OQ-3 STATUS staleness timeout (candidate 3 × 50 ms = 150 ms → LEDs `unknown`) — decide with H.3 measurements. RESOLVED 2026-11-26 (Story 3.5): 150 ms.
+- OQ-4 `console_ready` 100 ms polling-stall rule unverified on hardware (H.3); Play gating to be revisited after hands-on testing. RESOLVED 2026-11-26 (Story 3.5): verified and kept at 100 ms.
 - OQ-5 Windows, bridge alone, main screen: how to show an unconfirmed bridge (no product string, no INFO).
 - OQ-6 Bridge LED label without INFO ("Bridge – found" assumed).
 - OQ-7 Status warning/error/unknown hexes, `amber-ink`, `scrim`, editor font (proposed).
