@@ -60,7 +60,7 @@ development_status:
   3-3-sans-io-link-session: done
   3-4-dev-tool-plays-a-melody-end-to-end: done
   3-5-hardware-fail-safe-and-console_ready-checks: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
 
   epic-4: backlog
   4-1-app-shell-with-theme-fonts-and-main-screen-regions: backlog
