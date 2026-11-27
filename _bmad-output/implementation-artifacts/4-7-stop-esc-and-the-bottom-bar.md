@@ -470,6 +470,7 @@ Dry run after the fixes: green; it now has step 3c (Enter held): `stop requested
 **Not done here (open).** Task 9's push and the `app` workflow on three OS (coordinator). Task 12 H.34 bench with the owner (and the comment adding H.34 to issue #43's to-do, posted when the bench is recorded). Task 13 owner eye check.
 
 *CI fix (coordinator), macOS runner at `94e9bba`:* `g18_no_nagging` (Story 4.6) failed with "the worker kept running": the worker thread follows the fake clock at its own pace and its last snapshot lagged the 200 frames on the slow runner (ubuntu and windows green, local green). The test now keeps stepping, still asserting that the dialog never comes back, until the snapshot reaches 10 s or 5 s of real time pass; the assertion itself is unchanged, so a worker that really stops still fails it (after the 5 s bound). Not a product change.
+*CI fix 2 (coordinator), macOS runner at `2ed1344`:* `g13_stalled_worker_is_visible` (Story 4.4) failed its lower bound (`elapsed >= 2900 ms`): `start` was taken after the first frame, while the stall clock starts at the worker's last snapshot, so a slow first frame shortened the measured time. `start` is now taken before the app exists (the lower bound then always holds for a correct 3 s rule and still fails for an early stall) and the upper bound is 4500 ms. Not a product change.
 
 ### Completion Notes List
 

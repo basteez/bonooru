@@ -150,16 +150,19 @@ fn g13_dead_worker_is_visible() {
 
 #[test]
 fn g13_stalled_worker_is_visible() {
-    // The listing blocks 5 s: no snapshot for 3 s means stalled.
+    // The listing blocks 5 s: no snapshot for 3 s means stalled. `start`
+    // is taken before the app (and its worker) exists, so the lower bound
+    // holds however slow the first frame is on a CI runner: the stall
+    // clock starts at the worker's last snapshot, never before this.
+    let start = Instant::now();
     let mut h = app_on(BlockingBackend {
         delay: Duration::from_secs(5),
     });
     h.run_steps(1);
     assert_eq!(h.state().worker_health(), WorkerHealth::Running);
-    let start = Instant::now();
     while h.state().worker_health() != WorkerHealth::Stalled {
         assert!(
-            start.elapsed() < Duration::from_millis(3500),
+            start.elapsed() < Duration::from_millis(4500),
             "never stalled"
         );
         std::thread::sleep(Duration::from_millis(20));
