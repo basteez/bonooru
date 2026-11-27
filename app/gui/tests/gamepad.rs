@@ -201,6 +201,32 @@ fn g22_pad_geometry() {
         g.abxy_well.center.distance(o + vec2(212.0, 88.0)) <= 0.5 && g.abxy_well.radius == 31.0
     );
     assert_eq!(g.chips.len(), 11);
+    // Every chip and both "mouse" anchors at the mock's coordinates.
+    for (k, (x, y, w)) in [
+        (11.5, 9.0, 13.0),
+        (23.5, 29.0, 13.0),
+        (243.5, 29.0, 13.0),
+        (255.5, 9.0, 13.0),
+        (205.5, 45.0, 13.0),
+        (170.5, 83.0, 13.0),
+        (240.5, 83.0, 13.0),
+        (205.5, 117.0, 13.0),
+        (90.5, 47.0, 15.0),
+        (175.5, 47.0, 15.0),
+        (66.0, 151.0, 76.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            common::rect_eq(g.chips[k].0, rect(x, y, w, 13.0), 0.5),
+            "chip {k}"
+        );
+    }
+    // The svg's text baselines (118, 152) less half the 10 px text's
+    // x-height: the labels' centres.
+    assert!(g.mouse_labels[0].distance(o + vec2(70.0, 114.5)) <= 0.5);
+    assert!(g.mouse_labels[1].distance(o + vec2(176.0, 148.5)) <= 0.5);
     assert!(common::rect_eq(
         g.chips[10].0,
         rect(66.0, 151.0, 76.0, 13.0),
@@ -444,13 +470,24 @@ fn g22_convex_and_outline() {
         .min;
     let g = PadGeometry::new(o);
     let outline = g.body_outline();
-    let drawn = flat
+    // Exactly one closed stroked path with no fill and more points than a
+    // cross: the body outline.
+    let closed: Vec<Vec<Pos2>> = flat
         .iter()
-        .find_map(|f| match &f.shape {
-            Shape::Path(p) if p.closed && p.points.len() == outline.len() => Some(p.points.clone()),
+        .filter_map(|f| match &f.shape {
+            Shape::Path(p)
+                if p.closed
+                    && p.fill == Color32::TRANSPARENT
+                    && p.stroke.width > 0.0
+                    && p.points.len() > 12 =>
+            {
+                Some(p.points.clone())
+            }
             _ => None,
         })
-        .expect("the body outline");
+        .collect();
+    assert_eq!(closed.len(), 1, "one body outline");
+    let drawn = closed[0].clone();
     assert_eq!(drawn, outline);
     // Segment end points of the mock path.
     let mut ends = vec![BODY_START];
@@ -480,6 +517,43 @@ fn g22_convex_and_outline() {
         signs.iter().all(|s| *s >= 0.0) || signs.iter().all(|s| *s <= 0.0),
         "{signs:?}"
     );
+    // The drawn mesh: every triangle convex by construction; all of one
+    // orientation (no piece folds over another), and their area adds up to
+    // the outline's (the pieces cover it exactly, no overlap).
+    let mesh = flat
+        .iter()
+        .find_map(|f| match &f.shape {
+            Shape::Mesh(m) => Some(m.clone()),
+            _ => None,
+        })
+        .expect("the body mesh");
+    let area2 = |a: Pos2, b: Pos2, c: Pos2| (b - a).x * (c - a).y - (b - a).y * (c - a).x;
+    let tris: Vec<f32> = mesh
+        .indices
+        .chunks(3)
+        .map(|t| {
+            let p = |i: u32| mesh.vertices[i as usize].pos;
+            area2(p(t[0]), p(t[1]), p(t[2]))
+        })
+        .collect();
+    assert_eq!(tris.len(), outline.len());
+    assert!(
+        tris.iter().all(|a| *a >= 0.0) || tris.iter().all(|a| *a <= 0.0),
+        "{tris:?}"
+    );
+    let mesh_area: f32 = tris.iter().map(|a| a.abs()).sum::<f32>() / 2.0;
+    let poly_area = (0..n)
+        .map(|i| {
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
+            a.x * b.y - a.y * b.x
+        })
+        .sum::<f32>()
+        .abs()
+        / 2.0;
+    assert!(
+        (mesh_area - poly_area).abs() <= poly_area * 1e-3,
+        "{mesh_area} vs {poly_area}"
+    );
 }
 
 /// AC 3: six legend rows, their texts and fonts, one WELL divider each.
@@ -507,6 +581,12 @@ fn g22_legend() {
         assert_eq!(
             (n.font_id.size, n.color),
             (12.5, theme::PARCHMENT),
+            "{name}"
+        );
+        // Weight 600 (`typography.legend-name`).
+        assert_eq!(
+            n.coords,
+            egui::epaint::text::VariationCoords::new([("wght", 600.0)]),
             "{name}"
         );
         let k = find(keys);
@@ -753,5 +833,69 @@ fn g22_text_heights_fit() {
                 }
             });
         hn.run();
+    }
+}
+
+/// Review 2026-11-27 (AC 15, coordinator decision): the D-pad's cross
+/// outline takes the tint of its held (else hovered) arm, a stick's well
+/// ring the tint of its knob; neither while blocked.
+#[test]
+fn g22_border_tints() {
+    let cross = |hn: &Harness<'_, Rect>| {
+        common::shapes_flat(&hn.output().shapes)
+            .iter()
+            .find_map(|f| match &f.shape {
+                Shape::Path(p) if p.closed && p.points.len() == 12 => {
+                    common::stroke_color(&f.shape)
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let ring = |hn: &Harness<'_, Rect>| {
+        common::shapes_flat(&hn.output().shapes)
+            .iter()
+            .find_map(|f| match &f.shape {
+                Shape::Circle(k) if k.radius == 17.0 => Some(k.stroke.color),
+                _ => None,
+            })
+            .unwrap()
+    };
+    for enabled in [true, false] {
+        let view = PadView {
+            enabled,
+            held: Some(Control::DLeft),
+            dragging: Some(Stick::Left),
+            ..PadView::default()
+        };
+        let hn = panel(1280.0, 800.0, 1.0, view);
+        let want = if enabled {
+            ButtonState::Pressed.tint(theme::RIM)
+        } else {
+            theme::RIM
+        };
+        assert!(close(cross(&hn), want), "cross held enabled={enabled}");
+        assert!(close(ring(&hn), want), "ring dragged enabled={enabled}");
+        let mut hn = panel(
+            1280.0,
+            800.0,
+            1.0,
+            PadView {
+                enabled,
+                ..PadView::default()
+            },
+        );
+        let pos = hn
+            .get_by_role_and_label(Role::Button, "D-pad up")
+            .rect()
+            .center();
+        hn.input_mut().events.push(Event::PointerMoved(pos));
+        hn.run();
+        let want = if enabled {
+            ButtonState::Hovered.tint(theme::RIM)
+        } else {
+            theme::RIM
+        };
+        assert!(close(cross(&hn), want), "cross hovered enabled={enabled}");
     }
 }

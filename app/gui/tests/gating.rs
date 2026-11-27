@@ -304,6 +304,12 @@ fn g17_table() {
         Block::samples().to_vec(),
         want.iter().map(|w| w.0).collect::<Vec<_>>()
     );
+    // Each sample's rank (the exhaustive match) is its place: the precedence
+    // `evaluate` applies, and the last rank closes the list.
+    for (i, b) in Block::samples().iter().enumerate() {
+        assert_eq!(b.rank(), i, "{b:?}");
+    }
+    assert_eq!(Block::SwitchNotReady.rank() + 1, Block::samples().len());
     for (b, hint, name) in want {
         assert_eq!(b.gamepad_hint(), hint);
         assert_eq!(b.as_str(), name);

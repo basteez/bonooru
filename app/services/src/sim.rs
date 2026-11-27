@@ -263,6 +263,13 @@ pub struct FakeState {
     /// worker on a real thread then does not spin; the real port's 1 ms
     /// timeout does the same).
     pub read_sleep: Option<Duration>,
+    /// The fake clock at every read call, bytes or not (a test on a real
+    /// worker thread sees the worker's passes; Story 4.8 review).
+    pub read_calls: Vec<u64>,
+    /// While set, every read call waits (real time, 1 ms steps) before it
+    /// reads: the worker thread is held in its pass, as a stuck worker
+    /// (Story 4.8: a full command queue).
+    pub hold: bool,
     generation: u64,
 }
 
@@ -453,7 +460,13 @@ impl Port for FakeOpenPort {
         let generation = self.generation;
         let name = self.name.clone();
         let mut st = self.state();
+        while st.hold {
+            drop(st);
+            std::thread::sleep(Duration::from_millis(1));
+            st = self.state();
+        }
         let now = st.clock.now_us();
+        st.read_calls.push(now);
         let Some(p) = st.port_mut(&name) else {
             return Err(gone());
         };

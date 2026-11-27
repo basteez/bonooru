@@ -104,19 +104,26 @@ impl Block {
             Self::ControllerLink,
             Self::SwitchNotReady,
         ];
-        // Exhaustive on purpose: a new variant fails to compile here until
-        // it is listed above (its position is its precedence).
-        for b in &all {
-            let _listed: usize = match b {
-                Self::Worker => 0,
-                Self::NoBridge => 1,
-                Self::BridgeNotReady => 2,
-                Self::FirmwareUpdate { .. } => 3,
-                Self::ControllerLink => 4,
-                Self::SwitchNotReady => 5,
-            };
+        // Every entry's rank (an exhaustive `match`: a new variant fails to
+        // compile until it has one) must be its place here (its
+        // precedence); G.17 runs this.
+        for (i, b) in all.iter().enumerate() {
+            assert_eq!(b.rank(), i, "Block::samples() out of order");
         }
         all
+    }
+
+    /// The precedence of this reason (0 = first), an exhaustive `match`.
+    #[must_use]
+    pub const fn rank(&self) -> usize {
+        match self {
+            Self::Worker => 0,
+            Self::NoBridge => 1,
+            Self::BridgeNotReady => 2,
+            Self::FirmwareUpdate { .. } => 3,
+            Self::ControllerLink => 4,
+            Self::SwitchNotReady => 5,
+        }
     }
 
     /// The inline hint the gamepad panel shows for this block.

@@ -122,7 +122,8 @@ pub enum WorkerCommand {
     Stop,
     /// One DIRECT state from the virtual gamepad (Story 4.8): handed to
     /// `Session::set_state` in command order; refused and logged, never
-    /// written, when the controller would refuse it.
+    /// written, when the controller would refuse it (a refused NEUTRAL in
+    /// `Connected` becomes a STOP).
     SetState(State),
 }
 
@@ -570,7 +571,7 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             let now = self.clock.now_us();
             match cmd {
                 WorkerCommand::Stop => self.handle_stop(now),
-                WorkerCommand::SetState(s) => self.handle_set_state(s),
+                WorkerCommand::SetState(s) => self.handle_set_state(now, s),
                 WorkerCommand::Shutdown => {}
             }
         }
@@ -1035,7 +1036,12 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
 
     /// A `SetState` command (Story 4.8): written only where the controller
     /// would accept it (D8, C.27); every refusal is one `pad dropped` line.
-    fn handle_set_state(&mut self, state: State) {
+    /// A release (NEUTRAL) is never lost while the session is `Connected`:
+    /// when it would be refused there (`no_link`, `not_ready`, a local
+    /// session refusal), the worker sends STOP instead (STOP releases
+    /// everything and is accepted whatever the console does, AD-8) and the
+    /// line ends `action=stop` (review 2026-11-27).
+    fn handle_set_state(&mut self, now: u64, state: State) {
         self.dirty = true;
         let Some(c) = self.conn.as_mut() else {
             self.log.log("pad", "dropped reason=no_port port=-");
@@ -1054,21 +1060,20 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                 Some(_) => None,
             },
         };
-        if let Some(reason) = refused {
-            self.log
-                .log("pad", format!("dropped reason={reason} port={port}"));
-            return;
-        }
-        match c.session.set_state(state) {
-            Ok(()) => self.log.log(
-                "pad",
-                format!(
-                    "sent port={port} buttons=0x{:04x} hat={} lx={} ly={} rx={} ry={}",
-                    state.buttons, state.hat, state.lx, state.ly, state.rx, state.ry
-                ),
-            ),
-            Err(e) => {
-                let reason = match e {
+        let reason = match refused {
+            Some(r) => r,
+            None => match c.session.set_state(state) {
+                Ok(()) => {
+                    self.log.log(
+                        "pad",
+                        format!(
+                            "sent port={port} buttons=0x{:04x} hat={} lx={} ly={} rx={} ry={}",
+                            state.buttons, state.hat, state.lx, state.ly, state.rx, state.ry
+                        ),
+                    );
+                    return;
+                }
+                Err(e) => match e {
                     CommandError::NoLink => "no_link",
                     CommandError::Busy => "busy",
                     CommandError::Stopping => "stopping",
@@ -1076,11 +1081,21 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                     CommandError::BadState | CommandError::Order | CommandError::EmptyQueue => {
                         "bad_state"
                     }
-                };
-                self.log
-                    .log("pad", format!("dropped reason={reason} port={port}"));
-            }
+                },
+            },
+        };
+        if state.is_neutral() && c.session.phase() == Phase::Connected {
+            // `stop()` cannot fail in `Connected`.
+            let _ = c.session.stop();
+            self.stop_cmd_us.get_or_insert(now);
+            self.log.log(
+                "pad",
+                format!("dropped reason={reason} port={port} action=stop"),
+            );
+            return;
         }
+        self.log
+            .log("pad", format!("dropped reason={reason} port={port}"));
     }
 
     // ------------------------------------------------------------ session

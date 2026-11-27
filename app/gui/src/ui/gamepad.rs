@@ -614,15 +614,11 @@ fn paint_controls(
     painter.circle_filled(geo.abxy_well.center, geo.abxy_well.radius, WELL);
     for (i, s) in Stick::ALL.into_iter().enumerate() {
         let well = geo.well(s);
-        painter.circle(
-            well.center,
-            well.radius,
-            WELL,
-            paint::stroke(BORDER, BORDER_COLOR, ppp),
-        );
+        let st = state(Target::Stick(s));
+        // The well's ring is the stick's border: tinted with its knob.
+        painter.circle(well.center, well.radius, WELL, border(st));
         let (x, y) = view.sticks.get(i).copied().unwrap_or((128, 128));
         let knob = well.center + knob_offset(x, y);
-        let st = state(Target::Stick(s));
         painter.circle(knob, geo.knob_radius, st.tint(FILL), border(st));
     }
     // The D-pad: the centre square, the four arms (each tinted on its own),
@@ -643,10 +639,23 @@ fn paint_controls(
             }
         }
     }
-    painter.add(PathShape::closed_line(
-        dpad_outline(geo),
-        paint::stroke(BORDER, BORDER_COLOR, ppp),
-    ));
+    // The cross outline is the D-pad arms' border: tinted with the arm
+    // that is held (else hovered).
+    let arms = [
+        Control::DUp,
+        Control::DDown,
+        Control::DLeft,
+        Control::DRight,
+    ]
+    .map(|c| state(Target::Control(c)));
+    let cross = if arms.contains(&ButtonState::Pressed) {
+        ButtonState::Pressed
+    } else if arms.contains(&ButtonState::Hovered) {
+        ButtonState::Hovered
+    } else {
+        ButtonState::Idle
+    };
+    painter.add(PathShape::closed_line(dpad_outline(geo), border(cross)));
     for (c, sym) in [
         (Control::DUp, Symbol::TriangleUp),
         (Control::DDown, Symbol::ChevronDown),

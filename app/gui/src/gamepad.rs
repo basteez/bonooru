@@ -428,12 +428,17 @@ pub fn stick_end_line(s: Stick, reason: Release) -> String {
     format!("stick={} end reason={}", s.log_name(), reason.as_str())
 }
 
-/// `pad ignored`: a press while the gate blocks the gamepad; `reason` is
-/// `gating::Block::as_str`.
+/// `pad ignored`: a press while the gate blocks the gamepad (`reason` is
+/// `gating::Block::as_str`) or while the pad holds another input
+/// ([`BUSY`]).
 #[must_use]
 pub fn ignored_line(t: Target, reason: &str) -> String {
     format!("ignored control={} reason={reason}", t.ignored_name())
 }
+
+/// The `pad ignored` reason of a press while the pad already holds an
+/// input (one at a time by mouse; review 2026-11-27).
+pub const BUSY: &str = "busy";
 
 /// `pad command`: a `try_send` that failed (`queue_full`, `no_worker`,
 /// `worker_gone`).
@@ -473,6 +478,11 @@ pub struct Pad {
     /// A `command` line was written for the current failure streak.
     fail_logged: bool,
     last_mode: Option<Mode>,
+    /// When the newest STATUS seen arrived (worker clock, µs).
+    last_status_rx: Option<u64>,
+    /// The newest STATUS arrival known when the last state was handed to
+    /// the worker: rule 8d honours only a STATUS that arrived later.
+    sent_after_rx: Option<u64>,
     lines: Vec<String>,
 }
 
@@ -498,6 +508,8 @@ impl Pad {
             in_flight: None,
             fail_logged: false,
             last_mode: None,
+            last_status_rx: None,
+            sent_after_rx: None,
             lines: Vec::new(),
         }
     }
@@ -562,8 +574,13 @@ impl Pad {
     }
 
     /// A pointer press on a control (its rising edge). Ignored while
-    /// something is held (one control at a time) or the press is spent.
+    /// something is held (one control at a time: `pad ignored … reason=busy`)
+    /// or the press is spent.
     pub fn press(&mut self, control: Control, now_us: u64) {
+        if !self.spent && !self.free() {
+            self.lines
+                .push(ignored_line(Target::Control(control), BUSY));
+        }
         if self.spent || !self.free() {
             self.pointer_down = true;
             return;
@@ -581,6 +598,8 @@ impl Pad {
     /// later). Ignored while something is held.
     pub fn tap(&mut self, control: Control, now_us: u64) {
         if !self.free() {
+            self.lines
+                .push(ignored_line(Target::Control(control), BUSY));
             return;
         }
         self.held = Some(Held {
@@ -593,6 +612,9 @@ impl Pad {
 
     /// A pointer press on a stick's well starts a drag at `offset`.
     pub fn stick_start(&mut self, stick: Stick, offset: (f32, f32), full: f32) {
+        if !self.spent && !self.free() {
+            self.lines.push(ignored_line(Target::Stick(stick), BUSY));
+        }
         if self.spent || !self.free() {
             self.pointer_down = true;
             return;
@@ -679,16 +701,30 @@ impl Pad {
             self.last_sent = NEUTRAL;
             self.pending = false;
         }
+        if matches!(reason, Release::Stop | Release::Gate) {
+            // The STATUS the UI holds may predate the STOP: the next one only
+            // re-arms rule 8d (review 2026-11-27).
+            self.last_mode = None;
+        }
     }
 
-    /// The controller mode from the latest STATUS (`None` without one):
-    /// a DIRECT → IDLE change the pad did not ask for drops what it holds
-    /// (rule 8d, D7). IDLE → IDLE never does.
-    pub fn observe_mode(&mut self, mode: Option<Mode>) {
-        if self.last_mode == Some(Mode::Direct) && mode == Some(Mode::Idle) {
+    /// The controller mode from the latest STATUS and when it arrived
+    /// (worker clock; `None` without one): a DIRECT → IDLE change the pad
+    /// did not ask for drops what it holds (rule 8d, D7), but only for a
+    /// STATUS that arrived after the last state was handed over (an older
+    /// one cannot know about it). IDLE → IDLE never does.
+    pub fn observe_mode(&mut self, mode: Option<Mode>, rx_us: Option<u64>) {
+        let newer = match (rx_us, self.sent_after_rx) {
+            (Some(rx), Some(sent)) => rx > sent,
+            _ => true,
+        };
+        if self.last_mode == Some(Mode::Direct) && mode == Some(Mode::Idle) && newer {
             self.release_all(Release::ControllerIdle);
         }
-        self.last_mode = mode;
+        if rx_us.is_none() || rx_us != self.last_status_rx {
+            self.last_mode = mode;
+        }
+        self.last_status_rx = rx_us;
     }
 
     /// The `pad` lines produced since the last call (kind tag `pad`).
@@ -720,6 +756,7 @@ impl Pad {
                 self.last_sent = s;
                 self.pending = false;
                 self.fail_logged = false;
+                self.sent_after_rx = self.last_status_rx;
             }
             Err(r) => {
                 self.pending = true;
@@ -914,9 +951,9 @@ mod tests {
     #[test]
     fn controller_idle_only_on_direct_to_idle() {
         let mut p = Pad::new();
-        p.observe_mode(Some(Mode::Idle));
+        p.observe_mode(Some(Mode::Idle), None);
         p.press(Control::A, 0);
-        p.observe_mode(Some(Mode::Idle));
+        p.observe_mode(Some(Mode::Idle), None);
         assert_eq!(
             p.held(),
             Some(Control::A),
@@ -924,14 +961,65 @@ mod tests {
         );
         let _ = p.take_send();
         p.sent(Ok(()));
-        p.observe_mode(Some(Mode::Direct));
-        p.observe_mode(Some(Mode::Idle));
+        p.observe_mode(Some(Mode::Direct), None);
+        p.observe_mode(Some(Mode::Idle), None);
         assert_eq!(p.held(), None);
         assert_eq!(p.take_send(), None, "nothing sent for it");
         assert!(
             p.take_lines()
                 .contains(&"release control=a reason=controller_idle".to_owned())
         );
+    }
+
+    /// Review 2026-11-27: after a STOP the UI may still hold a DIRECT
+    /// STATUS; a press sent before the IDLE STATUS arrives is not dropped by
+    /// that older IDLE STATUS.
+    #[test]
+    fn controller_idle_ignores_a_stale_status_after_stop() {
+        let mut p = Pad::new();
+        p.observe_mode(Some(Mode::Direct), Some(1_000));
+        p.press(Control::A, 0);
+        let _ = p.take_send();
+        p.sent(Ok(()));
+        p.release_all(Release::Stop);
+        p.pointer_up(10);
+        // The same (pre-STOP) STATUS seen again: nothing re-armed.
+        p.observe_mode(Some(Mode::Direct), Some(1_000));
+        p.press(Control::B, 20);
+        let _ = p.take_send();
+        p.sent(Ok(()));
+        // The IDLE STATUS of the STOP arrives late.
+        p.observe_mode(Some(Mode::Idle), Some(1_050));
+        assert_eq!(p.held(), Some(Control::B), "B is not dropped");
+        // A STATUS older than the send never drops it either.
+        let mut q = Pad::new();
+        q.observe_mode(Some(Mode::Direct), Some(2_000));
+        q.press(Control::X, 0);
+        let _ = q.take_send();
+        q.sent(Ok(()));
+        q.observe_mode(Some(Mode::Idle), Some(2_000));
+        assert_eq!(q.held(), Some(Control::X));
+        q.observe_mode(Some(Mode::Idle), Some(2_050));
+        assert_eq!(q.held(), None, "a newer IDLE STATUS drops it");
+    }
+
+    #[test]
+    fn busy_presses_are_logged() {
+        let mut p = Pad::new();
+        p.press(Control::A, 0);
+        p.pointer_up(10);
+        p.press(Control::B, 20);
+        p.tap(Control::X, 30);
+        let lines = p.take_lines();
+        assert!(
+            lines.contains(&"ignored control=b reason=busy".to_owned()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"ignored control=x reason=busy".to_owned()),
+            "{lines:?}"
+        );
+        assert_eq!(p.held(), Some(Control::A));
     }
 
     #[test]

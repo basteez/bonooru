@@ -20,7 +20,7 @@
 mod common;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use common::{Pat, TestClock, Wake};
@@ -57,13 +57,15 @@ const LOG_NAMES: [&str; 16] = [
     "a", "b", "x", "y", "dup", "ddown", "dleft", "dright", "l", "r", "zl", "zr", "minus", "plus",
     "home", "capture",
 ];
-const BLOCKS: [&str; 6] = [
+/// `pad ignored` reasons: the six gate reasons and `busy`.
+const IGNORED_REASONS: [&str; 7] = [
     "worker",
     "no_bridge",
     "bridge_not_ready",
     "firmware_update",
     "controller_link",
     "switch_not_ready",
+    "busy",
 ];
 
 /// An app `pad` line (its text after `pad `) against its pattern (Dev Notes
@@ -104,7 +106,7 @@ fn is_app_pad_line(text: &str) -> bool {
         "ignored",
         &[
             ("control", Pat::OneOf(ignored_controls)),
-            ("reason", Pat::OneOf(&BLOCKS)),
+            ("reason", Pat::OneOf(&IGNORED_REASONS)),
         ],
     ) || matches!(text, "stick=left start" | "stick=right start")
         || ["left", "right"].iter().any(|s| {
@@ -160,7 +162,7 @@ struct Rig {
     clock: FakeClock,
     ui: TestClock,
     backend: FakeBackend,
-    published: Arc<AtomicU64>,
+    _published: Arc<AtomicU64>,
     _logger: Logger,
     sink: MemorySink,
     log: LogHandle,
@@ -203,7 +205,7 @@ fn rig_with(ports: Vec<FakePort>, link: bool) -> Rig {
         clock,
         ui,
         backend,
-        published,
+        _published: published,
         _logger: logger,
         sink,
         log: app_log,
@@ -243,40 +245,40 @@ impl Rig {
             .collect()
     }
 
-    /// The time of the last read that returned bytes (the controller's
-    /// STATUS every 50 ms while it is connected).
-    fn last_read(&self) -> Option<u64> {
-        self.backend.state().reads.last().map(|r| r.0)
+    /// The bridge port is open (opened more often than closed).
+    fn port_open(&self) -> bool {
+        let st = self.backend.state();
+        let closes = st.closes.iter().filter(|c| c.1 == CU).count();
+        st.opens_of(CU).len() > closes
     }
 
-    /// One frame `d_us` later on both clocks. While the controller talks
-    /// (a read in the last 100 ms of worker time) it waits, bounded, until
-    /// the worker has read the STATUS of the new time, so the LEDs never
-    /// age because the worker thread was slow (slow CI runners); otherwise
-    /// it only yields 1 ms.
+    /// One frame `d_us` later on both clocks. With the port open the
+    /// worker's clock moves first and the frame waits until the worker has
+    /// run a whole pass at the new time (two read calls at or after it:
+    /// the first pass read and published), then the UI clock follows. A
+    /// worker that does not get there within `LIMIT` fails the test
+    /// ("worker starved") instead of letting the LEDs age (review
+    /// 2026-11-27: slow CI runners).
     fn frame(&mut self, d_us: u64) {
         if d_us > 0 {
-            let prev = self.clock.now_us();
             self.clock.advance(d_us);
-            self.ui.advance_us(d_us);
             let now = self.clock.now_us();
-            let alive = self.last_read().is_some_and(|t| t + 100_000 >= prev);
-            let behind = self.last_read().is_none_or(|t| t + 60_000 < now);
-            if alive && behind {
-                // Wait for the new STATUS to be read, then for the snapshot
-                // of that pass to be published (it follows the read).
-                let published = self.published.load(Ordering::SeqCst);
-                let start = Instant::now();
-                let bound = Duration::from_millis(300);
-                while self.last_read().is_none_or(|t| t + 60_000 < now) && start.elapsed() < bound {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                while self.published.load(Ordering::SeqCst) == published && start.elapsed() < bound
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+            let start = Instant::now();
+            while self.port_open()
+                && self
+                    .backend
+                    .state()
+                    .read_calls
+                    .iter()
+                    .rev()
+                    .take_while(|t| **t >= now)
+                    .count()
+                    < 2
+            {
+                assert!(start.elapsed() < LIMIT, "worker starved at {now} µs");
+                std::thread::sleep(Duration::from_millis(1));
             }
-            std::thread::sleep(Duration::from_millis(1));
+            self.ui.advance_us(d_us);
         }
         self.h.step();
     }
@@ -574,65 +576,169 @@ fn g23_one_send_per_change() {
     assert_eq!(r.direct(), vec![with(BTN_A)]);
 }
 
-/// AC 6: with the worker's queue full (64 commands queued to a worker that
-/// is never stepped: a stalled worker) the send fails (`pad command=
-/// queue_full`, once per failure streak) and the current state goes out on
-/// the first frame after the queue has room (last state wins). The pad is
-/// driven through the same calls `App::pad_frame` makes.
+/// AC 6 (review 2026-11-27: through the real app): the worker thread held
+/// in its pass (a stuck worker), the left stick dragged until the command
+/// queue (64) is full: one `pad command=queue_full`, a resend wake of
+/// `RESEND_AFTER_US`; the worker let go, the queue drains and the pad
+/// sends its current state: the controller ends with exactly the pad's
+/// state.
 #[test]
 fn g23_queue_full_resends() {
-    use ocb_app::gamepad::Pad;
-    use ocb_services::worker::{TrySendError, WorkerCommand, WorkerCore};
-    let clock = FakeClock::at(0);
-    let sink = MemorySink::new();
-    let logger = Logger::spawn(Box::new(sink.clone()), false, None);
-    let (mut core, ends) = WorkerCore::new(
-        FakeBackend::new(clock.clone()),
-        clock,
-        ocb_core::device::Rules::MACOS,
-        logger.handle(),
-        Box::new(|| {}),
-    );
-    let mut queued = 0;
-    while ends.commands.try_send(WorkerCommand::Stop).is_ok() {
-        queued += 1;
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    let c = r.stick_center(Stick::Left);
+    r.press(c);
+    r.backend.state().hold = true;
+    // Room for the worker to enter its held read.
+    std::thread::sleep(Duration::from_millis(20));
+    // UI time does not move while the worker is held: the LEDs stay fresh.
+    let mut k = 0;
+    while !r.pads().iter().any(|l| l == "command=queue_full") {
+        k += 1;
+        assert!(k < 200, "queue never full: {:?}", r.pads());
+        let x = -17.0 + 34.0 * (k as f32 % 100.0) / 100.0;
+        r.push(Event::PointerMoved(c + vec2(x, 0.0)));
+        r.frame(0);
     }
-    assert_eq!(queued, 64);
-    let send = |pad: &mut Pad| {
-        if let Some(s) = pad.take_send() {
-            let r = match ends.commands.try_send(WorkerCommand::SetState(s)) {
-                Ok(()) => Ok(()),
-                Err(TrySendError::Full(_)) => Err("queue_full"),
-                Err(TrySendError::Disconnected(_)) => Err("worker_gone"),
-            };
-            pad.sent(r);
-        }
-    };
-    let mut pad = Pad::new();
-    pad.press(Control::A, 0);
-    send(&mut pad);
-    assert_eq!(pad.next_wake_us(0), Some(ocb_app::gamepad::RESEND_AFTER_US));
-    send(&mut pad);
-    pad.pointer_up(100_000);
-    send(&mut pad);
-    let lines = pad.take_lines();
+    assert!(k >= 60, "the queue holds 64 commands, full after {k} moves");
     assert_eq!(
-        lines.iter().filter(|l| *l == "command=queue_full").count(),
-        1,
-        "{lines:?}"
+        r.h.state().last_pad_wake(),
+        Some(Duration::from_micros(ocb_app::gamepad::RESEND_AFTER_US))
     );
-    // The worker runs once: the queue drains.
-    core.step();
-    send(&mut pad);
-    assert_eq!(pad.take_send(), None, "sent, nothing pending");
-    core.step();
-    drop(core);
-    assert!(logger.stop());
-    let pads = common::kind_texts(&sink.lines(), "pad");
-    // The one SetState that got through: the current state (NEUTRAL), no
-    // A (the worker has no port, so it drops it with that reason).
-    assert_eq!(pads, vec!["dropped reason=no_port port=-"], "{pads:?}");
-    assert_eq!(pad.last_sent(), NEUTRAL);
+    // Moved on while full: the state the pad holds now.
+    r.push(Event::PointerMoved(c + vec2(5.0, -9.0)));
+    r.frame(0);
+    let want = r.h.state().pad().state();
+    r.backend.state().hold = false;
+    let start = Instant::now();
+    while r.ctl(|c| c.published()) != want || r.h.state().pad().last_sent() != want {
+        assert!(start.elapsed() < LIMIT, "never caught up");
+        r.frame(FRAME_US);
+    }
+    let pads = r.pads();
+    assert_eq!(
+        pads.iter().filter(|l| *l == "command=queue_full").count(),
+        1,
+        "{pads:?}"
+    );
+    r.release(c + vec2(5.0, -9.0));
+    r.frame(FRAME_US);
+    let start = Instant::now();
+    while r.ctl(|c| c.published()) != NEUTRAL {
+        assert!(start.elapsed() < LIMIT);
+        r.frame(FRAME_US);
+    }
+}
+
+/// Review 2026-11-27: a STOP for a held input that finds the worker's
+/// queue full is retried until it is queued (the queued states could
+/// leave a stick deflected): `stop requested source=esc … command=
+/// queue_full`, later `stop requested source=gamepad … command=queued`,
+/// and the controller ends IDLE publishing NEUTRAL.
+#[test]
+fn g23_stop_retried_when_queue_full() {
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    let c = r.stick_center(Stick::Left);
+    r.press(c);
+    r.backend.state().hold = true;
+    std::thread::sleep(Duration::from_millis(20));
+    let mut k = 0;
+    while !r.pads().iter().any(|l| l == "command=queue_full") {
+        k += 1;
+        assert!(k < 200);
+        r.push(Event::PointerMoved(c + vec2(-17.0 + 0.3 * k as f32, 0.0)));
+        r.frame(0);
+    }
+    r.push(esc());
+    r.frame(0);
+    r.release(c);
+    r.frame(0);
+    let all = r.all_now();
+    assert!(
+        all.iter()
+            .any(|l| l.starts_with("stop requested source=esc ")
+                && l.ends_with("command=queue_full")),
+        "{all:?}"
+    );
+    r.backend.state().hold = false;
+    r.pump_until("retried STOP", |l| {
+        l.iter().any(|x| {
+            x.starts_with("stop requested source=gamepad ") && x.ends_with("command=queued")
+        }) && l.iter().any(|x| x.starts_with("stop after "))
+    });
+    let start = Instant::now();
+    while r.ctl(|c| c.published()) != NEUTRAL {
+        assert!(start.elapsed() < LIMIT, "{:?}", r.ctl(|c| c.published()));
+        r.frame(FRAME_US);
+    }
+    assert_eq!(r.ctl(|c| c.mode()), CtlMode::Idle);
+}
+
+/// Review 2026-11-27: eframe calls only `logic` while the window is
+/// minimized or occluded; the pad's blur, tap timer and send run there. A
+/// held A is released by a logic-only frame that sees the window not
+/// visible (or unfocused), and a click's 50 ms tail ends without `ui`.
+#[test]
+fn g23_hidden_window_releases() {
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    let a = r.center("A");
+    r.press(a);
+    r.until_direct(1);
+    // A frame in which `ui` does not run: hidden.
+    let wake = r.h.state_mut().pad_background(true, false, false);
+    assert_eq!(wake, None);
+    assert_eq!(
+        r.h.state().pad().last_sent(),
+        NEUTRAL,
+        "released while hidden"
+    );
+    r.until_direct(2);
+    assert_eq!(r.direct(), vec![with(BTN_A), NEUTRAL]);
+    let pads = r.pads();
+    assert!(
+        pads.contains(&"release control=a reason=window_blur".to_owned()),
+        "{pads:?}"
+    );
+    // Shown again with the button up: a click works.
+    r.release(a);
+    r.frame(FRAME_US);
+    // The tap tail: the click, then only logic-only frames.
+    r.click(a);
+    assert_eq!(r.h.state().pad().last_sent(), with(BTN_A));
+    r.ui.advance_us(TAP_MIN_US);
+    let _ = r.h.state_mut().pad_background(true, true, false);
+    assert_eq!(
+        r.h.state().pad().last_sent(),
+        NEUTRAL,
+        "the tap ended without ui"
+    );
+    r.until_direct(4);
+    assert_eq!(r.direct()[2..], [with(BTN_A), NEUTRAL]);
+}
+
+/// Review 2026-11-27: a press in the frame the window loses focus is spent,
+/// not applied (rule 8a would otherwise hold it in an unfocused window).
+#[test]
+fn g23_press_in_the_blur_frame() {
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    let a = r.center("A");
+    r.hover(a);
+    r.push(Event::WindowFocused(false));
+    r.push(button(a, true));
+    r.frame(0);
+    assert_eq!(r.h.state().pad().held(), None);
+    for _ in 0..5 {
+        r.frame(FRAME_US);
+    }
+    assert!(r.direct().is_empty());
+    assert!(
+        !r.pads().iter().any(|l| l.starts_with("press ")),
+        "{:?}",
+        r.pads()
+    );
 }
 
 /// AC 8a: the window losing focus releases A with one NEUTRAL; with the
@@ -1038,6 +1144,7 @@ fn g23_pad_lines() {
     for good in [
         "ignored control=stick_left reason=switch_not_ready",
         "command=no_worker",
+        "ignored control=b reason=busy",
         "release control=capture reason=controller_idle",
     ] {
         assert!(is_app_pad_line(good), "{good}");
@@ -1076,10 +1183,20 @@ fn g23_h35_dry_run() {
     );
     let ms = |l: &str| l.to_owned();
     let _ = ms;
-    // Step 1: quick click on A.
+    // Step 1: quick click on A. The runbook's release window on the UI
+    // clock: `reason=tap` → the NEUTRAL goes out 49–70 ms after A.
     let a = r.center("A");
     let n0 = r.direct().len();
+    let t0 = r.ui.now_us();
     r.click(a);
+    let mut t1 = t0;
+    while r.h.state().pad().last_sent() != NEUTRAL {
+        assert!(r.ui.now_us() < t0 + 1_000_000);
+        r.frame(FRAME_US / 2);
+        t1 = r.ui.now_us();
+    }
+    let ms = (t1 - t0) / 1000;
+    assert!((49..=70).contains(&ms), "step 1 tap window: {ms} ms");
     r.settle(n0 + 2);
     r.pump_until("step 1 mode", |l| {
         l.iter().any(|x| x.contains("from=idle to=direct"))
@@ -1094,7 +1211,7 @@ fn g23_h35_dry_run() {
     let sent_a = pos(&format!(
         "pad sent port={CU} buttons=0x0004 hat=8 lx=128 ly=128 rx=128 ry=128"
     ));
-    let release = pos("pad release control=a reason=");
+    let release = pos("pad release control=a reason=tap");
     let sent_n = pos(&format!(
         "pad sent port={CU} buttons=0x0000 hat=8 lx=128 ly=128 rx=128 ry=128"
     ));
@@ -1221,10 +1338,22 @@ fn g23_h35_dry_run() {
             "{l:?}"
         );
         assert!(l.iter().any(|x| x.contains("from=direct to=idle")), "{l:?}");
-        let req = l
-            .iter()
-            .position(|x| x.starts_with("stop requested"))
-            .unwrap();
+        let at = |p: &str| {
+            l.iter()
+                .position(|x| x.starts_with(p) || x.contains(p))
+                .unwrap_or_else(|| panic!("{p}: {l:?}"))
+        };
+        // The runbook's order: the app's two lines in this order, the
+        // worker's four in this order (the two threads may interleave).
+        let req = at("stop requested");
+        assert!(req < at("pad release control=a reason=stop"), "{l:?}");
+        let (sent, acked, mode, after) = (
+            at("stop sent "),
+            at("stop acked "),
+            at("from=direct to=idle"),
+            at("stop after "),
+        );
+        assert!(sent < acked && acked < mode && mode < after, "{l:?}");
         assert!(!l[req..].iter().any(|x| x.starts_with("pad sent")), "{l:?}");
     };
     stop_lines(&l, "esc");
@@ -1286,6 +1415,27 @@ fn g23_h35_dry_run() {
         !l[blur..].iter().any(|x| x.starts_with("pad press")),
         "{l:?}"
     );
+    // Step 8b: hold A, Cmd+H (hidden: eframe runs `logic` only), release,
+    // back: the same lines.
+    let n = r.direct().len();
+    r.press(a);
+    r.until_direct(n + 1);
+    let _ = r.h.state_mut().pad_background(true, false, false);
+    r.release(a);
+    r.until_direct(n + 2);
+    r.frame(FRAME_US);
+    let l = print(&r, &mut seen, "step 8b (hold A, Cmd+H, back)");
+    assert!(
+        l.contains(&"pad release control=a reason=window_blur".to_owned()),
+        "{l:?}"
+    );
+    assert_eq!(
+        l.iter()
+            .filter(|x| x.starts_with("pad sent ") && x.contains("buttons=0x0000"))
+            .count(),
+        1,
+        "{l:?}"
+    );
     // Step 9: the button tour (each control's bit; the right stick).
     for (c, s) in bit_table() {
         let n = r.direct().len();
@@ -1332,6 +1482,20 @@ fn g23_h35_dry_run() {
     assert!(
         l.contains(&"pad ignored control=a reason=no_bridge".to_owned()),
         "{l:?}"
+    );
+    // Gate lines while out: `no_bridge`, possibly after a short
+    // `bridge_not_ready` (runbook step 10).
+    let gates: Vec<&String> = l.iter().filter(|x| x.starts_with("gate ")).collect();
+    assert!(
+        gates.iter().all(|x| x.contains("gamepad_reason=no_bridge ")
+            || x.contains("gamepad_reason=bridge_not_ready ")),
+        "{gates:?}"
+    );
+    assert!(
+        gates
+            .last()
+            .is_some_and(|x| x.contains("gamepad_reason=no_bridge ")),
+        "{gates:?}"
     );
     assert!(
         !l.iter()

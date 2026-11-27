@@ -1548,7 +1548,8 @@ fn pad_worker_line_ok(kind: &str, text: &str) -> bool {
                         && ["lx", "ly", "rx", "ry"].iter().all(|k| byte(k))
                 }
                 "dropped" => {
-                    keys == ["reason", "port"]
+                    (keys == ["reason", "port"]
+                        || (keys == ["reason", "port", "action"] && get("action") == Some("stop")))
                         && get("reason").is_some_and(|r| {
                             [
                                 "no_port",
@@ -1887,6 +1888,7 @@ fn c29_log_lines() {
         "sent port= buttons=0x0004 hat=8 lx=128 ly=128 rx=128 ry=128",
         "dropped reason=asleep port=x",
         "dropped reason=no_port",
+        "dropped reason=not_ready port=x action=wait",
         "pressed port=x",
     ] {
         assert!(!pad_worker_line_ok("pad", bad), "{bad}");
@@ -1904,4 +1906,78 @@ fn c29_log_lines() {
         "port=x from=0x7f to=direct abort_count=255"
     ));
     assert!(pad_worker_line_ok("pad", "dropped reason=no_port port=-"));
+    assert!(pad_worker_line_ok(
+        "pad",
+        "dropped reason=not_ready port=x action=stop"
+    ));
+}
+
+/// C.29 (review 2026-11-27, coordinator decision): A held and applied, then
+/// a STATUS with `console_ready` 0 (or `link_ok` 0 with its EVENT lost, so
+/// the session stays `Connected`): the release (NEUTRAL) would be refused
+/// locally and A would stay held under the session's PINGs; the worker
+/// sends STOP instead (`pad dropped reason=<r> port=<p> action=stop`), the
+/// controller ends IDLE publishing NEUTRAL.
+#[test]
+fn c29_neutral_refused_stops() {
+    type Hook = fn(&mut ocb_sim::FakeController);
+    let cases: [(&str, Hook); 2] = [
+        ("not_ready", |c| c.set_console_ready(false)),
+        ("no_link", |c| {
+            c.lose_next_event();
+            c.set_link_ok(false);
+        }),
+    ];
+    for (reason, hook) in cases {
+        let port = FakePort::bridge(CU, S, Some("Bonooru Bridge")).hook(1_200_000, Box::new(hook));
+        let (mut r, logger, sink) = logged_rig(vec![port]);
+        r.run_until(1_000_000);
+        r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+        r.run_until(1_100_000);
+        assert_eq!(with_ctrl(&r, |c| c.published()), A, "{reason}: A applied");
+        // The STATUS of the hook read by the worker.
+        r.run_until(1_300_000);
+        let snap = r.snapshot.clone().unwrap();
+        let (v, _) = snap.status.unwrap();
+        assert!(!v.console_ready || !v.link_ok, "{reason}: {v:?}");
+        let phase = snap.phase;
+        r.ends
+            .commands
+            .send(WorkerCommand::SetState(NEUTRAL))
+            .unwrap();
+        r.run_until(1_600_000);
+        let lines = finish_all(r, logger, &sink);
+        let pad = kind_lines(&lines, "pad");
+        assert_eq!(
+            phase,
+            Phase::Connected,
+            "{reason}: the session still holds A"
+        );
+        assert_eq!(
+            pad.last().unwrap(),
+            &format!("dropped reason={reason} port={CU} action=stop"),
+            "{reason}: {pad:?}"
+        );
+        assert!(
+            kind_lines(&lines, "stop")
+                .iter()
+                .any(|l| l.starts_with("acked ") && l.ends_with("by=command")),
+            "{reason}: {lines:?}"
+        );
+    }
+    // The controller side: NEUTRAL published after the STOP.
+    let port = FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+        .hook(1_200_000, Box::new(|c| c.set_console_ready(false)));
+    let (mut r, logger, sink) = logged_rig(vec![port]);
+    r.run_until(1_000_000);
+    r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+    r.run_until(1_300_000);
+    r.ends
+        .commands
+        .send(WorkerCommand::SetState(NEUTRAL))
+        .unwrap();
+    r.run_until(1_600_000);
+    assert_eq!(with_ctrl(&r, |c| c.mode()), Mode::Idle);
+    assert_eq!(with_ctrl(&r, |c| c.published()), NEUTRAL);
+    let _ = finish_all(r, logger, &sink);
 }
