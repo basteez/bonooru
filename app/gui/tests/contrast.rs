@@ -93,6 +93,19 @@ fn g6_contrast_floors() {
             t::OUT_OF_RANGE_ZONE,
             4.5,
         ),
+        // Story 4.3: dialog buttons, focus ring on dark, dialog title.
+        ("ink", t::INK, "amber", t::AMBER, 4.5),
+        ("text", t::TEXT, "well", t::WELL, 4.5),
+        ("amber", t::AMBER, "panel", t::PANEL, 3.0),
+        ("amber", t::AMBER, "panel-raised", t::PANEL_RAISED, 3.0),
+        ("amber", t::AMBER, "well", t::WELL, 3.0),
+        (
+            "parchment",
+            t::PARCHMENT,
+            "panel-raised",
+            t::PANEL_RAISED,
+            4.5,
+        ),
     ];
     let mut errs = Vec::new();
     for (fg_name, fg, bg_name, bg, floor) in pairs {
@@ -117,4 +130,48 @@ fn g6_formula_self_test() {
     assert!((ratio(t::AMBER, t::AMBER) - 1.0).abs() < 1e-9);
     let r = ratio(t::OUT_OF_RANGE_INK, t::OUT_OF_RANGE_ZONE);
     assert!((r - 4.71).abs() < 0.01, "{r}");
+}
+
+/// `fg` at `alpha` over `bg`, blended in gamma space like egui.
+fn over(fg: Color32, alpha: f32, bg: Color32) -> Color32 {
+    let mix = |f: u8, b: u8| (f32::from(f) * alpha + f32::from(b) * (1.0 - alpha)).round() as u8;
+    Color32::from_rgb(
+        mix(fg.r(), bg.r()),
+        mix(fg.g(), bg.g()),
+        mix(fg.b(), bg.b()),
+    )
+}
+
+/// Owner decision 2026-11-27 (Story 4.3): a disabled button is neutral, an
+/// opaque `button-disabled.background` with the label in
+/// `button-disabled.foreground`, the same for primary and ghost. The label is
+/// measured against what is really behind it on every surface a button can
+/// sit on: the fill composited over the surface (opaque, so the fill itself;
+/// computed, not assumed). Floor 3:1.
+#[test]
+fn g6_disabled_button_labels() {
+    use t::components::{BUTTON_DISABLED_FILL, BUTTON_DISABLED_TEXT};
+    let surfaces = [
+        ("frame", t::FRAME),
+        ("panel", t::PANEL),
+        ("panel-raised", t::PANEL_RAISED),
+        ("well", t::WELL),
+        ("parchment", t::PARCHMENT),
+    ];
+    let alpha = f32::from(BUTTON_DISABLED_FILL.a()) / 255.0;
+    let fill = Color32::from_rgb(
+        BUTTON_DISABLED_FILL.r(),
+        BUTTON_DISABLED_FILL.g(),
+        BUTTON_DISABLED_FILL.b(),
+    );
+    let mut errs = Vec::new();
+    for (name, surface) in surfaces {
+        let behind = over(fill, alpha, surface);
+        let r = ratio(BUTTON_DISABLED_TEXT, behind);
+        println!("disabled label on its fill over {name}: {r:.2}:1");
+        if r < 3.0 {
+            errs.push(format!("disabled label over {name}: {r:.2}:1 < 3:1"));
+        }
+    }
+    assert!(errs.is_empty(), "{}", errs.join("\n"));
 }

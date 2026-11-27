@@ -1,0 +1,321 @@
+//! Shared helpers of the UI tests (Story 4.3): flattened frame shapes and
+//! node queries. Not every test file uses every helper.
+
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use egui::epaint::{ClippedShape, Shape};
+use egui::{Color32, Pos2, Rect, pos2, vec2};
+use ocb_app::ui::theme;
+
+/// One painted shape: its index in paint order, the clip rect of its
+/// `ClippedShape`, and the shape (nested `Shape::Vec`s walked).
+#[derive(Clone, Debug)]
+pub struct Flat {
+    pub index: usize,
+    pub clip: Rect,
+    pub shape: Shape,
+}
+
+/// Every shape of the frame in paint order, `Shape::Vec` flattened.
+pub fn shapes_flat(shapes: &[ClippedShape]) -> Vec<Flat> {
+    fn walk(shape: &Shape, clip: Rect, out: &mut Vec<Flat>) {
+        match shape {
+            Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, out)),
+            other => out.push(Flat {
+                index: out.len(),
+                clip,
+                shape: other.clone(),
+            }),
+        }
+    }
+    let mut out = Vec::new();
+    for c in shapes {
+        walk(&c.shape, c.clip_rect, &mut out);
+    }
+    out
+}
+
+/// The stroke colour of a shape that has one.
+pub fn stroke_color(shape: &Shape) -> Option<Color32> {
+    match shape {
+        Shape::LineSegment { stroke, .. } => Some(stroke.color),
+        Shape::Path(p) => match &p.stroke.color {
+            egui::epaint::ColorMode::Solid(c) => Some(*c),
+            egui::epaint::ColorMode::UV(_) => None,
+        },
+        Shape::QuadraticBezier(q) => match &q.stroke.color {
+            egui::epaint::ColorMode::Solid(c) => Some(*c),
+            egui::epaint::ColorMode::UV(_) => None,
+        },
+        Shape::Rect(r) => Some(r.stroke.color),
+        Shape::Circle(c) => Some(c.stroke.color),
+        _ => None,
+    }
+}
+
+/// The stroke width of a shape that has one (0 for none).
+pub fn stroke_width(shape: &Shape) -> Option<f32> {
+    match shape {
+        Shape::LineSegment { stroke, .. } => Some(stroke.width),
+        Shape::Path(p) => Some(p.stroke.width),
+        Shape::QuadraticBezier(q) => Some(q.stroke.width),
+        Shape::CubicBezier(q) => Some(q.stroke.width),
+        Shape::Rect(r) => Some(r.stroke.width),
+        Shape::Circle(c) => Some(c.stroke.width),
+        Shape::Ellipse(e) => Some(e.stroke.width),
+        _ => None,
+    }
+}
+
+/// Whether a shape uses `color` as fill or stroke.
+pub fn uses(shape: &Shape, color: Color32) -> bool {
+    let fill = match shape {
+        Shape::Path(p) => Some(p.fill),
+        Shape::QuadraticBezier(q) => Some(q.fill),
+        Shape::Rect(r) => Some(r.fill),
+        Shape::Circle(c) => Some(c.fill),
+        _ => None,
+    };
+    fill == Some(color) || stroke_color(shape) == Some(color)
+}
+
+/// Every text shape: (text, ink rect on screen, shape index).
+pub fn texts(flat: &[Flat]) -> Vec<(String, Rect, usize)> {
+    flat.iter()
+        .filter_map(|f| match &f.shape {
+            Shape::Text(t) => {
+                let ink = t.galley.rect.union(t.galley.mesh_bounds);
+                Some((
+                    t.galley.text().to_owned(),
+                    ink.translate(t.pos.to_vec2()),
+                    f.index,
+                ))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// `a` ⊆ `b` within `eps`.
+pub fn inside(a: Rect, b: Rect, eps: f32) -> bool {
+    a.min.x >= b.min.x - eps
+        && a.min.y >= b.min.y - eps
+        && a.max.x <= b.max.x + eps
+        && a.max.y <= b.max.y + eps
+}
+
+/// Two rects equal within `eps`.
+pub fn rect_eq(a: Rect, b: Rect, eps: f32) -> bool {
+    (a.min - b.min).length() <= eps && (a.max - b.max).length() <= eps
+}
+
+/// All `.rs` files under `dir`.
+pub fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            rs_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Rust source reduced to code: `//` and (nested) `/* */` comments removed,
+/// string, raw-string and char literal contents blanked (the quotes stay).
+/// So a `//` inside a string does not cut the line, and a pattern written in
+/// a comment or a string (a scan's own self-test snippets) is not code.
+pub fn code_only(source: &str) -> String {
+    let c: Vec<char> = source.chars().collect();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    let at = |k: usize| c.get(k).copied().unwrap_or('\0');
+    while i < c.len() {
+        let ch = c[i];
+        if ch == '/' && at(i + 1) == '/' {
+            while i < c.len() && c[i] != '\n' {
+                i += 1;
+            }
+        } else if ch == '/' && at(i + 1) == '*' {
+            let mut depth = 0;
+            while i < c.len() {
+                if c[i] == '/' && at(i + 1) == '*' {
+                    depth += 1;
+                    i += 2;
+                } else if c[i] == '*' && at(i + 1) == '/' {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            out.push(' ');
+        } else if ch == 'r'
+            && (at(i + 1) == '"' || (at(i + 1) == '#' && (at(i + 2) == '"' || at(i + 2) == '#')))
+            && !at(i.wrapping_sub(1)).is_alphanumeric()
+            && at(i.wrapping_sub(1)) != '_'
+        {
+            // Raw string r"…" / r#"…"#.
+            let mut k = i + 1;
+            let mut hashes = 0;
+            while at(k) == '#' {
+                hashes += 1;
+                k += 1;
+            }
+            out.push_str("r\"");
+            k += 1;
+            loop {
+                if k >= c.len() {
+                    break;
+                }
+                if c[k] == '"' && (0..hashes).all(|h| at(k + 1 + h) == '#') {
+                    k += 1 + hashes;
+                    break;
+                }
+                k += 1;
+            }
+            out.push('"');
+            i = k;
+        } else if ch == '"' {
+            out.push('"');
+            i += 1;
+            while i < c.len() && c[i] != '"' {
+                if c[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            out.push('"');
+            i += 1;
+        } else if ch == '\'' && (at(i + 2) == '\'' || (at(i + 1) == '\\' && at(i + 1) != '\0')) {
+            // A char literal ('x' or '\n', '\u{…}'); a lifetime has no
+            // closing quote and falls through.
+            let mut k = i + 1;
+            if at(k) == '\\' {
+                k += 2;
+                while k < c.len() && c[k] != '\'' {
+                    k += 1;
+                }
+            } else {
+                k += 1;
+            }
+            out.push_str("' '");
+            i = k + 1;
+        } else {
+            out.push(ch);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The four bracket boxes of `rect` (TL, TR, BL, BR) and their mirror signs.
+pub fn bracket_boxes(rect: Rect) -> [(Rect, f32, f32); 4] {
+    let s = theme::spacing::CORNER_BRACKET_SIZE;
+    let i = theme::components::CORNER_BRACKET_INSET;
+    [
+        (
+            Rect::from_min_size(rect.min + vec2(i, i), vec2(s, s)),
+            1.0,
+            1.0,
+        ),
+        (
+            Rect::from_min_size(pos2(rect.right() - i - s, rect.top() + i), vec2(s, s)),
+            -1.0,
+            1.0,
+        ),
+        (
+            Rect::from_min_size(pos2(rect.left() + i, rect.bottom() - i - s), vec2(s, s)),
+            1.0,
+            -1.0,
+        ),
+        (
+            Rect::from_min_size(
+                pos2(rect.right() - i - s, rect.bottom() - i - s),
+                vec2(s, s),
+            ),
+            -1.0,
+            -1.0,
+        ),
+    ]
+}
+
+/// Four corner sets, each 1 outer path (2 pt), 1 quadratic (1.2 pt) and 1
+/// dot (r 1.6) inside its box; the sets are mirror images of the top-left.
+pub fn check_brackets(flat: &[Flat], rect: Rect, ctx: &str) {
+    let boxes = bracket_boxes(rect);
+    // Per corner: the outer path's points, the quadratic's three points and
+    // the dot centre, in that order (the mirror check covers all three).
+    let mut sets: Vec<Vec<Pos2>> = vec![Vec::new(); 4];
+    for (k, (bx, _, _)) in boxes.iter().enumerate() {
+        let mine: Vec<&Flat> = flat
+            .iter()
+            .filter(|f| inside(f.shape.visual_bounding_rect(), *bx, 0.01))
+            .collect();
+        let paths: Vec<_> = mine
+            .iter()
+            .filter_map(|f| match &f.shape {
+                Shape::Path(p) if (p.stroke.width - 2.0).abs() < 1e-4 => Some(p.points.clone()),
+                _ => None,
+            })
+            .collect();
+        let quads: Vec<_> = mine
+            .iter()
+            .filter_map(|f| match &f.shape {
+                Shape::QuadraticBezier(q) if (q.stroke.width - 1.2).abs() < 1e-4 => {
+                    Some(q.points.to_vec())
+                }
+                _ => None,
+            })
+            .collect();
+        let dots: Vec<_> = mine
+            .iter()
+            .filter_map(|f| match &f.shape {
+                Shape::Circle(c) if (c.radius - 1.6).abs() < 1e-4 => Some(c.center),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            (paths.len(), quads.len(), dots.len()),
+            (1, 1, 1),
+            "{ctx}: corner {k} in {bx:?}"
+        );
+        sets[k] = paths[0].clone();
+        sets[k].extend(quads[0].iter().copied());
+        sets[k].push(dots[0]);
+    }
+    assert_eq!(
+        flat.len(),
+        12,
+        "{ctx}: 4 × 3 shapes, nothing outside the boxes"
+    );
+    // Mirror images: corner k's points, mapped back to the top-left box.
+    let tl = boxes[0].0;
+    for (k, (bx, sx, sy)) in boxes.iter().enumerate() {
+        assert_eq!(
+            sets[k].len(),
+            sets[0].len(),
+            "{ctx}: corner {k} point count"
+        );
+        for (i, (p, q)) in sets[k].iter().zip(&sets[0]).enumerate() {
+            let local_x = if *sx > 0.0 {
+                p.x - bx.left()
+            } else {
+                bx.right() - p.x
+            };
+            let local_y = if *sy > 0.0 {
+                p.y - bx.top()
+            } else {
+                bx.bottom() - p.y
+            };
+            assert!(
+                (local_x - (q.x - tl.left())).abs() < 1e-3
+                    && (local_y - (q.y - tl.top())).abs() < 1e-3,
+                "{ctx}: corner {k} point {i} is not a mirror image"
+            );
+        }
+    }
+}

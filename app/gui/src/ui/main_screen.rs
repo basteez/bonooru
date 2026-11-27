@@ -5,7 +5,7 @@
 use egui::{Rect, Stroke, Ui, UiBuilder, pos2};
 
 use super::layout::{RegionId, regions};
-use super::theme;
+use super::{paint, theme};
 
 /// Draws the main screen over `ui.max_rect()`.
 pub fn show(ui: &mut Ui) {
@@ -56,6 +56,13 @@ fn paint_region(ui: &Ui, id: RegionId, rect: Rect, card: Rect) {
         RegionId::NoteView => {
             painter.rect_filled(rect, square, theme::FRAME);
             painter.rect_filled(card, theme::corner(theme::rounded::XL), theme::PARCHMENT);
+            // UX-DR4: the card's four corner brackets (Story 4.3).
+            paint::paint_corner_brackets(
+                painter,
+                card,
+                theme::BRACKET,
+                ui.ctx().pixels_per_point(),
+            );
         }
     }
 }

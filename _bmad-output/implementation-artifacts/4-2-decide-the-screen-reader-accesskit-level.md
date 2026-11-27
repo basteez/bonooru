@@ -4,7 +4,7 @@ baseline_commit: 338dfa7
 
 # Story 4.2: Decide the screen-reader (AccessKit) level
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

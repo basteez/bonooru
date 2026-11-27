@@ -65,8 +65,8 @@ development_status:
   epic-4: in-progress
   4-0-cleanup-purity-gates-and-p2-overflow-status: done
   4-1-app-shell-with-theme-fonts-and-main-screen-regions: done
-  4-2-decide-the-screen-reader-accesskit-level: review
-  4-3-shared-painting-helpers-and-modal-dialog: backlog
+  4-2-decide-the-screen-reader-accesskit-level: done
+  4-3-shared-painting-helpers-and-modal-dialog: review
   4-4-serial-worker-bridge-discovery-and-file-log: backlog
   4-5-status-strip-with-three-live-leds: backlog
   4-6-firmware-version-check-and-gating: backlog
