@@ -4,7 +4,7 @@ baseline_commit: 196717fdc1d4428b79576ddf723453f44e193efb
 
 # Story 4.5: Status strip with three live LEDs
 
-Status: in-progress
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -43,7 +43,7 @@ Host rows run in `cargo test`; bench rows are read from `bonooru.log` (`led` lin
 
 | AC | Number | Measured by | Field / result |
 |---|---|---|---|
-| 1 | strip 44 pt, LEDs 20 pt apart, padding 16, brand gap 28, symbol gap 7 | `app/gui/tests/status_strip.rs` (G.15) `g15_layout`: kittest at 1024×680 and 1280×800, ppp 1 and 2; LED rects from the AccessKit node bounds (`Node::rect()`) and the painted shapes | gap between LED n's right and LED n+1's left = 20 ± 0.5; brand left = strip left + 16 ± 0.5; first LED left − brand right = 28 ± 0.5; symbol right → label left = 7 ± 0.5; every LED rect inside the strip rect |
+| 1 | strip 44 pt, LEDs 20 pt apart, padding 16, brand gap 28, symbol gap 7, detail gap 7 (eye check) | `app/gui/tests/status_strip.rs` (G.15) `g15_layout`: kittest at 1024×680 and 1280×800, ppp 1 and 2; LED rects from the AccessKit node bounds (`Node::rect()`) and the painted shapes | gap between LED n's right and LED n+1's left = 20 ± 0.5; brand left = strip left + 16 ± 0.5; first LED left − brand right = 28 ± 0.5; symbol right → label left = 7 ± 0.5; label right → detail left = 7 ± 0.5 (added after the eye check); every LED rect inside the strip rect |
 | 1 | fits at 1024 pt | G.15 `g15_longest_labels_fit` | with the longest label/detail of each LED (from the copy table), every LED rect ⊂ strip rect and no two overlap, at 1024×680 |
 | 1 | gear / "Set up / Reflash…" hidden | G.15 `g15_no_gear_no_setup_link` | no AccessKit node named "Settings" or "Set up / Reflash…", and no text shape with those strings |
 | 2 | 11 pt symbol, colours, glow 8 | `app/gui/tests/status_strip.rs` G.15 `g15_symbols` + unit tests in `app/gui/src/ui/status_strip.rs` | per state: symbol bounding box 11 × 11 ± 0.5; fill/stroke colour = the `status-*` token; ok has one shadow/glow shape with blur = `paint::feather_from_css_blur(8)`; warning fill is convex; error = 2 line segments; unknown = one circle stroke, no fill, no detail text |
@@ -106,14 +106,14 @@ Numbers no tool can measure (kept for the owner, see Open questions): whether th
   - [x] 7.3 `DESIGN.md`: the tokens of Task 4.5; the Status strip paragraph says gear and "Set up / Reflash…" arrive with Epic 5 / Epic 8; no other visual change.
   - [x] 7.4 `docs/test-plan.md`: › App core tests: C.26; › App GUI tests: G.14, G.15, G.16; › Hardware-in-the-loop: H.33 (Result column empty until the bench; Windows/Linux "deferred: owner has no Windows/Linux machine yet (2026-11-27); issue #43"); a rig block "Status LED bench rig (Story 4.5)" (Dev Notes › Rig block) after the discovery bench rig.
   - [x] 7.5 `app/README.md`: one line each for `src/leds.rs` and `src/ui/status_strip.rs` in the layout, and that LED changes appear as `led` lines in `bonooru.log`.
-- [ ] **Task 8: verify on the host (AC 13).** In `app/` with `/opt/homebrew/opt/rustup/bin` first on `PATH`: `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace`, `cargo deny --locked check licenses bans`, the G.8 scripts, `cargo run -p ocb-app -- --smoke-test` and `-- --smoke-test --gallery` (checker green, `worker=` ≥ 1). Red proofs recorded. Push the branch; the `app` workflow green on three OS.
+- [x] **Task 8: verify on the host (AC 13).** In `app/` with `/opt/homebrew/opt/rustup/bin` first on `PATH`: `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace`, `cargo deny --locked check licenses bans`, the G.8 scripts, `cargo run -p ocb-app -- --smoke-test` and `-- --smoke-test --gallery` (checker green, `worker=` ≥ 1). Red proofs recorded. Push the branch; the `app` workflow green on three OS.
 - [x] **Task 9: red proofs (AC 13, E3-A2).** For each new check, the Debug Log names the code change that makes it fail and the failure seen (minimum list: Dev Notes › Red proofs).
 - [x] **Task 10: forward notes.** In the Debug Log: what Story 4.6 reads (`required_update`, the Controller warning row to extend with the modal), what 4.7 must keep (the LEDs are first in the tab ring; Enter on a LED does nothing), what 4.8 reads (`last_nak`, the Switch/Controller states for its inline hints).
 - [x] **Task 11: instrument review (retro action #27, E3-A2), written in the Debug Log before any bench result.** No bench tool is new or changed (`ocb-probe` untouched); the instrument is the `led` log line plus the Story 4.4 worker lines. Check: every H.33 field maps to a line the code writes (format of Dev Notes › `led` log line); every verdict of H.33 is listed with the host test that proves the line can show both PASS and FAIL values (`g14_led_log_lines`, `g14_staleness_boundary`, `g14_info_grace`); the expected log excerpt per step written down; the bench start checklist (Dev Notes › Rig block) checked against the plan; the gotchas of Dev Notes › Bench gotchas re-read.
 - [x] **Task 12: dry run against `ocb-sim` before the bench.** `g16_h33_dry_run` (or in G.14 on `SimRig` + `LedTracker` + `MemorySink`): the H.33 sequence (both boards → console_ready off → on → controller muted → back (reboot: fresh controller, NAK VERSION or STATUS reboot) → bridge vanished → back → bridge alone) on the fake clock, asserting the exact `led` lines and their `status_age_ms` / `session_age_ms` values; `cargo test -p ocb-app -- --nocapture h33_dry_run` prints them so the expected bench lines are read once. Green on the commit the bench uses; the commit goes into the rig block.
-- [ ] **Task 13 (BENCH, macOS): H.33.** The agent builds `cargo build --locked --release -p ocb-app` in `app/`, starts `app/target/release/bonooru`, reads `~/Library/Logs/Bonooru/bonooru.log`; the owner does the physical steps and reads the strip aloud (Dev Notes › H.33 runbook). Windows/Linux: not run (issue #43).
-- [ ] **Task 14 (OWNER, late): eye check of the strip.** After Task 13 or in the same session: the owner runs `cargo run -p ocb-app` from `app/` (cargo is on PATH) and answers the checklist of Dev Notes › Eye check; answers recorded in the Debug Log. Any change asked for is made and re-checked before review.
-- [ ] **Task 15: results.** Fill H.33 (macOS) and the rig block; record the OQ-5/OQ-6 status (decided, provisional parts with #43); add to the Debug Log the scope note for #43 (H.33 on Windows and Linux: the strip with an `Unconfirmed` bridge on Windows, `Ours` on Linux; needs a `bonooru` build on those PCs, see Open questions 4). M5 stays TODO.
+- [x] **Task 13 (BENCH, macOS): H.33.** The agent builds `cargo build --locked --release -p ocb-app` in `app/`, starts `app/target/release/bonooru`, reads `~/Library/Logs/Bonooru/bonooru.log`; the owner does the physical steps and reads the strip aloud (Dev Notes › H.33 runbook). Windows/Linux: not run (issue #43).
+- [x] **Task 14 (OWNER, late): eye check of the strip.** After Task 13 or in the same session: the owner runs `cargo run -p ocb-app` from `app/` (cargo is on PATH) and answers the checklist of Dev Notes › Eye check; answers recorded in the Debug Log. Any change asked for is made and re-checked before review.
+- [x] **Task 15: results.** Fill H.33 (macOS) and the rig block; record the OQ-5/OQ-6 status (decided, provisional parts with #43); add to the Debug Log the scope note for #43 (H.33 on Windows and Linux: the strip with an `Unconfirmed` bridge on Windows, `Ours` on Linux; needs a `bonooru` build on those PCs, see Open questions 4). M5 stays TODO.
 
 ### Review Findings
 
@@ -491,11 +491,35 @@ Step 6 (new app run, bridge alone): the three `start` lines, `pc_bridge=ok name=
 
 Not done here: the push and the `app` workflow on three OS (Task 8 stays unchecked until CI is green), the macOS bench H.33 (Task 13), the owner's eye check (Task 14) and the results (Task 15).
 
+*CI (Task 8):* `app` workflow green on ubuntu-24.04, windows-latest and macos-latest, and the four probe artifacts, at `1f24b3e`.
+
+*macOS bench H.33 (Task 13), 2026-11-27.* Rig and checklist as in `docs/test-plan.md` › Status LED bench rig (filled there): macOS 27.2.1, Mac17,9, release `bonooru` at `1f24b3e` (dry run `g14_h33_dry_run` green on it), bridge `69f4d2c` `fw-release`, controller `fw-debug-o3`, Switch 2 23.5.0. Owner did the steps, the agent read this run's `led` lines.
+
+| Step | Measured (`bonooru.log`) | Verdict |
+|---|---|---|
+| 1 | three `ok` lines at +15 ms (`Bridge v0.0.0`, `Controller v0.0.0`, `Switch – ready`); `version connected` +7 → `bridge_controller=ok` +15 (8 ms) | PASS (≤ 1000, ≤ 100) |
+| 2 | `switch=warning "Switch – not ready" console_not_ready`, then `switch=ok`; owner: triangle, tooltip on hover and after Tab | PASS |
+| 3 | 1st try, window behind the terminal: `status_age_us=3380815` (not counted: no frame until the 3 s stall repaint, macOS draws no occluded window; checklist item 4). Retry, window visible: `reason=stale status_age_us=150264`, `switch=unknown` same ms | PASS (150 000 < 150 264 ≤ 250 000) |
+| 4 | `link_down` "Controller – no link" → 50 ms → `Controller v0.0.0` + `Switch – not ready` → `Switch – ready`; all ok (twice) | PASS (recorded) |
+| 5 | `port_lost` with the three unknown lines (`waiting`, `no_port`, `waiting`) same ms; `port_vanished` → `Bridge – not found` 0 ms; replug → all ok 11 ms after `port_listed` | PASS (≤ 100) |
+| 6 | `Bridge – found` `ours_open`, Switch `waiting`, then `Controller – not answering` `no_answer session_age_us=501037` | PASS (500 000 < 501 037 ≤ 700 000) |
+
+Note on step 3's first try: the late line is the documented D2 / checklist-item-4 limit (frames only for a visible window), not a model defect; the first frame after the window shows again draws the right state.
+
+Found after the bench: the H.33 step 6 app was stopped with `kill -INT` and did not exit; a new `bonooru` started 0.5 s later hung in `open()` of the bridge port (process state `U`), showed three unknown `worker_stalled` LEDs, and both processes woke only when the bridge was unplugged ~48 s later. Likely the Darwin tty close waiting for output to drain while the bridge (no controller behind it) stops taking bytes. Out of this story's scope: issue #45.
+
+*Owner eye check (Task 14), 2026-11-27, on the release build:* (1) strip vs `mockups/key-empty-state.html` (owner's screenshots compared side by side): symbol sizes, gaps, label weight and muted detail match, except the label → detail gap (one space ≈ 3.5 pt vs the mock's 7 pt flex gap). Owner: fix the gap, keep the glow as it is (the app's glow is a little wider and brighter than the mock's; owner likes it). Fixed: `status_led::DETAIL_GAP` = 7 pt (`DESIGN.md` `status-led.detail-gap`, G.3 token check), `g15_layout` asserts label right → detail left = 7 ± 0.5; red proof: the old 3.5 pt space → `g15_layout` fails ("Bridge → v0.3.0 gap 3.5"); owner re-checked: ok. (2) Glow reads as on, the triangle is not amber, error and unknown clear from the console's distance: yes. (3) Tooltip wording and fix line, on hover and after Tab: yes. (4) Strip at 1024 wide: readable, nothing overlaps or is cut: yes. (5) Draft strings: keep them as drafts (OQ-13 pass). Owner also plugged the controller board into the Mac expecting "Bridge – other board": it stays "Bridge – not found", as designed (the controller enumerates as a HID gamepad with no serial port; `foreign` needs a serial port of a non-Bonooru board, covered by G.14).
+
+*Scope note for #43 (Task 15):* H.33 on Windows and Linux, with a `bonooru` build on each PC (Open questions 4: build decided then): Windows step 6 shows the OQ-5 `unknown` "Bridge" (Unconfirmed until the controller answers); Linux shows `Ours` like macOS; check the restart case of #45 there too. Added to issue #43.
+
+*OQ-5/OQ-6:* decided (Story 4.5, `EXPERIENCE.md` items 4/5 and `epics.md`), the Windows/Linux parts provisional until #43. M5 stays TODO (Stories 4.6–4.9).
+
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created (gds-create-story, 2026-11-27).
 - Tasks 1–7 and 9–12 done (host part): snapshot fields, UI clock, the pure LED model with its copy and `led` log lines, the status strip (brand, three focusable `Role::Status` LEDs with tooltips on hover and focus), app integration with the repaint timer, docs (OQ-5/OQ-6 resolved with their provisional parts, tokens, test plan C.26/G.14–G.16/H.33 and the rig block), red proofs, forward notes, instrument review and the H.33 dry run. Task 8 waits for the push and CI; Tasks 13–15 (bench, eye check, results) are for the owner's session. Story stays `in-progress`.
 - Instrument review finding 1 resolved after code review: ages logged in µs (coordinator decision).
+- Tasks 8, 13–15 done: CI green on three OS; H.33 PASS on macOS (step 3 counted on the retry with the window visible); owner eye check: one change (label → detail gap 7 pt), glow kept; Windows/Linux H.33 added to #43; port-close hang found after the bench → issue #45. Status `review`.
 - Code review fixes: every review finding fixed or deferred (two, by the coordinator: #43, Story 4.8); the macOS CI timing test made deterministic (root cause in the Debug Log).
 
 ### File List
@@ -529,3 +553,4 @@ Not done here: the push and the `app` workflow on three OS (Task 8 stays uncheck
 - 2026-11-27: Story created (gds-create-story), status `ready-for-dev`.
 - 2026-11-27: Host part implemented (gds-dev-story): Tasks 1–7, 9–12; Open questions 1–5 defaults applied (owner may override); status `in-progress` (Task 8 CI after the push; Tasks 13–15 bench, eye check, results to come).
 - 2026-11-27: Code review findings fixed (decisions by the coordinator: `led` ages in µs, tracker keyed on state + name + reason, AccessKit names carry the state, D2 accepted with a waker test; two findings deferred to #43 / Story 4.8) and the macOS CI timing test made deterministic; ACs 6, 7, 8, 11, 12 amended; status stays `in-progress`.
+- 2026-11-27: macOS bench H.33 PASS, owner eye check (label → detail gap 7 pt, `DETAIL_GAP` token and layout test), results recorded, Windows/Linux added to #43, port-close hang filed as #45; status `review`.

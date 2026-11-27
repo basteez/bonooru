@@ -366,6 +366,7 @@ fn g3_component_sizes() {
     for (group, key, ours) in [
         ("status-led", "gap", status_led::GAP),
         ("status-led", "symbol-gap", status_led::SYMBOL_GAP),
+        ("status-led", "detail-gap", status_led::DETAIL_GAP),
         ("status-strip", "padding-x", status_strip::PADDING_X),
         ("status-strip", "brand-gap", status_strip::BRAND_GAP),
     ] {

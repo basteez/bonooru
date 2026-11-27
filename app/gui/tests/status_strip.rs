@@ -143,6 +143,20 @@ fn text_shapes(h: &Harness<'_, Leds>) -> Vec<(String, Pos2, Color32)> {
         .collect()
 }
 
+/// Each text shape with its galley rect (layout box, not ink) on screen.
+fn text_boxes(h: &Harness<'_, Leds>) -> Vec<(String, egui::Rect)> {
+    common::shapes_flat(&h.output().shapes)
+        .into_iter()
+        .filter_map(|f| match f.shape {
+            Shape::Text(t) => Some((
+                t.galley.text().to_owned(),
+                t.galley.rect.translate(t.pos.to_vec2()),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 fn near(a: f32, b: f32) -> bool {
     (a - b).abs() <= 0.5
 }
@@ -188,10 +202,28 @@ fn g15_layout() {
                 assert!(near(pos.x - symbol_right, 7.0), "{ctx}: {label} symbol gap");
                 assert_eq!(*color, theme::TEXT, "{ctx}: label colour");
             }
-            // Details in text-muted, after a space.
-            for d in ["v0.3.0", "– ready"] {
+            // Details in text-muted, 7 pt after the label (the mock's flex gap).
+            let boxes = text_boxes(&h);
+            let left_of = |t: &str| boxes.iter().find(|(s, _)| s == t).map(|b| b.1).unwrap();
+            for (label, d) in [
+                ("Bridge", "v0.3.0"),
+                ("Controller", "v0.3.0"),
+                ("Switch", "– ready"),
+            ] {
                 let (_, _, color) = texts.iter().find(|(t, _, _)| t == d).unwrap();
                 assert_eq!(*color, theme::TEXT_MUTED, "{ctx}: {d}");
+                let l = left_of(label);
+                let dl = boxes
+                    .iter()
+                    .filter(|(s, r)| s == d && r.left() > l.right())
+                    .map(|b| b.1)
+                    .min_by(|a, b| a.left().total_cmp(&b.left()))
+                    .unwrap_or_else(|| panic!("{ctx}: no {d} after {label}"));
+                assert!(
+                    near(dl.left() - l.right(), 7.0),
+                    "{ctx}: {label} → {d} gap {}",
+                    dl.left() - l.right()
+                );
             }
             let (_, _, brand_color) = texts.iter().find(|(t, _, _)| t == BRAND_NAME).unwrap();
             assert_eq!(*brand_color, theme::PARCHMENT, "{ctx}: brand colour");

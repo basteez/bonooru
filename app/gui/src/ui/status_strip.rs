@@ -53,17 +53,6 @@ pub fn led_id(tag: &str) -> egui::Id {
     egui::Id::unique(("status-led", tag))
 }
 
-/// The width of a space between label and detail, in `body-strong`
-/// (measured: a lone space galley has no width).
-fn space_width(ui: &Ui) -> f32 {
-    let w = |t: &str| {
-        paint::layout_line(ui.ctx(), &theme::BODY_STRONG, t, theme::TEXT)
-            .rect
-            .width()
-    };
-    w("a a") - w("aa")
-}
-
 /// One LED at `left_center` (its box's left edge, vertically centred):
 /// symbol, label, detail, 2/4 pt padding; focusable for its tooltip only
 /// (`Sense::focusable_noninteractive`: Enter does nothing, D10).
@@ -74,7 +63,7 @@ fn led_widget(ui: &mut Ui, left_center: Pos2, led: &Led, salt: &str) -> Response
         .detail
         .as_deref()
         .map(|d| paint::layout_line(&ctx, &DETAIL, d, theme::TEXT_MUTED));
-    let space = space_width(ui);
+    let space = status_led::DETAIL_GAP;
     let text_w = label.rect.width() + detail.as_ref().map_or(0.0, |d| space + d.rect.width());
     let content_h = STATUS_LED_SIZE
         .max(label.rect.height())

@@ -213,6 +213,8 @@ pub mod components {
         pub const GAP: f32 = 20.0;
         /// Symbol right edge to label left edge.
         pub const SYMBOL_GAP: f32 = 7.0;
+        /// Label right edge to detail left edge (the same flex `gap`).
+        pub const DETAIL_GAP: f32 = 7.0;
         /// Vertical padding inside the focusable LED box.
         pub const PADDING_Y: f32 = 2.0;
         /// Horizontal padding inside the focusable LED box.
