@@ -1,23 +1,26 @@
 //! The main screen (UX-DR5): five regions filled in reading order, each a
 //! scoped `Ui` over its rect (never egui panels). The status strip shows
 //! the brand and the three LEDs (Story 4.5); the gamepad region shows the
-//! gate's inline hint while the gamepad is blocked (Story 4.6); the bottom
+//! gamepad panel, with the gate's inline hint under the legend while the
+//! gamepad is blocked (Story 4.6, 4.8); the bottom
 //! bar shows STOP and the safety note, its Play/Listen slots reserved and
 //! empty (Story 4.7); the other regions are empty placeholders until later
 //! stories.
 
 use egui::{Rect, Stroke, Ui, UiBuilder, pos2};
 
+use super::gamepad::{self, PadInput, PadView, TextHeights};
 use super::layout::{RegionId, regions};
-use super::{bottom_bar, paint, status_strip, theme, widgets};
+use super::{bottom_bar, paint, status_strip, theme};
 use crate::gating::Gate;
 use crate::leds::Leds;
 
 /// Draws the main screen over `ui.max_rect()`, the status strip showing
-/// `leds` and the gamepad region the hint of `gate.gamepad`, if blocked.
-/// The status region comes first, so its LEDs are first in the tab order;
-/// the bottom bar comes last, so STOP is last.
-pub fn show(ui: &mut Ui, leds: &Leds, gate: &Gate) -> MainOutput {
+/// `leds` and the gamepad region the pad of `pad` (its hint from
+/// `gate.gamepad` when `pad.hint` is not set by the caller). The status
+/// region comes first, so its LEDs are first in the tab order; the bottom
+/// bar comes last, so STOP is last.
+pub fn show(ui: &mut Ui, leds: &Leds, gate: &Gate, pad: &PadView) -> MainOutput {
     let mut out = MainOutput::default();
     let content = ui.max_rect();
     ui.painter()
@@ -30,10 +33,13 @@ pub fn show(ui: &mut Ui, leds: &Leds, gate: &Gate) -> MainOutput {
             if id == RegionId::Status {
                 status_strip::show(ui, rect, leds);
             }
-            if id == RegionId::Gamepad
-                && let Some(block) = gate.gamepad
-            {
-                widgets::inline_hint(ui, hint_rect(rect), block.gamepad_hint());
+            if id == RegionId::Gamepad {
+                let mut view = *pad;
+                view.enabled = view.enabled && gate.gamepad_enabled();
+                if view.hint.is_none() {
+                    view.hint = gate.gamepad.map(|b| b.gamepad_hint());
+                }
+                out.pad = gamepad::show(ui, rect, &view);
             }
             if id == RegionId::Bottom {
                 out.stop_clicked = bottom_bar::show(ui, rect).stop_clicked;
@@ -44,23 +50,19 @@ pub fn show(ui: &mut Ui, leds: &Leds, gate: &Gate) -> MainOutput {
 }
 
 /// What the main screen reports for the frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MainOutput {
     /// STOP was activated (click, Enter with focus, AccessKit click).
     pub stop_clicked: bool,
+    /// What the pointer did on the gamepad.
+    pub pad: PadInput,
 }
 
-/// Where the gamepad hint goes in the gamepad region `rect`: inset by
-/// `components.inline-hint.inset` (10 pt, the mock's panel padding) from
-/// the left, right and top edges, down to the region's bottom. Story 4.8
-/// moves the hint under the pad.
+/// Where the gamepad hint goes in the gamepad region `rect` (Story 4.8: 8 pt
+/// under the legend, `ui::gamepad::layout`).
 #[must_use]
-pub fn hint_rect(rect: Rect) -> Rect {
-    use theme::components::inline_hint::INSET;
-    Rect::from_min_max(
-        pos2(rect.left() + INSET, rect.top() + INSET),
-        pos2(rect.right() - INSET, rect.bottom()),
-    )
+pub fn hint_rect(ctx: &egui::Context, rect: Rect) -> Rect {
+    gamepad::layout(rect, TextHeights::measure(ctx)).hint
 }
 
 /// A 1 pt bottom hairline snapped to physical pixels: returns the line's

@@ -1,5 +1,6 @@
-//! G.17 (Story 4.6 AC 1, 3, 9, 10): the gate model `ocb_app::gating` on
-//! hand-built snapshots: the block comes from `required_update` only, the
+//! G.17 (Story 4.6 AC 1, 3, 9, 10; Story 4.8 AC 9, 10, 12): the gate model
+//! `ocb_app::gating` on hand-built snapshots and LEDs: the precedence of the
+//! six reasons (the firmware block from `required_update` only), the
 //! firmware dialog trigger fires once per connection (`connected_us`), one
 //! `gate` line per change, no online wording, no egui in the model.
 //! Deterministic, no threads but the log's.
@@ -13,11 +14,13 @@
 
 mod common;
 
+use ocb_app::app::WorkerHealth;
 use ocb_app::gating::{
-    self, Block, FirmwareWatch, Gate, GateTracker, HINT_FIRMWARE, MODAL_BODY, MODAL_OK,
-    MODAL_TITLE, STRINGS, dialog_closed_line, dialog_shown_line, gate_line,
+    self, Block, FirmwareWatch, Gate, GateTracker, HINT_BRIDGE_NOT_READY, HINT_CONTROLLER_LINK,
+    HINT_FIRMWARE, HINT_NO_BRIDGE, HINT_SWITCH_NOT_READY, HINT_WORKER, STRINGS, dialog_closed_line,
+    dialog_shown_line, gate_line,
 };
-use ocb_app::leds::banned_word;
+use ocb_app::leds::{self, LedState, Leds, Link3, Reason, banned_word};
 use ocb_core::device::Class;
 use ocb_core::link::{Phase, StatusView};
 use ocb_core::protocol::consts::PROTO_VERSION;
@@ -92,6 +95,12 @@ fn mismatch(connected_us: u64) -> LinkSnapshot {
 /// A matching controller answered at `connected_us`.
 fn matching(connected_us: u64) -> LinkSnapshot {
     let mut s = empty();
+    s.chosen = Some(Chosen {
+        name: "/dev/cu.usbmodem2101".to_owned(),
+        serial: Some("53032847189C2E9C".to_owned()),
+        class: Class::Ours,
+        open: true,
+    });
     s.phase = Phase::Connected;
     s.connected_us = Some(connected_us);
     s.info = Some(info([0, 0, 0], [0, 0, 0], PROTO_VERSION));
@@ -106,16 +115,78 @@ fn firmware_block() -> Block {
     }
 }
 
+/// The LEDs of `snap` with a running worker.
+fn leds_of(snap: Option<&LinkSnapshot>) -> Leds {
+    leds::evaluate(snap, 0, WorkerHealth::Running)
+}
+
+/// The gate of `snap` and its LEDs.
+fn gate_of(snap: Option<&LinkSnapshot>) -> Gate {
+    gating::evaluate(snap, &leds_of(snap))
+}
+
+fn both(b: Block) -> Gate {
+    Gate {
+        gamepad: Some(b),
+        play: Some(b),
+    }
+}
+
+/// LEDs all `ok` (a matching, ready controller), then each override.
+fn all_ok() -> Leds {
+    let l = leds_of(Some(&matching(NOW - 1_000_000)));
+    for (_, led) in l.all() {
+        assert_eq!(led.state, LedState::Ok, "{led:?}");
+    }
+    l
+}
+
+fn set(l: &mut Leds, link: Link3, state: LedState, reason: Reason) {
+    let led = match link {
+        Link3::PcBridge => &mut l.pc_bridge,
+        Link3::BridgeController => &mut l.bridge_controller,
+        Link3::ControllerSwitch => &mut l.switch,
+    };
+    led.state = state;
+    led.reason = reason;
+}
+
 #[test]
 fn g17_table() {
-    let blocked = Gate {
-        gamepad: Some(firmware_block()),
-        play: Some(firmware_block()),
-    };
     assert_eq!(PROTO_VERSION, 1, "the table's numbers assume protocol 1");
-    // required_update Some → the block for the gamepad and Play.
-    let g = gating::evaluate(Some(&mismatch(NOW - 1_000_000)));
-    assert_eq!(g, blocked);
+    let open = matching(NOW - 1_000_000);
+    let mism = mismatch(NOW - 1_000_000);
+    // All ok + no required update → open.
+    let g = gate_of(Some(&open));
+    assert_eq!(g, Gate::default());
+    assert!(g.gamepad_enabled() && g.play_enabled());
+    // Each reason, end to end from a snapshot (or the worker's health).
+    assert_eq!(
+        gating::evaluate(
+            Some(&open),
+            &leds::evaluate(Some(&open), 0, WorkerHealth::Stalled)
+        ),
+        both(Block::Worker)
+    );
+    assert_eq!(
+        gating::evaluate(
+            Some(&open),
+            &leds::evaluate(Some(&open), 0, WorkerHealth::Ended)
+        ),
+        both(Block::Worker)
+    );
+    assert_eq!(
+        gating::evaluate(None, &leds::evaluate(None, 0, WorkerHealth::NotStarted)),
+        both(Block::Worker)
+    );
+    assert_eq!(gate_of(Some(&empty())), both(Block::NoBridge));
+    assert_eq!(
+        gate_of(None),
+        both(Block::BridgeNotReady),
+        "no snapshot yet"
+    );
+    let g = gate_of(Some(&mism));
+    assert_eq!(g, both(firmware_block()));
     assert_eq!(
         g.gamepad,
         Some(Block::FirmwareUpdate {
@@ -123,27 +194,120 @@ fn g17_table() {
             app_proto: 1
         })
     );
-    assert!(!g.gamepad_enabled() && !g.play_enabled());
-    // info Some + required_update None → no block.
-    let g = gating::evaluate(Some(&matching(NOW - 1_000_000)));
-    assert_eq!(g, Gate::default());
-    assert!(g.gamepad_enabled() && g.play_enabled());
-    // A mismatch with a (untrusted) STATUS saying the console is ready and
-    // a stray INFO: still the block (only required_update counts).
-    let mut s = mismatch(NOW - 1_000_000);
+    // A mismatch with a (untrusted) STATUS saying the console is ready:
+    // still the firmware block.
+    let mut s = mism.clone();
     s.status = Some((status(true), NOW - 10_000));
-    assert_eq!(gating::evaluate(Some(&s)), blocked);
-    // A matching INFO with a not-ready STATUS: no firmware block (4.8 adds
-    // the link reasons).
-    let mut s = matching(NOW - 1_000_000);
+    assert_eq!(gate_of(Some(&s)), both(firmware_block()));
+    // Matching INFO, STATUS link_ok 0 → controller_link; console_ready 0 →
+    // switch_not_ready.
+    let mut s = open.clone();
+    let mut v = status(true);
+    v.link_ok = false;
+    s.status = Some((v, NOW - 10_000));
+    assert_eq!(gate_of(Some(&s)), both(Block::ControllerLink));
+    let mut s = open.clone();
     s.status = Some((status(false), NOW - 10_000));
-    assert_eq!(gating::evaluate(Some(&s)), Gate::default());
-    // No snapshot, empty snapshot → no block.
-    assert_eq!(gating::evaluate(None), Gate::default());
-    assert_eq!(gating::evaluate(Some(&empty())), Gate::default());
-    // The hint and the log reason of the block.
-    assert_eq!(firmware_block().gamepad_hint(), HINT_FIRMWARE);
-    assert_eq!(firmware_block().as_str(), "firmware_update");
+    assert_eq!(gate_of(Some(&s)), both(Block::SwitchNotReady));
+    // The order, pairwise on the LEDs.
+    let worker_over_bridge = {
+        let mut l = all_ok();
+        set(&mut l, Link3::PcBridge, LedState::Error, Reason::NotFound);
+        set(
+            &mut l,
+            Link3::ControllerSwitch,
+            LedState::Unknown,
+            Reason::WorkerStalled,
+        );
+        gating::evaluate(Some(&open), &l)
+    };
+    assert_eq!(worker_over_bridge, both(Block::Worker));
+    let no_bridge_over_firmware = {
+        let mut l = all_ok();
+        set(&mut l, Link3::PcBridge, LedState::Error, Reason::NotFound);
+        gating::evaluate(Some(&mism), &l)
+    };
+    assert_eq!(no_bridge_over_firmware, both(Block::NoBridge));
+    let bridge_over_firmware = {
+        let mut l = all_ok();
+        set(&mut l, Link3::PcBridge, LedState::Warning, Reason::Busy);
+        gating::evaluate(Some(&mism), &l)
+    };
+    assert_eq!(bridge_over_firmware, both(Block::BridgeNotReady));
+    let firmware_over_links = {
+        let mut l = all_ok();
+        set(
+            &mut l,
+            Link3::BridgeController,
+            LedState::Error,
+            Reason::LinkDown,
+        );
+        set(
+            &mut l,
+            Link3::ControllerSwitch,
+            LedState::Warning,
+            Reason::ConsoleNotReady,
+        );
+        gating::evaluate(Some(&mism), &l)
+    };
+    assert_eq!(firmware_over_links, both(firmware_block()));
+    let controller_over_switch = {
+        let mut l = all_ok();
+        set(
+            &mut l,
+            Link3::BridgeController,
+            LedState::Error,
+            Reason::Stale,
+        );
+        set(
+            &mut l,
+            Link3::ControllerSwitch,
+            LedState::Warning,
+            Reason::ConsoleNotReady,
+        );
+        gating::evaluate(Some(&open), &l)
+    };
+    assert_eq!(controller_over_switch, both(Block::ControllerLink));
+    let switch_alone = {
+        let mut l = all_ok();
+        set(
+            &mut l,
+            Link3::ControllerSwitch,
+            LedState::Unknown,
+            Reason::Waiting,
+        );
+        gating::evaluate(Some(&open), &l)
+    };
+    assert_eq!(switch_alone, both(Block::SwitchNotReady));
+    // The hints and log reasons of every block.
+    let want = [
+        (Block::Worker, HINT_WORKER, "worker"),
+        (Block::NoBridge, HINT_NO_BRIDGE, "no_bridge"),
+        (
+            Block::BridgeNotReady,
+            HINT_BRIDGE_NOT_READY,
+            "bridge_not_ready",
+        ),
+        (firmware_block(), HINT_FIRMWARE, "firmware_update"),
+        (
+            Block::ControllerLink,
+            HINT_CONTROLLER_LINK,
+            "controller_link",
+        ),
+        (
+            Block::SwitchNotReady,
+            HINT_SWITCH_NOT_READY,
+            "switch_not_ready",
+        ),
+    ];
+    assert_eq!(
+        Block::samples().to_vec(),
+        want.iter().map(|w| w.0).collect::<Vec<_>>()
+    );
+    for (b, hint, name) in want {
+        assert_eq!(b.gamepad_hint(), hint);
+        assert_eq!(b.as_str(), name);
+    }
 }
 
 #[test]
@@ -202,18 +366,23 @@ fn g17_watch_coalesced_reconnect() {
 fn g17_gate_log_lines() {
     // The matcher itself.
     assert!(common::is_gate_line(
-        "gamepad=off play=off reason=firmware_update controller_proto=2 app_proto=1"
+        "gamepad=off gamepad_reason=firmware_update play=off play_reason=firmware_update controller_proto=2 app_proto=1"
     ));
     assert!(common::is_gate_line(
-        "gamepad=on play=on reason=none controller_proto=- app_proto=-"
+        "gamepad=on gamepad_reason=none play=on play_reason=none controller_proto=- app_proto=-"
+    ));
+    assert!(common::is_gate_line(
+        "gamepad=off gamepad_reason=no_bridge play=off play_reason=no_bridge controller_proto=- app_proto=-"
     ));
     for bad in [
-        "gamepad=maybe play=off reason=firmware_update controller_proto=2 app_proto=1",
-        "gamepad=off play=off reason=Firmware controller_proto=2 app_proto=1",
-        "gamepad=off play=off reason=firmware_update controller_proto=2.0 app_proto=1",
-        "gamepad=off play=off reason=firmware_update controller_proto=2",
-        "gamepad=off play=off reason=firmware_update controller_proto=2 app_proto=1 x=1",
-        "play=off gamepad=off reason=firmware_update controller_proto=2 app_proto=1",
+        "gamepad=maybe gamepad_reason=firmware_update play=off play_reason=firmware_update controller_proto=2 app_proto=1",
+        "gamepad=off gamepad_reason=Firmware play=off play_reason=firmware_update controller_proto=2 app_proto=1",
+        "gamepad=off gamepad_reason=firmware_update play=off play_reason=firmware_update controller_proto=2.0 app_proto=1",
+        "gamepad=off gamepad_reason=firmware_update play=off play_reason=firmware_update controller_proto=2",
+        "gamepad=off gamepad_reason=firmware_update play=off play_reason=firmware_update controller_proto=2 app_proto=1 x=1",
+        "play=off play_reason=firmware_update gamepad=off gamepad_reason=firmware_update controller_proto=2 app_proto=1",
+        "gamepad=off play=off reason=firmware_update controller_proto=2 app_proto=1",
+        "gamepad=off gamepad_reason=asleep play=off play_reason=none controller_proto=- app_proto=-",
     ] {
         assert!(!common::is_gate_line(bad), "{bad}");
     }
@@ -230,15 +399,35 @@ fn g17_gate_log_lines() {
         "closed id=firmware_update_needed outcome=secondary"
     ));
     // The exact texts.
-    let blocked = gating::evaluate(Some(&mismatch(1_000_000)));
+    let blocked = gate_of(Some(&mismatch(1_000_000)));
     assert_eq!(
         gate_line(&blocked),
-        "gamepad=off play=off reason=firmware_update controller_proto=2 app_proto=1"
+        "gamepad=off gamepad_reason=firmware_update play=off play_reason=firmware_update controller_proto=2 app_proto=1"
     );
     assert_eq!(
         gate_line(&Gate::default()),
-        "gamepad=on play=on reason=none controller_proto=- app_proto=-"
+        "gamepad=on gamepad_reason=none play=on play_reason=none controller_proto=- app_proto=-"
     );
+    // Each gate with its own reason (finding 14).
+    let split = Gate {
+        gamepad: Some(Block::SwitchNotReady),
+        play: Some(firmware_block()),
+    };
+    assert_eq!(
+        gate_line(&split),
+        "gamepad=off gamepad_reason=switch_not_ready play=off play_reason=firmware_update controller_proto=2 app_proto=1"
+    );
+    let half = Gate {
+        gamepad: Some(Block::Worker),
+        play: None,
+    };
+    assert_eq!(
+        gate_line(&half),
+        "gamepad=off gamepad_reason=worker play=on play_reason=none controller_proto=- app_proto=-"
+    );
+    for b in Block::samples() {
+        assert!(common::is_gate_line(&gate_line(&both(b))), "{b:?}");
+    }
     let s = mismatch(1_005_000);
     let line = dialog_shown_line(&s.required_update.unwrap(), 1_005_000);
     assert_eq!(
@@ -254,14 +443,14 @@ fn g17_gate_log_lines() {
     let sink = MemorySink::new();
     let logger = Logger::spawn(Box::new(sink.clone()), false, None);
     let mut t = GateTracker::new(logger.handle());
-    let open = gating::evaluate(Some(&matching(1_000)));
+    let open = gate_of(Some(&matching(NOW - 1_000)));
     for _ in 0..100 {
         t.observe(&open);
     }
     for _ in 0..100 {
         t.observe(&blocked);
     }
-    t.observe(&gating::evaluate(None));
+    t.observe(&gate_of(Some(&matching(NOW - 1_000))));
     for _ in 0..100 {
         t.observe(&open);
     }
@@ -273,8 +462,8 @@ fn g17_gate_log_lines() {
     assert_eq!(
         texts,
         vec![
-            "gamepad=off play=off reason=firmware_update controller_proto=2 app_proto=1",
-            "gamepad=on play=on reason=none controller_proto=- app_proto=-",
+            "gamepad=off gamepad_reason=firmware_update play=off play_reason=firmware_update controller_proto=2 app_proto=1",
+            "gamepad=on gamepad_reason=none play=on play_reason=none controller_proto=- app_proto=-",
         ]
     );
 }
@@ -282,8 +471,17 @@ fn g17_gate_log_lines() {
 #[test]
 fn g17_no_online_wording() {
     assert_eq!(banned_word("Sync now"), Some("sync"));
-    assert_eq!(STRINGS, [HINT_FIRMWARE, MODAL_TITLE, MODAL_BODY, MODAL_OK]);
-    for text in STRINGS.into_iter().chain([firmware_block().gamepad_hint()]) {
+    assert_eq!(STRINGS.len(), 9);
+    // Every block's hint comes from `samples()` (exhaustive: a new variant
+    // does not compile until it is listed there), and every one is in
+    // STRINGS.
+    for b in Block::samples() {
+        assert!(STRINGS.contains(&b.gamepad_hint()), "{b:?}");
+    }
+    for text in STRINGS
+        .into_iter()
+        .chain(Block::samples().iter().map(Block::gamepad_hint))
+    {
         assert_eq!(banned_word(text), None, "{text}");
     }
 }

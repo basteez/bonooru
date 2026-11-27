@@ -3,7 +3,7 @@
 //! ring on parchment, the `scrim`, a text-score sample and one specimen per
 //! typography token (Story 4.1 AC 11), then one section per painting helper
 //! of Story 4.3: focus ring, glow, text halo, dashed rects, convex fills,
-//! stroke floor, digit cells, the 12 painted symbols, corner brackets, a
+//! stroke floor, digit cells, the 14 painted symbols, corner brackets, a
 //! readiness-style sample dialog and the real firmware dialog of Story 4.6,
 //! then the Story 4.6 inline hint at two widths. Not reachable from normal
 //! navigation; the gallery never reads a dialog's outcome.

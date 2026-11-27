@@ -13,10 +13,12 @@ use ocb_services::worker::{
 };
 use raw_window_handle::HasWindowHandle as _;
 
+use crate::gamepad::{self, Pad, Release, Target};
 use crate::gating::{self, FirmwareWatch, Gate, GateTracker};
 use crate::leds::{self, LedTracker, Leds};
 use crate::smoke::{self, Report, Smoke};
 use crate::stop::{self, CommandResult, StopSource};
+use crate::ui::gamepad::{PadInput, view_of};
 use crate::ui::keys::{self, FrameKeys};
 use crate::ui::modal::{ModalOutcome, Modals};
 use crate::ui::{firmware, gallery, main_screen, theme};
@@ -193,6 +195,13 @@ pub struct App {
     /// The delay last passed to `request_repaint_after` for the LEDs'
     /// next timed change (test hook, [`App::last_repaint_after`]).
     last_repaint_after: Option<Duration>,
+    /// The virtual gamepad's model (Story 4.8).
+    pad: Pad,
+    /// The window had focus in the previous first pass (blur edge).
+    focused: bool,
+    /// The delay last passed to `request_repaint_after` for the pad (test
+    /// hook, [`App::last_pad_wake`]).
+    last_pad_wake: Option<Duration>,
 }
 
 impl App {
@@ -259,6 +268,9 @@ impl App {
             gate_tracker: GateTracker::new(log.clone()),
             log,
             last_repaint_after: None,
+            pad: Pad::new(),
+            focused: true,
+            last_pad_wake: None,
         }
     }
 
@@ -285,11 +297,11 @@ impl App {
         self
     }
 
-    /// What the latest snapshot blocks (Story 4.6): the gamepad and Play
-    /// are off while the controller needs a firmware update.
+    /// What blocks the gamepad and Play now (Story 4.6, 4.8): the worker,
+    /// the three LEDs and a required firmware update.
     #[must_use]
     pub fn gate(&self) -> Gate {
-        gating::evaluate(self.link_snapshot().map(AsRef::as_ref))
+        gating::evaluate(self.link_snapshot().map(AsRef::as_ref), &self.leds())
     }
 
     /// The three LEDs now (Story 4.5): the latest snapshot, the UI clock's
@@ -399,6 +411,129 @@ impl App {
         );
     }
 
+    /// The delay the last main-screen first pass passed to
+    /// `request_repaint_after` for the pad (a tap's release, a resend), if
+    /// any (test hook).
+    #[must_use]
+    pub fn last_pad_wake(&self) -> Option<Duration> {
+        self.last_pad_wake
+    }
+
+    /// The virtual gamepad's model (test hook, read only).
+    #[must_use]
+    pub fn pad(&self) -> &Pad {
+        &self.pad
+    }
+
+    /// The UI clock in µs (the pad's time base).
+    fn now_us(&self) -> u64 {
+        micros(self.clock.now())
+    }
+
+    /// The gamepad's part of a main-screen frame, first pass only (Story
+    /// 4.8 AC 4–9, 16, 17), after STOP was requested for the frame (so a
+    /// `stop requested` line precedes every `pad` line of the frame): the
+    /// release rules, the gate, the pointer, the controller mode, the tap
+    /// timer, then the one `SetState` (its `pad` lines written first).
+    /// Returns when the pad needs the next frame with no input.
+    fn pad_frame(
+        &mut self,
+        input: &PadInput,
+        blurred: bool,
+        stopped: bool,
+        gate: &Gate,
+    ) -> Option<Duration> {
+        let now = self.now_us();
+        // (1) Window blur (rule 8a): SET_STATE NEUTRAL.
+        if blurred {
+            self.pad.release_all(Release::WindowBlur);
+        }
+        // (2) STOP this frame (rule 8b, AC 16): STOP releases; the frame's
+        // press is ignored and spent.
+        if stopped {
+            self.pad.release_all(Release::Stop);
+            if input.press.is_some() {
+                self.pad.spend_press();
+            }
+        }
+        // The pointer is up: a hold ends (also when the release happened
+        // where the pad did not see it).
+        let pointer_up = |pad: &mut Pad| {
+            if input.released || !input.primary_down {
+                pad.pointer_up(now);
+            }
+        };
+        match gate.gamepad {
+            Some(block) => {
+                // (3) Rule 8c: the gate turned blocked while the controller
+                // may apply an input: STOP (NEUTRAL could be refused).
+                if self.pad.is_active() && !stopped {
+                    self.pad.release_all(Release::Gate);
+                    self.request_stop(StopSource::Gamepad);
+                }
+                if !stopped {
+                    let ignored = input.press.or(input.tap.map(Target::Control));
+                    if let Some(t) = ignored {
+                        self.log
+                            .log("pad", gamepad::ignored_line(t, block.as_str()));
+                    }
+                }
+                pointer_up(&mut self.pad);
+            }
+            None => {
+                // (4) The gate is open: press, drag, taps, release.
+                let full = theme::components::gamepad_stick::FULL_DEFLECTION;
+                if !stopped {
+                    match input.press {
+                        Some(Target::Control(c)) => self.pad.press(c, now),
+                        Some(Target::Stick(s)) => self.pad.stick_start(s, input.press_offset, full),
+                        None => {}
+                    }
+                    if let Some(c) = input.tap {
+                        self.pad.tap(c, now);
+                    }
+                }
+                if let Some(o) = input.drag_offset {
+                    self.pad.stick_drag(o, full);
+                }
+                pointer_up(&mut self.pad);
+            }
+        }
+        // (5) Rule 8d: the controller left DIRECT by itself.
+        let mode = self
+            .link_snapshot()
+            .and_then(|s| s.status.map(|(v, _)| v.mode));
+        self.pad.observe_mode(mode);
+        // (6) A due tap release.
+        self.pad.tick(now);
+        // (7) Lines first, then the state (AC 17).
+        let send = self.pad.take_send();
+        for line in self.pad.take_lines() {
+            self.log.log("pad", line);
+        }
+        if let Some(state) = send {
+            let result = match self.link.as_ref() {
+                None => Err(CommandResult::NoWorker),
+                Some(l) if l.health(self.clock.now()) == WorkerHealth::Ended => {
+                    Err(CommandResult::WorkerGone)
+                }
+                Some(l) => match l.handle.commands.try_send(WorkerCommand::SetState(state)) {
+                    Ok(()) => Ok(()),
+                    Err(TrySendError::Full(_)) => Err(CommandResult::QueueFull),
+                    Err(TrySendError::Disconnected(_)) => Err(CommandResult::WorkerGone),
+                },
+            };
+            self.pad.sent(result.map_err(CommandResult::as_str));
+            for line in self.pad.take_lines() {
+                self.log.log("pad", line);
+            }
+        }
+        // (8) The tap release and a resend need a frame with no input.
+        self.pad
+            .next_wake_us(now)
+            .map(|t| Duration::from_micros(t.saturating_sub(now).max(1)))
+    }
+
     /// The dialog host, for screens and tests to request dialogs.
     pub fn modals_mut(&mut self) -> &mut Modals {
         &mut self.modals
@@ -486,6 +621,7 @@ impl eframe::App for App {
         };
         // At most one STOP per frame; the first source wins in the log.
         let mut stop = keys.stop.then_some(StopSource::Esc);
+        let mut stop_done = false;
         match self.mode {
             Mode::Main => {
                 let leds = self.leds();
@@ -520,15 +656,46 @@ impl eframe::App for App {
                     ui.ctx().request_discard("firmware dialog opens");
                     self.log.log("dialog", gating::dialog_shown_line(&info, at));
                 }
-                let out = main_screen::show(ui, &leds, &gate);
+                let view = view_of(
+                    &self.pad,
+                    gate.gamepad_enabled(),
+                    gate.gamepad.map(|b| b.gamepad_hint()),
+                );
+                let out = main_screen::show(ui, &leds, &gate, &view);
                 if out.stop_clicked && stop.is_none() {
                     stop = Some(StopSource::Button);
                 }
+                // STOP before any pad line of the frame (Story 4.8 AC 8b,
+                // 16); the gamepad reads input in the first pass only.
+                let mut pad_wake = None;
+                if first_pass {
+                    if let Some(source) = stop.take() {
+                        self.request_stop(source);
+                        stop_done = true;
+                    }
+                    // The blur: a `WindowFocused(false)` event or the
+                    // focus flag falling.
+                    let (focused, blur_event) = ui.ctx().input(|i| {
+                        (
+                            i.focused,
+                            i.events
+                                .iter()
+                                .any(|e| matches!(e, egui::Event::WindowFocused(false))),
+                        )
+                    });
+                    let blurred = blur_event || (self.focused && !focused);
+                    self.focused = focused && !blur_event;
+                    pad_wake = self.pad_frame(&out.pad, blurred, stop_done, &gate);
+                    self.last_pad_wake = pad_wake;
+                }
                 // A staleness or grace boundary, or a silent worker turning
                 // stalled, changes an LED with no new snapshot: draw that
-                // frame on time (AC 6, 7, 8).
+                // frame on time (AC 6, 7, 8). The pad's tap release too.
                 self.last_repaint_after = self.repaint_after(&leds);
                 if let Some(d) = self.last_repaint_after {
+                    ui.ctx().request_repaint_after(d);
+                }
+                if let Some(d) = pad_wake {
                     ui.ctx().request_repaint_after(d);
                 }
             }
@@ -541,6 +708,7 @@ impl eframe::App for App {
         // requested in every case.
         if let Some(source) = stop
             && first_pass
+            && !stop_done
         {
             self.request_stop(source);
         }

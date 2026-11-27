@@ -236,11 +236,17 @@ fn g18_modal_on_mismatch() {
     assert_eq!(r.h.state().modals().open_id(), Some(firmware::dialog_id()));
     let _ = r.h.get_by_role_and_label(Role::Label, MODAL_BODY);
     // Exactly one dialog button, "OK" (the LEDs are Status nodes); the
-    // bottom bar's STOP (Story 4.7) is the only other button, under the
-    // scrim, and comes first in the tree.
+    // gamepad's 16 controls (Story 4.8) and the bottom bar's STOP (Story
+    // 4.7) are the only other buttons, under the scrim, and come first in
+    // the tree.
+    let pad: Vec<&str> = ocb_app::gamepad::Control::ALL
+        .iter()
+        .map(|c| c.a11y_name())
+        .collect();
     let buttons: Vec<String> =
         r.h.query_all_by_role(Role::Button)
             .map(|n| n.accesskit_node().label().unwrap_or_default())
+            .filter(|l| !pad.contains(&l.as_str()))
             .collect();
     assert_eq!(buttons, vec!["Stop".to_owned(), "OK".to_owned()]);
     let spec = firmware::required_update_dialog();
@@ -405,15 +411,23 @@ fn g18_reshown_on_reconnect() {
     let mut r = rig(vec![port]);
     r.until_dialog();
     r.click_ok();
-    // Unplugged at 1 s: the gate lifts with the loss and the hint goes
-    // (Open question 7).
+    // Unplugged at 1 s: the firmware block lifts with the loss and its
+    // hint goes (Open question 7); from Story 4.8 the gate names the
+    // missing bridge instead.
     r.advance_until(50_000, |h| {
         h.state()
             .link_snapshot()
             .is_some_and(|s| s.required_update.is_none() && s.now_us >= 1_000_000)
     });
-    assert_eq!(r.h.state().gate(), Gate::default(), "unplugged");
-    assert!(!r.hint_drawn(), "no hint while unplugged");
+    assert_eq!(
+        r.h.state().gate(),
+        Gate {
+            gamepad: Some(Block::NoBridge),
+            play: Some(Block::NoBridge)
+        },
+        "unplugged"
+    );
+    assert!(!r.hint_drawn(), "no firmware hint while unplugged");
     assert!(!r.dialog_drawn());
     // Back at 2 s, still mismatching: the dialog again.
     r.advance_until(50_000, |h| h.state().modals().is_open());
@@ -471,17 +485,30 @@ fn g18_resolved_by_reconnect() {
         assert_eq!(r.h.state().gate(), Gate::default());
     }
     assert_eq!(r.h.state().link_snapshot().unwrap().phase, Phase::Connected);
+    // From Story 4.8 the link reasons add lines: the start (the controller
+    // not answered yet), the mismatch, the unplug (no bridge), the new
+    // bridge before its STATUS (controller link), then on. The firmware
+    // block appears once, and the gate ends open.
     let gate = r.lines("gate");
     let blocked_line = format!(
-        "gamepad=off play=off reason=firmware_update controller_proto={} app_proto={PROTO_VERSION}",
+        "gamepad=off gamepad_reason=firmware_update play=off play_reason=firmware_update controller_proto={} app_proto={PROTO_VERSION}",
         PROTO_VERSION.wrapping_add(1)
     );
     assert_eq!(
-        gate,
-        vec![
-            blocked_line,
-            "gamepad=on play=on reason=none controller_proto=- app_proto=-".to_owned()
-        ],
+        gate.iter().filter(|l| **l == blocked_line).count(),
+        1,
+        "{gate:?}"
+    );
+    assert!(gate.iter().all(|l| common::is_gate_line(l)), "{gate:?}");
+    assert!(
+        gate.iter().any(|l| l.contains("gamepad_reason=no_bridge")),
+        "{gate:?}"
+    );
+    assert_eq!(
+        gate.last().map(String::as_str),
+        Some(
+            "gamepad=on gamepad_reason=none play=on play_reason=none controller_proto=- app_proto=-"
+        ),
         "{gate:?}"
     );
     let dialog = common::kind_texts(&r.sink.lines(), "dialog");
@@ -526,7 +553,9 @@ fn g18_hint() {
         common::inside(ink, pad.shrink(10.0), 0.5),
         "{ink:?} in {pad:?}"
     );
-    assert!((ink.top() - (pad.top() + 10.0)).abs() <= 0.5);
+    // Story 4.8: under the gamepad legend.
+    let hint = ocb_app::ui::main_screen::hint_rect(&r.h.ctx, pad);
+    assert!((ink.top() - hint.top()).abs() <= 0.5);
     r.click_ok();
     assert!(hint_shape(&r.h).is_some(), "after OK");
     // Not focusable, and never in the Tab ring while Tab does move focus.
@@ -628,7 +657,20 @@ fn g18_recommended_blocks_nothing() {
     assert_eq!(leds.bridge_controller.state, ocb_app::leds::LedState::Ok);
     assert!(leds.bridge_controller.name().starts_with("Controller v"));
     assert!(r.lines("dialog").is_empty());
-    assert!(common::kind_texts(&r.sink.lines(), "gate").is_empty());
+    // A recommended update blocks nothing: from Story 4.8 the gate lines
+    // are the start's link reasons, then open, never `firmware_update`.
+    let gate = common::kind_texts(&r.sink.lines(), "gate");
+    assert!(
+        gate.iter().all(|l| !l.contains("firmware_update")),
+        "{gate:?}"
+    );
+    assert_eq!(
+        gate.last().map(String::as_str),
+        Some(
+            "gamepad=on gamepad_reason=none play=on play_reason=none controller_proto=- app_proto=-"
+        ),
+        "{gate:?}"
+    );
 }
 
 /// Review finding 1: an Esc pressed in the frame the mismatch arrives (the

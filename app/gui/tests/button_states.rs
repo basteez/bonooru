@@ -161,7 +161,12 @@ fn screen() -> Harness<'static> {
         .with_context_setup(ocb_app::setup)
         .build_ui(|ui| {
             let l = leds::evaluate(None, 0, WorkerHealth::Running);
-            let _ = main_screen::show(ui, &l, &Gate::default());
+            let _ = main_screen::show(
+                ui,
+                &l,
+                &Gate::default(),
+                &ocb_app::ui::gamepad::PadView::default(),
+            );
         });
     h.run();
     h

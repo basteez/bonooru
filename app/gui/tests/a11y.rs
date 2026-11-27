@@ -251,3 +251,23 @@ fn g10_accessibility_check_stays_on() {
         );
     }
 }
+
+/// Story 4.8 AC 14: the gamepad panel is 16 `Button` nodes and 2 `Slider`
+/// nodes (plus its labels); the D-pad triangles, the ⌫ ↵ chips and the
+/// other chips add no `Image` node.
+#[test]
+fn g10_gamepad_nodes() {
+    use egui::accesskit::Role as AkRole;
+    let h = harness(|ui| {
+        let region = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 560.0));
+        let _ = ocb_app::ui::gamepad::show(ui, region, &ocb_app::ui::gamepad::PadView::default());
+    });
+    assert_eq!(h.query_all_by_role(AkRole::Button).count(), 16);
+    assert_eq!(h.query_all_by_role(AkRole::Slider).count(), 2);
+    assert_eq!(h.query_all_by_role(AkRole::Image).count(), 0);
+    for n in h.query_all_by_role(AkRole::Button) {
+        assert!(!symbols::has_glyph(
+            &n.accesskit_node().label().unwrap_or_default()
+        ));
+    }
+}

@@ -156,6 +156,10 @@ typography:
     fontFamily: Nunito Sans
     fontSize: 10px
     fontWeight: '600'
+  legend-name:                      # lifted from mockups/key-empty-state.html .legend b (Story 4.8)
+    fontFamily: Nunito Sans
+    fontSize: 12.5px
+    fontWeight: '600'
   safety-note:                      # lifted from mockups/key-empty-state.html (Story 4.7)
     fontFamily: Nunito Sans
     fontSize: 13px
@@ -330,6 +334,23 @@ components:
     foreground: '{colors.on-ember}'
     typography: '{typography.note-label}'
     radius: '{rounded.sm}'
+  gamepad-panel:                     # lifted from mockups/key-empty-state.html (Story 4.8)
+    padding: 10px                    # .right{padding:10px}
+    caption-gap: 4px                 # .sub{margin:4px 0}
+    pad-margin: 6px                  # .padwrap{margin:6px 0}
+    hint-gap: 8px                    # .ihint{margin-top:8px}
+    pad-width: 280px                 # the pad svg
+    pad-height: 200px
+  gamepad-legend:                    # lifted from mockups/key-empty-state.html .legend (Story 4.8)
+    row-padding-y: 3px
+    row-padding-x: 4px
+    divider: '1px {colors.well}'
+    name: '{colors.parchment}'
+    keys: '{colors.text}'
+    typography: '{typography.small}'
+    name-typography: '{typography.legend-name}'
+  gamepad-stick:                     # Story 4.8 AC 5
+    full-deflection: 17px            # pointer travel for full deflection (the well radius)
   gamepad-body:
     background: '{colors.rule}'
     border: '1.5px {colors.rim}'
@@ -338,6 +359,7 @@ components:
     border: '1px {colors.rim}'
     well: '{colors.well}'
     foreground: '{colors.text}'
+    tap-min-ms: 50                   # shortest press a click sends (Story 4.8 AC 4: U7 33.3 ms + one 60 Hz frame)
   gamepad-control-lit:
     background: '{colors.amber}'
     foreground: '{colors.ink}'
@@ -686,7 +708,7 @@ An `unknown` LED shows its label only ("Switch"), with no detail text. → Refer
 
 **Context menu** (note view). `context-menu`: Panel-raised, 1 px rim, `{rounded.md}`, rows in `{typography.body}` with 6/12 px padding, hover/focus row in `{colors.amber-wash}`, a `rule-strong` separator before Delete. Rows: Move up an octave · Move down an octave · (separator) · Delete; out-of-range notes add "Reset to proposal". Disabled rows at 45 % opacity.
 
-**Virtual gamepad.** → Reference: direction 3 (gamepad, focus and lit states). An original Pro-Controller-like silhouette (`gamepad-body`: Rule fill, 1.5 px rim), **filled as a union of convex shapes** (rounded rects and circles for body and grips) and **outlined by one stroked path** on top, so the result looks like one closed shape without concave fills. Controls: ZL/ZR and L/R as rounded rects above the body; two sticks (17 px well ring + 11 px knob); D-pad cross (two rects) in a 22 px well; ABXY diamond (10 px circles in a 31 px well); −, +, Capture (square with dot), Home (house shape, convex). All controls `gamepad-control`. **Callouts**: a `gamepad-key-chip` beside each keyboard-mapped control — Z, Q, E, C, H, J, K, L, ⌫, ↵ (⌫ and ↵ painted as shapes), and one "WASD · arrows" chip under the D-pad; "mouse" in `{colors.text-muted}` next to the sticks. Where a chip cannot sit beside its control, a 1 px rim leader line joins them [ASSUMPTION]. A legend list under the pad repeats the mapping (control name in parchment, keys in body).
+**Virtual gamepad.** → Reference: direction 3 (gamepad, focus and lit states). An original Pro-Controller-like silhouette (`gamepad-body`: Rule fill, 1.5 px rim), **filled as a union of convex shapes** (rounded rects and circles for body and grips) and **outlined by one stroked path** on top, so the result looks like one closed shape without concave fills. Controls: ZL/ZR and L/R as rounded rects above the body; two sticks (17 px well ring + 11 px knob); D-pad cross (two rects) in a 22 px well; ABXY diamond (10 px circles in a 31 px well); −, +, Capture (square with dot), Home (house shape, convex). All controls `gamepad-control`. **Callouts**: a `gamepad-key-chip` beside each keyboard-mapped control — Z, Q, E, C, H, J, K, L, ⌫, ↵ (⌫ and ↵ painted as shapes), and one "WASD · arrows" chip under the D-pad; "mouse" in `{colors.text-muted}` next to the sticks. Where a chip cannot sit beside its control, a 1 px rim leader line joins them [ASSUMPTION]. A legend list under the pad repeats the mapping (control name in parchment, keys in body). **Epic 4 (Story 4.8):** geometry from the empty-state mock's 280 × 200 svg (`mockups/key-empty-state.html`), colours from the tokens (the mock's hexes are a darker study); the body is filled as one mesh of convex triangles (a fan from a point the outline is star-shaped from) under the one stroked outline; panel layout `components.gamepad-panel` (10 px padding, caption 4 px under the tab's underline, the pad after the larger of the caption's 4 px and the pad's 6 px margin, the legend 6 px under the pad); legend `components.gamepad-legend` (names `typography.legend-name`); letters on the controls in the key-chip family at 10 px bold; the D-pad arrows are painted triangles (down reuses the ▾ shape); held = the state-layer pressed tint, hover = the state-layer hover tint, both only while the gate is open (lit amber stays for the Play visualizer); the hint sits 8 px under the legend.
 
 - **Focused** (`gamepad-panel-focused`): the whole panel gets an inset 2 px amber ring plus an inset amber wash (stacked inset strokes), and the panel tab shows `chip-keys-active` "Keys active".
 - **Lit-key visualizer** (during countdown and Play): the panel shows `chip-locked` "Locked · live view"; every control the song is pressing turns `gamepad-control-lit` (amber fill with Shadow glow, ink letter); a caption under the pad names the current input, e.g. "Now: Y + D↑ (C5)".
@@ -698,7 +720,7 @@ An `unknown` LED shows its label only ("Switch"), with no detail text. → Refer
 
 **Interruption banner** (dialogue-style). → Reference: direction 3 (dialogue banner) and [mockups/key-dialogs.html](mockups/key-dialogs.html) (USB-suspend banner). Used for playback interruptions and import failures, over the bottom of the note view. `banner-dialogue`: translucent dark fill, 1 px cream-40 % border, `{rounded.md}`, 16/20 px padding, centred `{typography.banner-text}`. A **name tab** (`banner-name-tab`) overlaps the top edge at the left, e.g. "Playback stopped". Actions centred: primary = parchment fill with ink text, secondary = ghost (cream-50 % outline). A small ▾ chevron (painted) sits centred on the bottom edge. A "Details" text link sits at the right end of the action row. The **Update banner** is the slim variant: full width under the status strip (8 px side margins), 38 px high, single line, same fill and border, no name tab; "Update" in the parchment primary style, "Later" ghost, both right-aligned. → Reference: [mockups/key-dialogs.html](mockups/key-dialogs.html) (recommended-update banner).
 
-**Inline hint.** `inline-hint`: one line of `{typography.small}` in `{colors.text-muted}` with an optional small button, placed in the region it concerns (e.g. "Plug the bridge into your PC." in the gamepad panel; "Gamepad clicks are ignored until the Switch is ready." or "The gamepad is off until both boards are updated." under the pad). Until the pad exists (Story 4.8) the hint sits at the top of the gamepad panel, `components.inline-hint.inset` (10 px, the mock's panel padding) inside its left, right and top edges, wrapped to the panel width (Story 4.6).
+**Inline hint.** `inline-hint`: one line of `{typography.small}` in `{colors.text-muted}` with an optional small button, placed in the region it concerns (e.g. "Plug the bridge into your PC." in the gamepad panel; "Gamepad clicks are ignored until the Switch is ready." or "The gamepad is off until both boards are updated." under the pad). From Story 4.8 the gamepad's hint sits under the pad, `components.gamepad-panel.hint-gap` (8 px) below the legend, wrapped to the panel width; it is never painted outside its rect (a taller text is clipped). (Story 4.6 placed it at the top of the panel, `components.inline-hint.inset` inside its edges; the gallery sample keeps that inset.)
 
 **Countdown.** → Reference: direction 3 (countdown). `countdown-veil` (80 %) over the note-view card only; centred numeral in `{typography.countdown}`, **cream (`{colors.text}`) with a 2 px `{colors.frame}` outline** (8 offset draws) and a soft amber rounded-rect halo behind it (text cannot glow in egui). Sub-line 14 px semibold cream: "Starting from 0:12 · hands off the controller". Cream on the composited veil (~#413a2d) is 8.85:1 for both numeral and sub-line.
 

@@ -1434,3 +1434,474 @@ fn c28_intake_takes_every_command() {
     assert!(stop_frames(&r).is_empty());
     assert!(finish(r, logger, &sink).is_empty());
 }
+
+// ------------------------------------------------------------ C.29
+
+/// The frames of type `ty` among the chunks written to `CU`, in write
+/// order, with the chunk's time.
+fn frames_of(r: &SimRig, ty: u8) -> Vec<u64> {
+    let st = r.backend.state();
+    let mut out = Vec::new();
+    for (t, name, bytes) in &st.writes {
+        if name != CU {
+            continue;
+        }
+        for enc in bytes.split(|&b| b == 0).filter(|f| !f.is_empty()) {
+            if decode_frame(RxSide::Controller, enc).is_ok_and(|f| f.ty == ty) {
+                out.push(*t);
+            }
+        }
+    }
+    out
+}
+
+/// The types of every frame written to `CU`, in write order.
+fn frame_types(r: &SimRig) -> Vec<u8> {
+    let st = r.backend.state();
+    let mut out = Vec::new();
+    for (_, name, bytes) in &st.writes {
+        if name != CU {
+            continue;
+        }
+        for enc in bytes.split(|&b| b == 0).filter(|f| !f.is_empty()) {
+            if let Ok(f) = decode_frame(RxSide::Controller, enc) {
+                out.push(f.ty);
+            }
+        }
+    }
+    out
+}
+
+/// The lines of `kind` (their text after the kind).
+fn kind_lines(lines: &[String], kind: &str) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|l| l.split(' ').nth(2) == Some(kind))
+        .map(|l| l.splitn(4, ' ').nth(3).unwrap_or("").to_owned())
+        .collect()
+}
+
+fn finish_all(r: SimRig, logger: Logger, sink: &MemorySink) -> Vec<String> {
+    drop(r);
+    logger.stop();
+    sink.lines()
+}
+
+const A: State = State {
+    buttons: BTN_A,
+    ..NEUTRAL
+};
+
+/// Connected and the first STATUS read (`link_ok`, `console_ready`).
+fn connect_with_status(r: &mut SimRig) {
+    step_to(r, 1_000_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::Connected(_)))
+    });
+    let t = r.clock.now_us();
+    while r.snapshot.clone().unwrap().status.is_none() {
+        assert!(r.clock.now_us() < t + 200_000, "no STATUS");
+        r.step();
+    }
+}
+
+/// A `pad` or `mode` worker line against its pattern (Story 4.8 Dev Notes
+/// › Log lines).
+fn pad_worker_line_ok(kind: &str, text: &str) -> bool {
+    let mut it = text.split(' ');
+    let first = it.next().unwrap_or("");
+    let all: Vec<&str> = text.split(' ').collect();
+    let fields: Vec<(&str, &str)> = all.iter().filter_map(|f| f.split_once('=')).collect();
+    let get = |k: &str| fields.iter().find(|f| f.0 == k).map(|f| f.1);
+    let byte = |k: &str| {
+        get(k).is_some_and(|v| {
+            !v.is_empty()
+                && v.bytes().all(|b| b.is_ascii_digit())
+                && v.parse::<u16>().is_ok_and(|n| n <= 255)
+        })
+    };
+    let mode_ok = |k: &str| {
+        get(k).is_some_and(|v| {
+            ["idle", "direct", "playing"].contains(&v)
+                || v.strip_prefix("0x")
+                    .is_some_and(|h| h.len() == 2 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+    };
+    match kind {
+        "pad" => {
+            let rest: Vec<(&str, &str)> = it.filter_map(|f| f.split_once('=')).collect();
+            let keys: Vec<&str> = rest.iter().map(|f| f.0).collect();
+            if rest.len() != all.len() - 1 {
+                return false;
+            }
+            match first {
+                "sent" => {
+                    keys == ["port", "buttons", "hat", "lx", "ly", "rx", "ry"]
+                        && get("port").is_some_and(|p| !p.is_empty())
+                        && get("buttons").is_some_and(|b| {
+                            b.strip_prefix("0x").is_some_and(|h| {
+                                h.len() == 4 && h.bytes().all(|c| c.is_ascii_hexdigit())
+                            })
+                        })
+                        && get("hat").is_some_and(|h| {
+                            h.len() == 1 && (b'0'..=b'8').contains(&h.as_bytes()[0])
+                        })
+                        && ["lx", "ly", "rx", "ry"].iter().all(|k| byte(k))
+                }
+                "dropped" => {
+                    keys == ["reason", "port"]
+                        && get("reason").is_some_and(|r| {
+                            [
+                                "no_port",
+                                "opening",
+                                "incompatible",
+                                "closed",
+                                "stopping",
+                                "no_link",
+                                "not_ready",
+                                "busy",
+                                "bad_state",
+                                "not_connected",
+                            ]
+                            .contains(&r)
+                        })
+                        && get("port").is_some_and(|p| !p.is_empty())
+                }
+                _ => false,
+            }
+        }
+        "mode" => {
+            let keys: Vec<&str> = fields.iter().map(|f| f.0).collect();
+            fields.len() == all.len()
+                && keys == ["port", "from", "to", "abort_count"]
+                && get("port").is_some_and(|p| !p.is_empty())
+                && mode_ok("from")
+                && mode_ok("to")
+                && byte("abort_count")
+        }
+        _ => false,
+    }
+}
+
+/// C.29 (Story 4.8 AC 6): the SET_STATE frame is queued to the port in the
+/// worker pass that takes the `SetState` command; the controller enters
+/// DIRECT and publishes it; one `pad sent` line, then the `mode` line.
+#[test]
+fn c29_set_state_same_pass() {
+    let (mut r, logger, sink) = logged_rig(vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))]);
+    connect_with_status(&mut r);
+    assert!(frames_of(&r, MSG_SET_STATE).is_empty());
+    let t = r.clock.now_us();
+    r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+    r.step();
+    assert_eq!(
+        frames_of(&r, MSG_SET_STATE),
+        vec![t],
+        "the SET_STATE frame, same pass, same time"
+    );
+    r.run_until(t + 100_000);
+    assert_eq!(with_ctrl(&r, |c| c.mode()), Mode::Direct);
+    assert_eq!(with_ctrl(&r, |c| c.published()), A);
+    let lines = finish_all(r, logger, &sink);
+    assert_eq!(
+        kind_lines(&lines, "pad"),
+        vec![format!(
+            "sent port={CU} buttons=0x0004 hat=8 lx=128 ly=128 rx=128 ry=128"
+        )]
+    );
+    let modes = kind_lines(&lines, "mode");
+    assert_eq!(modes.len(), 1, "{modes:?}");
+    assert!(
+        modes[0].starts_with(&format!("port={CU} from=idle to=direct abort_count=")),
+        "{modes:?}"
+    );
+}
+
+fn hold_a_for_3s(abort_at: Option<u64>) -> (Vec<String>, u32, u32) {
+    let mut port = FakePort::bridge(CU, S, Some("Bonooru Bridge"));
+    if let Some(t) = abort_at {
+        port = port.hook(t, Box::new(|c| c.force_abort(None)));
+    }
+    let (mut r, logger, sink) = logged_rig(vec![port]);
+    r.run_until(1_000_000);
+    assert!(r.snapshot.clone().unwrap().status.is_some());
+    r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+    r.run_until(4_000_000);
+    let (timeouts, pings) = with_ctrl(&r, |c| (c.log().app_timeouts, c.log().pings));
+    (finish_all(r, logger, &sink), timeouts, pings)
+}
+
+/// C.29 (AC 6; H.35 step 5 instrument): A held 3 s with nothing else
+/// sent: the session's PING keeps DIRECT alive (no app timeout, no `mode
+/// … to=idle`); with an abort at 1.5 s the same run shows the failing line.
+#[test]
+fn c29_ping_keeps_direct() {
+    let (lines, timeouts, pings) = hold_a_for_3s(None);
+    assert_eq!(timeouts, 0);
+    assert!(pings >= 11, "{pings} PINGs in 3 s");
+    let modes = kind_lines(&lines, "mode");
+    assert_eq!(modes.len(), 1, "only idle → direct: {modes:?}");
+    assert!(modes.iter().all(|m| !m.contains("to=idle")), "{modes:?}");
+    // The failing branch: the controller aborts by itself mid-hold.
+    let (lines, _, _) = hold_a_for_3s(Some(2_500_000));
+    let modes = kind_lines(&lines, "mode");
+    let idle: Vec<&String> = modes
+        .iter()
+        .filter(|m| m.contains("from=direct to=idle"))
+        .collect();
+    assert_eq!(idle.len(), 1, "{modes:?}");
+    let count = |m: &str| -> u32 {
+        m.split(' ')
+            .find_map(|f| f.strip_prefix("abort_count="))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let enter = modes.iter().find(|m| m.contains("to=direct")).unwrap();
+    assert_eq!(count(idle[0]), count(enter) + 1, "{modes:?}");
+}
+
+/// C.29 (AC 7; D8; C.27): a `SetState` the controller would refuse writes
+/// nothing (the same writes as the run without it) and logs one `pad
+/// dropped` line with its reason.
+#[test]
+fn c29_set_state_refused() {
+    // No port.
+    let (mut r, logger, sink) = logged_rig(vec![]);
+    r.run_until(100_000);
+    r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+    r.run_until(200_000);
+    assert!(r.backend.state().writes.is_empty());
+    assert_eq!(
+        kind_lines(&finish_all(r, logger, &sink), "pad"),
+        vec!["dropped reason=no_port port=-"]
+    );
+    type Case = (&'static str, fn() -> FakePort, u64, bool);
+    fn bridge() -> FakePort {
+        FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+    }
+    let cases: Vec<Case> = vec![
+        ("opening", || bridge().silent(), 550_000, false),
+        (
+            "incompatible",
+            || {
+                bridge().controller(ControllerConfig {
+                    proto_ver: 2,
+                    ..ControllerConfig::default()
+                })
+            },
+            1_500_000,
+            false,
+        ),
+        // A STOP sent in the pass before, the controller muted: the
+        // session waits for its ACK.
+        ("stopping", || bridge().mute_at(500_000), 600_000, true),
+        (
+            "no_link",
+            || bridge().hook(500_000, Box::new(|c| c.set_link_ok(false))),
+            700_000,
+            false,
+        ),
+        (
+            "not_ready",
+            || bridge().hook(500_000, Box::new(|c| c.set_console_ready(false))),
+            700_000,
+            false,
+        ),
+    ];
+    for (reason, port, at, stop_first) in cases {
+        let run = |set: bool| {
+            let (mut r, logger, sink) = logged_rig(vec![port()]);
+            r.run_until(at);
+            if stop_first {
+                r.ends.commands.send(WorkerCommand::Stop).unwrap();
+                r.step();
+            }
+            if set {
+                r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+            }
+            r.run_until(at + 1_000_000);
+            let writes: Vec<(u64, Vec<u8>)> = r
+                .backend
+                .state()
+                .writes
+                .iter()
+                .map(|w| (w.0, w.2.clone()))
+                .collect();
+            let counted = writes_to(&r, CU);
+            let direct = with_ctrl_opt(&r);
+            (
+                writes,
+                counted,
+                direct,
+                kind_lines(&finish_all(r, logger, &sink), "pad"),
+            )
+        };
+        let (w0, c0, d0, l0) = run(false);
+        let (w1, c1, d1, l1) = run(true);
+        assert_eq!(w0, w1, "{reason}: identical writes");
+        assert_eq!(c0, c1, "{reason}: identical port_writes");
+        assert_eq!(d0, d1, "{reason}: the controller saw no SET_STATE");
+        assert!(l0.is_empty());
+        assert_eq!(l1, vec![format!("dropped reason={reason} port={CU}")]);
+    }
+}
+
+/// The DIRECT states the controller got (empty for a silent port).
+fn with_ctrl_opt(r: &SimRig) -> Vec<State> {
+    let st = r.backend.state();
+    match &st.ports[0].device {
+        ocb_services::sim::Device::Controller(c) => c.log().direct.clone(),
+        ocb_services::sim::Device::Silent => Vec::new(),
+    }
+}
+
+/// C.29 (AC 6, 8b): commands keep their order with a Stop. [SetState(A),
+/// Stop] in one pass: the SetState is handed to the session first (`pad
+/// sent`), then the STOP clears the session's unsent frames (AD-8), so
+/// only the STOP frame goes out and A never reaches the controller; it
+/// ends IDLE/NEUTRAL. [Stop, SetState(A)]: STOP frame, `pad dropped
+/// reason=stopping`, the controller ends IDLE.
+#[test]
+fn c29_order_with_stop() {
+    for set_first in [true, false] {
+        let (mut r, logger, sink) =
+            logged_rig(vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))]);
+        connect_with_status(&mut r);
+        let before = frame_types(&r).len();
+        if set_first {
+            r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+            r.ends.commands.send(WorkerCommand::Stop).unwrap();
+        } else {
+            r.ends.commands.send(WorkerCommand::Stop).unwrap();
+            r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+        }
+        r.step();
+        let types = frame_types(&r)[before..].to_vec();
+        assert_eq!(types, vec![MSG_STOP], "set_first={set_first}");
+        r.run_until(r.clock.now_us() + 200_000);
+        assert_eq!(with_ctrl(&r, |c| c.mode()), Mode::Idle);
+        assert_eq!(with_ctrl(&r, |c| c.published()), NEUTRAL);
+        assert!(with_ctrl(&r, |c| c.log().direct.is_empty()));
+        let lines = finish_all(r, logger, &sink);
+        let pad = kind_lines(&lines, "pad");
+        let order: Vec<&str> = lines
+            .iter()
+            .filter_map(|l| match l.split(' ').nth(2) {
+                Some("pad") => Some("pad"),
+                Some("stop") if l.contains(" stop sent ") => Some("stop"),
+                _ => None,
+            })
+            .collect();
+        if set_first {
+            assert_eq!(pad.len(), 1);
+            assert!(pad[0].starts_with("sent "), "{pad:?}");
+            assert_eq!(order, vec!["pad", "stop"]);
+        } else {
+            assert_eq!(pad, vec![format!("dropped reason=stopping port={CU}")]);
+            assert_eq!(order, vec!["stop", "pad"]);
+        }
+    }
+}
+
+/// C.29 (AC 17): one `mode` line per change of the STATUS mode, none for
+/// the first STATUS of a session, none while the mode stays.
+#[test]
+fn c29_mode_lines() {
+    let (mut r, logger, sink) = logged_rig(vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))]);
+    // 1 s of STATUS in IDLE: nothing.
+    r.run_until(1_000_000);
+    r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+    // 1 s held in DIRECT.
+    r.run_until(2_000_000);
+    r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    r.run_until(3_000_000);
+    let lines = finish_all(r, logger, &sink);
+    let modes = kind_lines(&lines, "mode");
+    assert_eq!(modes.len(), 2, "{modes:?}");
+    assert!(modes[0].contains("from=idle to=direct"), "{modes:?}");
+    assert!(modes[1].contains("from=direct to=idle"), "{modes:?}");
+}
+
+/// C.29 (AC 17): every worker `pad` and `mode` line matches its pattern;
+/// the pattern rejects what it must; 3 s idle → no `pad` line.
+#[test]
+fn c29_log_lines() {
+    let (mut r, logger, sink) = logged_rig(vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))]);
+    r.run_until(3_000_000);
+    r.ends.commands.send(WorkerCommand::SetState(A)).unwrap();
+    r.run_until(3_100_000);
+    let right = State {
+        rx: 255,
+        ry: 0,
+        hat: 6,
+        ..NEUTRAL
+    };
+    r.ends
+        .commands
+        .send(WorkerCommand::SetState(right))
+        .unwrap();
+    r.run_until(3_200_000);
+    let bad = State { hat: 9, ..NEUTRAL };
+    r.ends.commands.send(WorkerCommand::SetState(bad)).unwrap();
+    r.run_until(3_300_000);
+    r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    r.ends
+        .commands
+        .send(WorkerCommand::SetState(NEUTRAL))
+        .unwrap();
+    r.run_until(4_000_000);
+    let lines = finish_all(r, logger, &sink);
+    let first_pad = lines
+        .iter()
+        .position(|l| l.split(' ').nth(2) == Some("pad"))
+        .unwrap();
+    assert!(
+        lines[..first_pad]
+            .iter()
+            .all(|l| !matches!(l.split(' ').nth(2), Some("pad" | "mode"))),
+        "3 s idle: no pad or mode line"
+    );
+    let pad = kind_lines(&lines, "pad");
+    assert_eq!(
+        pad,
+        vec![
+            format!("sent port={CU} buttons=0x0004 hat=8 lx=128 ly=128 rx=128 ry=128"),
+            format!("sent port={CU} buttons=0x0000 hat=6 lx=128 ly=128 rx=255 ry=0"),
+            format!("dropped reason=bad_state port={CU}"),
+            format!("dropped reason=stopping port={CU}"),
+        ]
+    );
+    for p in &pad {
+        assert!(pad_worker_line_ok("pad", p), "{p}");
+    }
+    let modes = kind_lines(&lines, "mode");
+    assert!(!modes.is_empty());
+    for m in &modes {
+        assert!(pad_worker_line_ok("mode", m), "{m}");
+    }
+    for bad in [
+        "sent port=x buttons=0x004 hat=8 lx=128 ly=128 rx=128 ry=128",
+        "sent port=x buttons=0x0004 hat=9 lx=128 ly=128 rx=128 ry=128",
+        "sent port=x buttons=0x0004 hat=8 lx=256 ly=128 rx=128 ry=128",
+        "sent port=x buttons=0x0004 hat=8 lx=128 ly=128 rx=128",
+        "sent port= buttons=0x0004 hat=8 lx=128 ly=128 rx=128 ry=128",
+        "dropped reason=asleep port=x",
+        "dropped reason=no_port",
+        "pressed port=x",
+    ] {
+        assert!(!pad_worker_line_ok("pad", bad), "{bad}");
+    }
+    for bad in [
+        "port=x from=idle to=sleeping abort_count=1",
+        "port=x from=idle to=direct",
+        "port=x from=0x7 to=direct abort_count=1",
+        "port=x from=idle to=direct abort_count=1 extra=2",
+    ] {
+        assert!(!pad_worker_line_ok("mode", bad), "{bad}");
+    }
+    assert!(pad_worker_line_ok(
+        "mode",
+        "port=x from=0x7f to=direct abort_count=255"
+    ));
+    assert!(pad_worker_line_ok("pad", "dropped reason=no_port port=-"));
+}

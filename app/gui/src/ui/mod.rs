@@ -5,6 +5,7 @@ pub mod bottom_bar;
 pub mod firmware;
 pub mod fonts;
 pub mod gallery;
+pub mod gamepad;
 pub mod keys;
 pub mod layout;
 pub mod main_screen;

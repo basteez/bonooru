@@ -1,4 +1,6 @@
-//! The 12 painted symbols (Story 4.3 AC 8, D9): no bundled font covers
+//! The 14 painted symbols (Story 4.3 AC 8, D9; the D-pad's left and right
+//! triangles from Story 4.8, which paints D-pad down with `ChevronDown`, the
+//! same shape): no bundled font covers
 //! them all, so they are always painted, never typed. Original shapes after
 //! the approved mocks (`mockups/key-dialogs.html`,
 //! `directions-oot-2026-11-20.html`). Painting adds no accessibility node;
@@ -22,6 +24,11 @@ pub enum Symbol {
     ChevronDown,
     /// ▲
     TriangleUp,
+    /// ◀ (D-pad left, Story 4.8)
+    TriangleLeft,
+    /// ▶ as the D-pad's right arrow (Story 4.8); the same shape family as
+    /// ▲, smaller than `Play`.
+    TriangleRight,
     /// ⌫
     Backspace,
     /// ↵
@@ -40,7 +47,7 @@ pub enum Symbol {
 
 impl Symbol {
     /// Every symbol, in the gallery's order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::Play,
         Self::Stop,
         Self::ToStart,
@@ -53,6 +60,8 @@ impl Symbol {
         Self::Note,
         Self::Undo,
         Self::Redo,
+        Self::TriangleLeft,
+        Self::TriangleRight,
     ];
 
     /// The Unicode character this symbol stands for: for tests and docs
@@ -65,6 +74,9 @@ impl Symbol {
             Self::ToStart => '⏮',
             Self::ChevronDown => '▾',
             Self::TriangleUp => '▲',
+            Self::TriangleLeft => '◀',
+            // U+25B8: `Play` already stands for U+25B6.
+            Self::TriangleRight => '▸',
             Self::Backspace => '⌫',
             Self::Return => '↵',
             Self::ArrowUp => '↑',
@@ -84,6 +96,8 @@ impl Symbol {
             Self::ToStart => "Back to start",
             Self::ChevronDown => "Expand",
             Self::TriangleUp => "Up",
+            Self::TriangleLeft => "Left",
+            Self::TriangleRight => "Right",
             Self::Backspace => "Backspace",
             Self::Return => "Return",
             Self::ArrowUp => "Arrow up",
@@ -95,7 +109,7 @@ impl Symbol {
     }
 }
 
-/// Whether `name` contains one of the 12 symbol characters (a node name must
+/// Whether `name` contains one of the 14 symbol characters (a node name must
 /// be plain words, AC 8).
 #[must_use]
 pub fn has_glyph(name: &str) -> bool {
@@ -182,6 +196,15 @@ fn geometry(symbol: Symbol) -> ((f32, f32), Vec<Prim>) {
         Symbol::TriangleUp => (
             (10.0, 7.0),
             vec![Prim::Fill(vec![p(5.0, 0.5), p(9.5, 6.5), p(0.5, 6.5)])],
+        ),
+        // The D-pad's side arrows (Story 4.8): ▲ turned (down is ChevronDown).
+        Symbol::TriangleLeft => (
+            (7.0, 10.0),
+            vec![Prim::Fill(vec![p(6.5, 0.5), p(6.5, 9.5), p(0.5, 5.0)])],
+        ),
+        Symbol::TriangleRight => (
+            (7.0, 10.0),
+            vec![Prim::Fill(vec![p(0.5, 0.5), p(6.5, 5.0), p(0.5, 9.5)])],
         ),
         // Key-chip ⌫: a left-pointing pentagon outline and an ×.
         Symbol::Backspace => (
@@ -378,14 +401,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn twelve_distinct_glyphs() {
+    fn fourteen_distinct_glyphs() {
         let mut g: Vec<char> = Symbol::ALL.iter().map(|s| s.glyph()).collect();
         g.sort_unstable();
         g.dedup();
-        assert_eq!(g.len(), 12);
+        assert_eq!(g.len(), 14);
         assert_eq!(
             g.iter().collect::<String>().chars().count(),
-            "▶■⏮▾▲⌫↵↑♯♪↶↷".chars().count()
+            "▶■⏮▾▲⌫↵↑♯♪↶↷◀▸".chars().count()
         );
         for s in Symbol::ALL {
             assert!(!has_glyph(s.name()), "{:?} name has a glyph", s);

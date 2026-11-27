@@ -10,6 +10,9 @@ pub enum StopSource {
     /// The STOP button: a click, Enter while it has focus, or an AccessKit
     /// click.
     Button,
+    /// The virtual gamepad: the gate turned blocked while it held an input
+    /// (Story 4.8 rule 8c; SET_STATE NEUTRAL might be refused).
+    Gamepad,
 }
 
 impl StopSource {
@@ -19,6 +22,7 @@ impl StopSource {
         match self {
             Self::Esc => "esc",
             Self::Button => "button",
+            Self::Gamepad => "gamepad",
         }
     }
 }
@@ -50,7 +54,7 @@ impl CommandResult {
     }
 }
 
-/// The text of the app's `stop` line: `requested source=<esc|button>
+/// The text of the app's `stop` line: `requested source=<esc|button|gamepad>
 /// dialog=<open|none> command=<queued|no_worker|worker_gone|queue_full>`.
 #[must_use]
 pub fn requested_line(source: StopSource, dialog_open: bool, result: CommandResult) -> String {

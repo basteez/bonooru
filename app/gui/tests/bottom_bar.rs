@@ -38,7 +38,12 @@ fn screen(w: f32, h: f32, ppp: f32) -> Harness<'static, Rect> {
             |ui, drawn: &mut Rect| {
                 *drawn = ui.max_rect();
                 let l = leds::evaluate(None, 0, WorkerHealth::Running);
-                let _ = main_screen::show(ui, &l, &Gate::default());
+                let _ = main_screen::show(
+                    ui,
+                    &l,
+                    &Gate::default(),
+                    &ocb_app::ui::gamepad::PadView::default(),
+                );
             },
             Rect::NOTHING,
         );
@@ -453,10 +458,18 @@ fn g19_accesskit() {
             "no node named STOP"
         );
         assert!(h.query_by_label("■").is_none());
+        // Story 4.8: the gamepad's 16 controls are buttons too; STOP is the
+        // only other one.
+        let pad: Vec<&str> = ocb_app::gamepad::Control::ALL
+            .iter()
+            .map(|c| c.a11y_name())
+            .collect();
         assert_eq!(
-            h.query_all_by_role(Role::Button).count(),
+            h.query_all_by_role(Role::Button)
+                .filter(|n| !pad.contains(&n.accesskit_node().label().unwrap_or_default().as_str()))
+                .count(),
             1,
-            "STOP is the only button"
+            "STOP is the only button besides the gamepad's"
         );
     }
 }

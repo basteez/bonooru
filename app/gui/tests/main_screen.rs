@@ -129,10 +129,10 @@ fn g1_note_card_has_corner_brackets() {
     }
 }
 
-/// Story 4.6 AC 5: with a firmware block the gamepad region shows the
-/// inline hint in `typography.small` (12.5 pt) `text-muted`, 10 pt inside
-/// its left, right and top edges, as one `Role::Label`; without the block
-/// no hint is drawn.
+/// Story 4.6 AC 5, moved by Story 4.8 AC 1, 11: with a firmware block the
+/// gamepad region shows the inline hint in `typography.small` (12.5 pt)
+/// `text-muted`, 10 pt inside its left and right edges, 8 pt under the
+/// gamepad legend, as one `Role::Label`; without the block no hint is drawn.
 #[test]
 fn g1_gamepad_hint_geometry() {
     use egui::Role;
@@ -152,7 +152,7 @@ fn g1_gamepad_hint_geometry() {
                 move |ui, drawn: &mut Rect| {
                     *drawn = ui.max_rect();
                     let l = leds::evaluate(None, 0, WorkerHealth::Running);
-                    main_screen::show(ui, &l, &gate);
+                    main_screen::show(ui, &l, &gate, &ocb_app::ui::gamepad::PadView::default());
                 },
                 Rect::NOTHING,
             );
@@ -204,11 +204,20 @@ fn g1_gamepad_hint_geometry() {
                 t.galley.job.wrap.max_width,
                 pad.width() - 20.0
             );
+            let hint = main_screen::hint_rect(&h.ctx, pad);
             assert!(
-                (ink.top() - (pad.top() + 10.0)).abs() <= 0.5,
+                (ink.top() - hint.top()).abs() <= 0.5,
                 "{ctx}: top {} vs {}",
                 ink.top(),
-                pad.top() + 10.0
+                hint.top()
+            );
+            let lay = ocb_app::ui::gamepad::layout(
+                pad,
+                ocb_app::ui::gamepad::TextHeights::measure(&h.ctx),
+            );
+            assert!(
+                (hint.top() - (lay.legend_rows[5].bottom() + 8.0)).abs() <= 0.5,
+                "{ctx}: 8 pt under the legend"
             );
             // One label node, not focusable (no Focus action).
             let node = h.get_by_role_and_label(Role::Label, HINT_FIRMWARE);
