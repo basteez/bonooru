@@ -337,3 +337,126 @@ pub fn fake_link(ctx: &egui::Context) -> ocb_services::worker::WorkerHandle {
     )
     .expect("worker thread")
 }
+
+/// A UI clock moved by hand (Story 4.5): clones share the time.
+#[derive(Clone, Debug, Default)]
+pub struct TestClock(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl TestClock {
+    /// The time, µs.
+    pub fn now_us(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Moves the time forward.
+    pub fn advance_us(&self, d: u64) {
+        self.0.fetch_add(d, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The clock for `App::ui_clock`.
+    pub fn ui_clock(&self) -> ocb_app::app::UiClock {
+        let c = self.clone();
+        std::sync::Arc::new(move || std::time::Duration::from_micros(c.now_us()))
+    }
+}
+
+/// How a test worker's waker reaches the UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wake {
+    /// Count the publishes only: no repaint request from the worker thread,
+    /// so a test reading egui's repaint delay sees the app's own requests
+    /// only (a wake landing before a frame makes egui report 0 for it).
+    CountOnly,
+    /// Count, then the app's own waker (`app::repaint_waker`).
+    App,
+}
+
+/// A worker thread on `backend` and its fake `clock` (macOS rules, no log),
+/// whose waker counts the snapshots it published (and, with [`Wake::App`],
+/// asks `ctx` for a repaint the way the app does). Its fake ports never
+/// spin the thread: reads with nothing to return sleep 1 ms of real time.
+pub fn fake_worker(
+    ctx: &egui::Context,
+    backend: ocb_services::sim::FakeBackend,
+    clock: ocb_services::worker::FakeClock,
+    published: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    wake: Wake,
+) -> ocb_services::worker::WorkerHandle {
+    use ocb_services::log::LogHandle;
+    use ocb_services::worker::spawn_with;
+    backend.state().read_sleep = Some(std::time::Duration::from_millis(1));
+    let app_waker = (wake == Wake::App).then(|| ocb_app::app::repaint_waker(ctx));
+    spawn_with(
+        backend,
+        clock,
+        ocb_core::device::Rules::MACOS,
+        LogHandle::disabled(),
+        Box::new(move || {
+            published.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(w) = &app_waker {
+                w();
+            }
+        }),
+    )
+    .expect("worker thread")
+}
+
+/// eframe's repaint scheduling, emulated on real time: egui calls the
+/// request-repaint callback with a delay whenever anything (a frame, the
+/// worker's waker) asks for a repaint; the next frame is due at the
+/// earliest such time. A test that steps only when a frame is due catches
+/// a missing repaint request (hand-stepping would hide it).
+#[derive(Clone, Debug, Default)]
+pub struct Scheduler(std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>);
+
+impl Scheduler {
+    /// Installs the callback on `ctx`.
+    pub fn install(ctx: &egui::Context) -> Self {
+        let s = Self::default();
+        let slot = std::sync::Arc::clone(&s.0);
+        ctx.set_request_repaint_callback(move |info| {
+            let at = std::time::Instant::now() + info.delay;
+            let mut g = slot.lock().unwrap();
+            if g.is_none_or(|t| at < t) {
+                *g = Some(at);
+            }
+        });
+        s
+    }
+
+    /// A frame is due now.
+    pub fn due(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .is_some_and(|t| std::time::Instant::now() >= t)
+    }
+
+    /// Forgets every pending request.
+    pub fn clear(&self) {
+        *self.0.lock().unwrap() = None;
+    }
+
+    /// Runs frames only when due, until `cond` holds after a frame; panics
+    /// after `limit` of real time.
+    pub fn drive_until<S>(
+        &self,
+        h: &mut egui_kittest::Harness<'_, S>,
+        limit: std::time::Duration,
+        cond: impl Fn(&egui_kittest::Harness<'_, S>) -> bool,
+    ) {
+        let start = std::time::Instant::now();
+        loop {
+            if self.due() {
+                self.clear();
+                h.step();
+                if cond(h) {
+                    return;
+                }
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(start.elapsed() < limit, "no frame reached the condition");
+        }
+    }
+}

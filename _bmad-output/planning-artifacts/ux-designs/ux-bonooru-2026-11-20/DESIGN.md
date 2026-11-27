@@ -200,11 +200,17 @@ components:
     background: '{colors.panel-raised}'
     border-bottom: '1px {colors.rim-soft}'
     height: '{spacing.status-strip-height}'
+    padding-x: 16px                  # lifted from mockups/key-empty-state.html (Story 4.5)
+    brand-gap: 28px                  # lifted from mockups/key-empty-state.html (Story 4.5)
   status-led:
     size: 11px
     glow: 'Shadow blur 8px, same hue'
     label: '{typography.body-strong}'
     detail: '{colors.text-muted}'
+    gap: 20px                        # lifted from mockups/key-empty-state.html (Story 4.5)
+    symbol-gap: 7px                  # lifted from mockups/key-empty-state.html (Story 4.5)
+    detail-gap: 7px                  # label to detail, same flex gap in mockups/key-empty-state.html (Story 4.5 eye check)
+    padding: '2px 4px'               # lifted from mockups/key-empty-state.html (Story 4.5)
   panel-tab:
     background: '{colors.parchment}'
     foreground: '{colors.ink}'
@@ -625,7 +631,7 @@ Visual specs. Behaviour lives in EXPERIENCE.md › Component Patterns; component
 
 **Focus ring** (shared helper, every focusable control). egui draws focus with the pressed style and has no ring and no focus-visible, so every themed widget helper calls one `paint_focus_ring(resp, radius, on_parchment)`: `focus-ring` = `{spacing.focus-ring-width}` `{colors.amber}` stroke, `{spacing.focus-ring-offset}` outside the control, corner radius = control radius + offset. On parchment surfaces it uses `focus-ring-on-parchment` (`{colors.amber-ink}`). Because egui has no focus-visible, the ring also shows after mouse use; this is accepted. The gamepad panel uses its own panel-level ring (below).
 
-**Status strip.** Brand left in `{typography.brand}`, `{colors.parchment}`. Three **status LEDs** (PC↔Bridge, Bridge↔Controller, Controller↔Switch), each an 11 px symbol, a label and a muted detail (e.g. "Bridge" `v0.3.0`). Right side: "Set up / Reflash…" link in `{colors.text-muted}` and a gear icon. 20 px gaps between LEDs.
+**Status strip.** Brand left in `{typography.brand}`, `{colors.parchment}`, `{components.status-strip.padding-x}` from the left edge, then `{components.status-strip.brand-gap}` to the first LED. Three **status LEDs** (PC↔Bridge, Bridge↔Controller, Controller↔Switch), each an 11 px symbol, `{components.status-led.symbol-gap}`, a label, `{components.status-led.detail-gap}` and a muted detail (e.g. "Bridge" `v0.3.0`), inside a focusable box padded `{components.status-led.padding}`; `{components.status-led.gap}` between LEDs. Right side: "Set up / Reflash…" link in `{colors.text-muted}` and a gear icon; neither is drawn until it works: the gear arrives with Epic 5 (Settings), the link with Epic 8 (wizard) (Story 4.5).
 
 **LED symbol set** (colour + shape + label, never colour alone):
 

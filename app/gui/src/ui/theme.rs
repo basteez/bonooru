@@ -204,6 +204,39 @@ pub fn spacing_tokens() -> &'static [(&'static str, f32)] {
 pub mod components {
     /// `components.status-led.size`.
     pub const STATUS_LED_SIZE: f32 = 11.0;
+
+    /// `components.status-led` spacing (Story 4.5, lifted from
+    /// `mockups/key-empty-state.html`: `.leds{gap:20px}`,
+    /// `.led{gap:7px;padding:2px 4px}`).
+    pub mod status_led {
+        /// Between two LEDs (padding included).
+        pub const GAP: f32 = 20.0;
+        /// Symbol right edge to label left edge.
+        pub const SYMBOL_GAP: f32 = 7.0;
+        /// Label right edge to detail left edge (the same flex `gap`).
+        pub const DETAIL_GAP: f32 = 7.0;
+        /// Vertical padding inside the focusable LED box.
+        pub const PADDING_Y: f32 = 2.0;
+        /// Horizontal padding inside the focusable LED box.
+        pub const PADDING_X: f32 = 4.0;
+    }
+
+    /// `components.status-strip` spacing (Story 4.5, lifted from
+    /// `mockups/key-empty-state.html`: `.status{padding:0 16px;gap:28px}`).
+    pub mod status_strip {
+        /// Left inner padding before the brand.
+        pub const PADDING_X: f32 = 16.0;
+        /// Brand right edge to the first LED's left edge.
+        pub const BRAND_GAP: f32 = 28.0;
+    }
+
+    /// `components.tooltip.border` width, in points.
+    pub const TOOLTIP_BORDER_WIDTH: f32 = 1.0;
+    /// Tooltip padding (`mockups/key-empty-state.html` `.tip{padding:8px
+    /// 11px}`): vertical, horizontal.
+    pub const TOOLTIP_PADDING: (f32, f32) = (8.0, 11.0);
+    /// Space above a tooltip's fix line (`.tip .fix{margin-top:2px}`).
+    pub const TOOLTIP_FIX_GAP: f32 = 2.0;
     /// `components.corner-bracket.inset`: the bracket box sits this far
     /// inside the card corner on both axes (Story 4.3).
     pub const CORNER_BRACKET_INSET: f32 = 4.0;
@@ -487,6 +520,20 @@ pub fn rich(style: &TypeStyle, text: impl Into<String>) -> RichText {
 #[must_use]
 pub fn label(text: &str) -> RichText {
     rich(&LABEL, text.to_uppercase())
+}
+
+/// The frame of every themed tooltip (`components.tooltip`): `panel-raised`
+/// fill, 1 pt `rim-soft` border, radius `rounded.md`, the mock's padding,
+/// no shadow (like the dialog frame). egui's own tooltips would use the
+/// window frame (`rim`, `rounded.lg`), so themed widgets pass this frame
+/// to their tooltip explicitly (Story 4.5).
+pub fn tooltip_frame() -> egui::Frame {
+    let (y, x) = components::TOOLTIP_PADDING;
+    egui::Frame::new()
+        .fill(PANEL_RAISED)
+        .stroke(Stroke::new(components::TOOLTIP_BORDER_WIDTH, RIM_SOFT))
+        .corner_radius(corner(rounded::MD))
+        .inner_margin(egui::Margin::symmetric(x as i8, y as i8))
 }
 
 /// The dark visuals from the tokens. egui's built-in widgets keep egui's own

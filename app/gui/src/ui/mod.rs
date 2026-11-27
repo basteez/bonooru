@@ -7,6 +7,7 @@ pub mod layout;
 pub mod main_screen;
 pub mod modal;
 pub mod paint;
+pub mod status_strip;
 pub mod symbols;
 pub mod theme;
 pub mod widgets;

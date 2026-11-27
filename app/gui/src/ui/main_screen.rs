@@ -1,14 +1,18 @@
 //! The main screen (UX-DR5): five regions filled in reading order, each a
-//! scoped `Ui` over its rect (never egui panels). Content is an empty
-//! placeholder; widgets arrive with later stories.
+//! scoped `Ui` over its rect (never egui panels). The status strip shows
+//! the brand and the three LEDs (Story 4.5); the other regions are empty
+//! placeholders until later stories.
 
 use egui::{Rect, Stroke, Ui, UiBuilder, pos2};
 
 use super::layout::{RegionId, regions};
-use super::{paint, theme};
+use super::{paint, status_strip, theme};
+use crate::leds::Leds;
 
-/// Draws the main screen over `ui.max_rect()`.
-pub fn show(ui: &mut Ui) {
+/// Draws the main screen over `ui.max_rect()`, the status strip showing
+/// `leds`. The status region comes first, so its LEDs are first in the tab
+/// order.
+pub fn show(ui: &mut Ui, leds: &Leds) {
     let content = ui.max_rect();
     ui.painter()
         .rect_filled(content, theme::corner(0.0), theme::FRAME);
@@ -16,7 +20,10 @@ pub fn show(ui: &mut Ui) {
     for (id, rect) in r.in_reading_order() {
         let card = r.note_card;
         ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(id.name()), |ui| {
-            paint_region(ui, id, rect, card)
+            paint_region(ui, id, rect, card);
+            if id == RegionId::Status {
+                status_strip::show(ui, rect, leds);
+            }
         });
     }
 }

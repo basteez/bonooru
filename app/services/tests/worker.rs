@@ -676,3 +676,257 @@ fn c23_port_that_never_drains_keeps_the_worker_on_time() {
     let c = r.snapshot.clone().unwrap().counters;
     assert_eq!((c.hello_sent, c.hello_dropped), (101, 101));
 }
+
+// ------------------------------------------------------------ C.26
+
+/// The snapshot after the step that emitted the first event matching `f`
+/// (the rig is stepped until then), with the event's time.
+fn step_to(
+    r: &mut SimRig,
+    limit_us: u64,
+    f: impl Fn(&WorkerEvent) -> bool,
+) -> (u64, std::sync::Arc<ocb_services::worker::LinkSnapshot>) {
+    let seen = r.events.len();
+    while r.clock.now_us() < limit_us {
+        r.step();
+        if let Some(e) = r.events[seen..].iter().find(|e| f(&e.event)) {
+            return (e.at_us, r.snapshot.clone().unwrap());
+        }
+    }
+    panic!("no matching event before {limit_us} µs");
+}
+
+/// C.26 (Story 4.5 AC 4, 6, 7): `session_since_us`, `connected_us`,
+/// `required_update` and `last_nak` are set and cleared at the right step.
+#[test]
+fn c26_snapshot_link_timing_fields() {
+    let b = FakeBackend::new(FakeClock::at(0)).with(
+        FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+            .present(vec![(0, Some(3_000_000))])
+            .hook(
+                400_000,
+                Box::new(|c| c.inject_nak(MSG_SET_STATE, NakReason::NotReady)),
+            )
+            .hook(
+                700_000,
+                Box::new(|c| c.inject_nak(MSG_SET_STATE, NakReason::NoLink)),
+            )
+            .hook(1_020_000, Box::new(|c| c.inject_raw_nak(NAK_VERSION, 0, 0))),
+    );
+    let mut r = SimRig::new(b, Rules::MACOS, LogHandle::disabled());
+    // Open at 0: the session's grace starts there, nothing else yet.
+    let (t_open, snap) = step_to(&mut r, 100_000, |e| {
+        matches!(e, WorkerEvent::PortOpened { .. })
+    });
+    assert_eq!(t_open, 0);
+    assert_eq!(snap.session_since_us, Some(0));
+    assert_eq!(
+        (snap.connected_us, snap.required_update, snap.last_nak),
+        (None, None, None)
+    );
+    // INFO: connected at its time.
+    let (t_info, snap) = step_to(&mut r, 300_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::Connected(_)))
+    });
+    assert_eq!(snap.connected_us, Some(t_info));
+    assert_eq!(snap.session_since_us, Some(0), "INFO does not move it");
+    assert_eq!(snap.required_update, None);
+    // SET_STATE refused with NOT_READY, then NO_LINK: the latest is kept.
+    r.run_until(450_000);
+    r.core.session_mut().unwrap().set_state(NEUTRAL).unwrap();
+    let (t_nr, snap) = step_to(&mut r, 600_000, |e| {
+        matches!(
+            e,
+            WorkerEvent::Link(LinkEvent::Refused {
+                reason: NakReason::NotReady,
+                ..
+            })
+        )
+    });
+    assert_eq!(snap.last_nak, Some((NakReason::NotReady, t_nr)));
+    r.run_until(750_000);
+    r.core.session_mut().unwrap().set_state(NEUTRAL).unwrap();
+    let (t_nl, snap) = step_to(&mut r, 900_000, |e| {
+        matches!(
+            e,
+            WorkerEvent::Link(LinkEvent::Refused {
+                reason: NakReason::NoLink,
+                ..
+            })
+        )
+    });
+    assert_eq!(snap.last_nak, Some((NakReason::NoLink, t_nl)));
+    assert!(snap.status.is_some());
+    // Mid-session NAK VERSION: a new grace from the re-open, nothing of the
+    // previous boot kept.
+    let (t_reboot, snap) = step_to(&mut r, 1_100_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::ControllerRebooted))
+    });
+    assert_eq!(snap.session_since_us, Some(t_reboot));
+    assert_eq!(snap.phase, Phase::Opening);
+    assert_eq!(
+        (snap.status, snap.connected_us, snap.last_nak),
+        (None, None, None),
+        "reboot clears the previous boot's data"
+    );
+    let (t_info2, snap) = step_to(&mut r, 1_400_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::Connected(_)))
+    });
+    assert_eq!(snap.connected_us, Some(t_info2));
+    assert_eq!(snap.session_since_us, Some(t_reboot));
+    // Lost (unplugged at 3 s): everything cleared.
+    let (_, snap) = step_to(&mut r, 3_100_000, |e| {
+        matches!(e, WorkerEvent::PortLost { .. })
+    });
+    assert_eq!(
+        (
+            snap.session_since_us,
+            snap.connected_us,
+            snap.required_update,
+            snap.last_nak,
+            snap.status
+        ),
+        (None, None, None, None, None)
+    );
+}
+
+/// C.26: a protocol mismatch keeps the INFO for the LEDs; a loss clears it.
+#[test]
+fn c26_required_update_kept_until_lost() {
+    let cfg = ControllerConfig {
+        proto_ver: 2,
+        fw_ver: [0, 2, 0],
+        bridge_ver: [0, 2, 1],
+        ..ControllerConfig::default()
+    };
+    let b = FakeBackend::new(FakeClock::at(0)).with(
+        FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+            .controller(cfg)
+            .present(vec![(0, Some(1_000_000))]),
+    );
+    let mut r = SimRig::new(b, Rules::MACOS, LogHandle::disabled());
+    let (t, snap) = step_to(&mut r, 300_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::RequiredUpdate { .. }))
+    });
+    assert_eq!(snap.phase, Phase::Incompatible);
+    assert_eq!(snap.info, None, "the session keeps no INFO in Incompatible");
+    let info = snap.required_update.unwrap();
+    assert_eq!(
+        (info.proto_ver, info.fw_ver, info.bridge_ver),
+        (2, [0, 2, 0], [0, 2, 1])
+    );
+    assert_eq!(snap.connected_us, Some(t));
+    let (_, snap) = step_to(&mut r, 1_100_000, |e| {
+        matches!(e, WorkerEvent::PortLost { .. })
+    });
+    assert_eq!((snap.required_update, snap.connected_us), (None, None));
+}
+
+/// C.26: `FakePort::mute_at` cuts the controller off (no STATUS, port
+/// still listed and open); `unmute_at` brings it back.
+#[test]
+fn c26_mute_cuts_the_controller_off() {
+    let b = FakeBackend::new(FakeClock::at(0)).with(
+        FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+            .mute_at(500_000)
+            .unmute_at(1_500_000),
+    );
+    let mut r = SimRig::new(b, Rules::MACOS, LogHandle::disabled());
+    r.run_until(1_400_000);
+    let snap = r.snapshot.clone().unwrap();
+    let (_, rx) = snap.status.unwrap();
+    assert!((450_000..=500_000).contains(&rx), "last STATUS at {rx}");
+    assert_eq!(snap.phase, Phase::Connected);
+    assert!(snap.chosen.as_ref().unwrap().open, "the port stays open");
+    assert!(
+        r.find(|e| matches!(e, WorkerEvent::PortLost { .. }))
+            .is_empty()
+    );
+    r.run_until(1_700_000);
+    let (_, rx) = r.snapshot.clone().unwrap().status.unwrap();
+    assert!(rx >= 1_500_000, "STATUS again after the unmute: {rx}");
+}
+
+/// C.26 (review): the STATUS-path reboot. A STATUS of a freshly booted
+/// controller after a non-fresh one: the core pushes `Status` then
+/// `ControllerRebooted`, and the worker must end with no STATUS kept and
+/// the grace restarted.
+#[test]
+fn c26_status_path_reboot_clears_the_status() {
+    let b = FakeBackend::new(FakeClock::at(0)).with(
+        FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+            // A non-fresh STATUS: an abort with USB_SUSPENDED.
+            .hook(
+                300_000,
+                Box::new(|c| c.force_abort(Some(ocb_core::protocol::EventCode::UsbSuspended))),
+            )
+            // Power cycle: the next STATUS is a fresh one (abort 0, NONE).
+            .hook(1_010_000, Box::new(|c| c.reboot())),
+    );
+    let mut r = SimRig::new(b, Rules::MACOS, LogHandle::disabled());
+    r.run_until(1_000_000);
+    let (_, rx) = r.snapshot.clone().unwrap().status.unwrap();
+    assert!(rx > 300_000, "a non-fresh STATUS seen");
+    let (t, snap) = step_to(&mut r, 1_200_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::ControllerRebooted))
+    });
+    // The rebooted controller's STATUS came in the same pass, just before
+    // the reboot event (it is what revealed the reboot): it must not
+    // survive as "fresh" data.
+    assert_eq!(snap.status, None, "the reboot clears the STATUS");
+    assert_eq!(snap.session_since_us, Some(t));
+    assert_eq!(snap.phase, Phase::Opening);
+    assert_eq!((snap.connected_us, snap.last_nak), (None, None));
+}
+
+/// Review patch: an unavailable log never hides "port in use" (or
+/// permission): Busy stays the problem worth showing.
+#[test]
+fn c26_log_unavailable_keeps_busy() {
+    let logger = Logger::spawn(Box::new(ocb_services::log::FailingSink), false, None);
+    let b = FakeBackend::new(FakeClock::at(0))
+        .with(FakePort::bridge(CU, S, Some("Bonooru Bridge")).always_fail(OpenError::Busy));
+    let mut r = SimRig::new(b, Rules::MACOS, logger.handle());
+    r.run_until(10_000);
+    assert!(matches!(
+        r.snapshot.clone().unwrap().last_error,
+        Some(ocb_services::worker::LastError::Busy { .. })
+    ));
+    logger.handle().log("event", "first write fails");
+    let start = std::time::Instant::now();
+    while r
+        .find(|e| matches!(e, WorkerEvent::LogUnavailable { .. }))
+        .is_empty()
+    {
+        assert!(start.elapsed().as_secs() < 5, "log never failed");
+        r.step();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    r.step();
+    assert!(
+        matches!(
+            r.snapshot.clone().unwrap().last_error,
+            Some(ocb_services::worker::LastError::Busy { .. })
+        ),
+        "{:?}",
+        r.snapshot.clone().unwrap().last_error
+    );
+    drop(r);
+    logger.stop();
+}
+
+/// Review patch: `unmute_at` without an open `mute_at` is a script error.
+#[test]
+#[should_panic(expected = "without an open mute_at")]
+fn c26_unmute_without_mute_panics() {
+    let _ = FakePort::bridge(CU, S, Some("Bonooru Bridge")).unmute_at(1_000);
+}
+
+#[test]
+#[should_panic(expected = "without an open mute_at")]
+fn c26_unmute_twice_panics() {
+    let _ = FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+        .mute_at(1_000)
+        .unmute_at(2_000)
+        .unmute_at(3_000);
+}

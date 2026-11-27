@@ -65,6 +65,11 @@ pub struct FakePort {
     /// Writes make no progress: each call takes the read sleep of real
     /// time (if any) and times out, like a device that does not read.
     pub stall_writes: bool,
+    /// Windows `[from, until)` of fake time in which the controller behind
+    /// the port is cut off (unplugged or unpowered while the bridge stays):
+    /// it gets no bytes, sends none and does not run; the port stays listed
+    /// and readable (reads return 0 bytes). Hooks still run.
+    pub mutes: Vec<(u64, Option<u64>)>,
     link: Option<Link>,
 }
 
@@ -109,6 +114,7 @@ impl FakePort {
             queued: 0,
             fail_next_read: false,
             stall_writes: false,
+            mutes: Vec::new(),
             link: None,
         }
     }
@@ -182,6 +188,37 @@ impl FakePort {
     pub fn hook(mut self, t_us: u64, h: Hook) -> Self {
         self.hooks.push((t_us, h));
         self
+    }
+
+    /// From `t_us` the controller behind the port is cut off (Story 4.5:
+    /// the controller unplugged from the Switch while the bridge stays).
+    #[must_use]
+    pub fn mute_at(mut self, t_us: u64) -> Self {
+        self.mutes.push((t_us, None));
+        self
+    }
+
+    /// Ends the open mute window at `t_us` (the controller is back; pair it
+    /// with a hook at the same time to model a reboot).
+    #[must_use]
+    ///
+    /// # Panics
+    /// Without an open mute window (a misordered script would otherwise
+    /// run with no mute at all and still pass).
+    pub fn unmute_at(mut self, t_us: u64) -> Self {
+        let open = self.mutes.iter_mut().rev().find(|w| w.1.is_none());
+        assert!(open.is_some(), "unmute_at({t_us}) without an open mute_at");
+        if let Some(w) = open {
+            assert!(w.0 <= t_us, "unmute_at({t_us}) before its mute_at({})", w.0);
+            w.1 = Some(t_us);
+        }
+        self
+    }
+
+    fn muted(&self, now: u64) -> bool {
+        self.mutes
+            .iter()
+            .any(|&(a, b)| now >= a && b.is_none_or(|b| now < b))
     }
 
     fn listed(&self, now: u64) -> bool {
@@ -370,6 +407,7 @@ impl FakeOpenPort {
 /// Runs the controller side of `p` at `now`: hooks, the app's bytes in,
 /// its timers, its frames out.
 fn controller_pass(p: &mut FakePort, now: u64) {
+    let muted = p.muted(now);
     let Device::Controller(ctrl) = &mut p.device else {
         if let Some(l) = p.link.as_mut() {
             let _ = l.up.deliver(now);
@@ -384,6 +422,17 @@ fn controller_pass(p: &mut FakePort, now: u64) {
         } else {
             i += 1;
         }
+    }
+    if muted {
+        // Cut off: what the app wrote is lost, nothing comes back.
+        if let Some(l) = p.link.as_mut() {
+            l.up.flush_hold(now);
+            let _ = l.up.deliver(now);
+            l.down.flush_hold(now);
+            let _ = l.down.deliver(now);
+            l.pending.clear();
+        }
+        return;
     }
     let Some(l) = p.link.as_mut() else {
         ctrl.tick(now);
