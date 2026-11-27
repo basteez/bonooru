@@ -4,7 +4,7 @@ baseline_commit: 004bda3
 
 # Story 4.1: App shell with theme, fonts and main-screen regions
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
