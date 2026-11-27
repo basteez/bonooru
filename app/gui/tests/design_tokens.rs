@@ -401,6 +401,45 @@ fn g3_component_sizes() {
         let what = format!("{group}.{key}");
         eq(&mut errs, &what, num(&field(group, key), &what), ours);
     }
+    // Story 4.7 eye check: the button state layer.
+    {
+        use theme::components::state_layer as sl;
+        for (key, ours) in [
+            ("hover-amount", sl::HOVER_AMOUNT),
+            ("pressed-amount", sl::PRESSED_AMOUNT),
+        ] {
+            let what = format!("state-layer.{key}");
+            eq(
+                &mut errs,
+                &what,
+                num(&field("state-layer", key), &what),
+                ours,
+            );
+        }
+        let toward = field("state-layer", "hover-toward");
+        let name = toward
+            .strip_prefix("{colors.")
+            .and_then(|r| r.strip_suffix('}'))
+            .unwrap_or_else(|| panic!("state-layer.hover-toward: `{toward}`"));
+        let design = theme::color_tokens()
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("state-layer.hover-toward: no colour `{name}`"))
+            .color;
+        if design != sl::HOVER_TOWARD {
+            errs.push(format!(
+                "components.state-layer.hover-toward: DESIGN.md {toward}, theme differs"
+            ));
+        }
+        let pressed = field("state-layer", "pressed-toward");
+        let rgba = hex(&pressed, "state-layer.pressed-toward");
+        let [r, g, b, a] = rgba.to_be_bytes();
+        if egui::Color32::from_rgba_unmultiplied(r, g, b, a) != sl::PRESSED_TOWARD {
+            errs.push(format!(
+                "components.state-layer.pressed-toward: DESIGN.md {pressed}, theme differs"
+            ));
+        }
+    }
     if field("safety-note", "typography") != "{typography.safety-note}" {
         errs.push("components.safety-note.typography: not {typography.safety-note}".to_owned());
     }

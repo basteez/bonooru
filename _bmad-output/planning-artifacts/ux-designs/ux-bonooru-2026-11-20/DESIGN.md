@@ -397,6 +397,11 @@ components:
     foreground: '{colors.stop-idle-text}'
     opacity: 0.75
     radius: '{rounded.xl}'
+  state-layer:                       # hover / pressed of every enabled button (Story 4.7 owner eye check)
+    hover-toward: '{colors.text}'
+    hover-amount: 0.10               # fill and border mixed 10 % toward text (gamma space)
+    pressed-toward: '#000000'
+    pressed-amount: 0.20             # fill and border mixed 20 % toward black
   button-stop-live:
     background: '{colors.ember}'
     foreground: '{colors.on-ember}'
@@ -649,6 +654,8 @@ No octagonal buttons: the octagon shape belonged to direction 1 (Lantern), which
 Visual specs. Behaviour lives in EXPERIENCE.md › Component Patterns; component names are identical in both files. Dimensions given only in prose here (gamepad geometry, playhead handle, staff bar, banner and big-button padding) are the spec; they are not tokenised because nothing else reuses them.
 
 **Focus ring** (shared helper, every focusable control). egui draws focus with the pressed style and has no ring and no focus-visible, so every themed widget helper calls one `paint_focus_ring(resp, radius, on_parchment)`: `focus-ring` = `{spacing.focus-ring-width}` `{colors.amber}` stroke, `{spacing.focus-ring-offset}` outside the control, corner radius = control radius + offset. On parchment surfaces it uses `focus-ring-on-parchment` (`{colors.amber-ink}`). Because egui has no focus-visible, the ring also shows after mouse use; this is accepted. The gamepad panel uses its own panel-level ring (below).
+
+**Button states** (shared helpers, every button; owner eye check of Story 4.7). An enabled button shows the pointer: hover mixes its fill and border 10 % toward `{colors.text}`, pressed (primary button held down on it) 20 % toward black (`{components.state-layer}`, gamma-space mix of the idle colours, before any token opacity such as STOP idle's 75 %). The label, the symbol, the glow and the focus ring do not change; a disabled button (`button-disabled`) shows no hover or pressed change. Examples: amber `#f0b43c` → hover `#f0b949`, pressed `#c09030`; well `#2a1e13` → `#3e3224` / `#22180f` (rim border `#ab854b` / `#826232`); STOP idle fill `#3a1712` → `#4d2b23` / `#2e120e`, ember border `#be533d` / `#933626` (then 75 %). The gallery shows every look in its three states.
 
 **Status strip.** Brand left in `{typography.brand}`, `{colors.parchment}`, `{components.status-strip.padding-x}` from the left edge, then `{components.status-strip.brand-gap}` to the first LED. Three **status LEDs** (PC↔Bridge, Bridge↔Controller, Controller↔Switch), each an 11 px symbol, `{components.status-led.symbol-gap}`, a label, `{components.status-led.detail-gap}` and a muted detail (e.g. "Bridge" `v0.3.0`), inside a focusable box padded `{components.status-led.padding}`; `{components.status-led.gap}` between LEDs. Right side: "Set up / Reflash…" link in `{colors.text-muted}` and a gear icon; neither is drawn until it works: the gear arrives with Epic 5 (Settings), the link with Epic 8 (wizard) (Story 4.5).
 

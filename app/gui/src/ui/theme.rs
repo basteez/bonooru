@@ -276,6 +276,23 @@ pub mod components {
     /// at this opacity (the focus ring is not).
     pub const STOP_IDLE_OPACITY: f32 = 0.75;
 
+    /// `components.state-layer` (Story 4.7 owner eye check): how an enabled
+    /// button's fill and border change under the pointer. Hover mixes them
+    /// toward `colors.text` by [`state_layer::HOVER_AMOUNT`], pressed toward
+    /// black by [`state_layer::PRESSED_AMOUNT`] (gamma-space mix,
+    /// `Color32::lerp_to_gamma`); the label, glow and focus ring do not
+    /// change; a disabled button shows neither.
+    pub mod state_layer {
+        /// The hover mix target (`colors.text`).
+        pub const HOVER_TOWARD: egui::Color32 = super::super::TEXT;
+        /// The hover mix amount.
+        pub const HOVER_AMOUNT: f32 = 0.10;
+        /// The pressed mix target (black).
+        pub const PRESSED_TOWARD: egui::Color32 = egui::Color32::BLACK;
+        /// The pressed mix amount.
+        pub const PRESSED_AMOUNT: f32 = 0.20;
+    }
+
     /// `components.tooltip.border` width, in points.
     pub const TOOLTIP_BORDER_WIDTH: f32 = 1.0;
     /// Tooltip padding (`mockups/key-empty-state.html` `.tip{padding:8px
