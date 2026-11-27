@@ -4,7 +4,7 @@ baseline_commit: f3ffb63369055b640edb38bc272ec795ed5c40e7
 
 # Story 4.0: Cleanup: purity gates and P2 overflow status
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

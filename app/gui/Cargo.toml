@@ -1,0 +1,45 @@
+[package]
+name = "ocb-app"
+description = "Bonooru desktop app: the egui/eframe window, theme and screens (Story 4.1)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "ocb_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bonooru"
+path = "src/main.rs"
+
+# Exact pins (Story 3.2 practice, AD-18). eframe default features are off
+# (Story 4.1 D2): no `wayland` (AD-18, file drops need X11), no
+# `system_fonts` (no OS font is ever loaded), no `links`, no
+# `web_screen_reader`, no `winit/default` (it would bring Wayland back).
+[dependencies]
+ocb-core = { path = "../core" }
+eframe = { version = "=0.37.0", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "wgpu",
+    "x11",
+] }
+egui = "=0.37.0"
+raw-window-handle = "=0.6.2"
+
+# The X11 hook of `native_options()` (Story 4.1 D3, AC 7). Must stay on the
+# exact winit version eframe uses: `eframe::EventLoopBuilder` is winit's.
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "=0.30.13", default-features = false, features = ["x11"] }
+
+# No `wgpu`, no `snapshot`: the UI tests run on the CPU, without a GPU
+# adapter (Story 4.1 D6).
+[dev-dependencies]
+egui_kittest = { version = "=0.37.0", features = ["eframe"] }
+
+[lints]
+workspace = true

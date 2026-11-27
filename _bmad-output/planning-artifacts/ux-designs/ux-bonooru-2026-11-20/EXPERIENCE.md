@@ -459,7 +459,7 @@ All remaining questions are **non-blocking**, to resolve during build or hardwar
 3. **STATUS staleness timeout — RESOLVED 2026-11-26 (owner, Story 3.5 H.3): 150 ms** (3 × the 50 ms STATUS period) without a STATUS → LEDs `unknown`. Measured on the own bridge: STATUS interval median 50.0 ms, p99 50.1 ms, max 52.4 ms over 1852 frames (macOS host); Windows and Linux app-side timing to be checked in Epic 4. The companion `console_ready` 100 ms polling-stall rule (`epics.md` OQ-4) is kept as is (worst console polling gap 24 ms; OFF detected 144 ms after the last poll); see the Play gating row and the coupling table.
 4. **Windows, bridge alone, main screen:** with no product string and no INFO, how is the bridge shown (unconfirmed)?
 5. **Bridge LED label without INFO:** "Bridge – found" (no version) assumed.
-6. **Visual fine-tuning:** status warning/error/unknown hexes, `amber-ink`, `scrim`, editor font (Hack) — proposed in DESIGN.md.
+6. **Visual fine-tuning — RESOLVED 2026-11-27 (owner, Story 4.1 token gallery `bonooru --gallery`): every proposed value kept.** `status-warning #f08a4b`, `status-error #ef6a55`, `status-unknown #9a8a72`, `amber-ink #8a5a12`, `scrim #0b0806b3` and the editor font Hack 13 px; DESIGN.md's `[ASSUMPTION]` tags for these are removed. Contrast floors checked by G.6 (`docs/test-plan.md`). Same question as `epics.md` OQ-7.
 7. **Update flow (CAP-6):** add a Key Flow for required/recommended update → wizard → reflash → Play re-enabled, or accept states-only coverage.
 8. **Screen reader / AccessKit** support level (cheap only if decided before the widget helpers are built).
 9. **Text score file extension** and save-as defaults; grammar details are deferred to `score` (SPINE).

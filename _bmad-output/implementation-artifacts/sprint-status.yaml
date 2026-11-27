@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 11-20-2026 16:09
-last_updated: 11-26-2026
+last_updated: 11-27-2026
 project: bonooru
 project_key: NOKEY
 tracking_system: file-system
@@ -63,8 +63,8 @@ development_status:
   epic-3-retrospective: done
 
   epic-4: in-progress
-  4-0-cleanup-purity-gates-and-p2-overflow-status: review
-  4-1-app-shell-with-theme-fonts-and-main-screen-regions: backlog
+  4-0-cleanup-purity-gates-and-p2-overflow-status: done
+  4-1-app-shell-with-theme-fonts-and-main-screen-regions: review
   4-2-decide-the-screen-reader-accesskit-level: backlog
   4-3-shared-painting-helpers-and-modal-dialog: backlog
   4-4-serial-worker-bridge-discovery-and-file-log: backlog
@@ -167,11 +167,11 @@ action_items:
   - id: E2-A4
     source: epic-2-retrospective
     action: Extend the purity gates (issue #20), after Epic 3
-    status: open
+    status: done
   - id: E2-A5
     source: epic-2-retrospective
     action: Show P2 reply-queue overflows in the debug STATUS (issue #25), after Epic 3
-    status: open
+    status: done
   - id: E2-A6
     source: epic-2-retrospective
     action: Pick and label a known-good USB data cable for flashing
@@ -191,7 +191,7 @@ action_items:
   - id: E3-A4
     source: epic-3-retrospective
     action: Cleanup story before Epic 4 for issues #20 (purity gates) and #25 (P2 reply-queue overflows in the debug STATUS), host tests only
-    status: open
+    status: done
   - id: E3-A5
     source: epic-3-retrospective
     action: Story 4.4 Dev Notes carry cross-OS discovery, the serialport libudev feature with libudev-dev in Linux CI, and the SerialIo lessons (reopen after unplug, clear stale input, non-blocking writes, macOS port rename)
