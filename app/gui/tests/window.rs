@@ -7,6 +7,8 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
 use egui::{Theme, vec2};
 use egui_kittest::Harness;
 use ocb_app::app::{App, Mode};
@@ -27,7 +29,7 @@ fn g2_dark_even_when_the_system_says_light() {
     let mut h = Harness::builder()
         .with_size(vec2(1280.0, 800.0))
         .with_theme(Theme::Light)
-        .build_eframe(|cc| App::new(cc, Mode::Main));
+        .build_eframe(|cc| App::with_link(cc, Mode::Main, common::fake_link(&cc.egui_ctx)));
     h.run();
     assert_eq!(h.ctx.theme(), Theme::Dark);
     assert_eq!(h.ctx.global_style().visuals.panel_fill, theme::FRAME);
@@ -42,7 +44,8 @@ fn g2_keyboard_zoom_off() {
     assert_eq!(ctx.zoom_factor(), 1.0);
 }
 
-/// G.7 in a harness: smoke mode reports once, after 3 completed frames, and
+/// G.7 in a harness: smoke mode reports once, after 3 completed frames and
+/// the first worker snapshot (Story 4.4, `worker=`), and
 /// its verdict is judged on what the frame really has: the kittest frame
 /// has no window handle, so the run must fail on the backend, not print ok.
 #[test]
@@ -53,8 +56,20 @@ fn g7_smoke_mode_judges_the_real_frame() {
     let mut h = Harness::builder()
         .with_size(vec2(1280.0, 800.0))
         .with_theme(Theme::Light)
-        .build_eframe(move |cc| App::with_smoke(cc, Mode::Gallery, Smoke::new(smoke_cell)));
+        .build_eframe(move |cc| {
+            App::with_link(cc, Mode::Gallery, common::fake_link(&cc.egui_ctx))
+                .smoke_mode(Smoke::new(smoke_cell))
+        });
+    // The worker thread runs on real time: step until its first snapshot
+    // has reached the app (bounded).
+    let start = std::time::Instant::now();
     h.run_steps(6);
+    while h.state().smoke().and_then(|s| s.report()).is_none()
+        && start.elapsed() < std::time::Duration::from_secs(5)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run_steps(1);
+    }
     let report = h
         .state()
         .smoke()
@@ -64,5 +79,6 @@ fn g7_smoke_mode_judges_the_real_frame() {
     assert!(report.frames >= 3, "frames {}", report.frames);
     assert!(report.dark);
     assert_eq!(report.backend, "none");
+    assert!(report.worker >= 1, "worker {}", report.worker);
     assert_eq!(cell.get(), Outcome::Fail);
 }

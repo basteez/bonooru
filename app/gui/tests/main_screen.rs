@@ -24,7 +24,7 @@ fn harness(w: f32, h: f32, ppp: f32) -> Harness<'static, App> {
         .with_size(vec2(w, h))
         .with_pixels_per_point(ppp)
         .with_theme(Theme::Light)
-        .build_eframe(|cc| App::new(cc, Mode::Main));
+        .build_eframe(|cc| App::with_link(cc, Mode::Main, common::fake_link(&cc.egui_ctx)));
     h.run();
     h
 }

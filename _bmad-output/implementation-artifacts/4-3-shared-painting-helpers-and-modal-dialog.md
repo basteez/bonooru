@@ -4,7 +4,7 @@ baseline_commit: 7135c23
 
 # Story 4.3: Shared painting helpers and modal dialog
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

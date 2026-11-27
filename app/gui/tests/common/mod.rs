@@ -319,3 +319,21 @@ pub fn check_brackets(flat: &[Flat], rect: Rect, ctx: &str) {
         }
     }
 }
+
+/// A serial worker on a fake backend with no ports and no log (Story 4.4:
+/// tests never start the real backend or write the real log). Its thread
+/// ends when the app (and so the handle) is dropped.
+pub fn fake_link(ctx: &egui::Context) -> ocb_services::worker::WorkerHandle {
+    use ocb_services::log::LogHandle;
+    use ocb_services::sim::FakeBackend;
+    use ocb_services::worker::{FakeClock, RealClock, host_rules, spawn_with};
+    let ctx = ctx.clone();
+    spawn_with(
+        FakeBackend::new(FakeClock::at(0)),
+        RealClock::new(),
+        host_rules(),
+        LogHandle::disabled(),
+        Box::new(move || ctx.request_repaint()),
+    )
+    .expect("worker thread")
+}
