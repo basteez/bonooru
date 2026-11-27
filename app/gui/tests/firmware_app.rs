@@ -371,6 +371,21 @@ fn g18_no_nagging() {
         assert!(!r.h.state().modals().is_open(), "the dialog came back");
         assert!(!r.dialog_drawn());
     }
+    // The worker thread follows the fake clock at its own pace: on a slow
+    // CI runner its last snapshot can lag the 200 frames. Let it catch up
+    // (real-time bound), still checking that the dialog never comes back.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while r
+        .h
+        .state()
+        .link_snapshot()
+        .is_none_or(|s| s.now_us < 10_000_000)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(5));
+        r.h.step();
+        assert!(!r.h.state().modals().is_open(), "the dialog came back");
+    }
     let snap = r.h.state().link_snapshot().cloned().unwrap();
     assert!(snap.now_us >= 10_000_000, "the worker kept running");
     assert_eq!(snap.phase, Phase::Incompatible, "the same connection");
