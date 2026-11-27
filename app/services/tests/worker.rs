@@ -11,8 +11,8 @@
 
 use ocb_core::device::{Class, Rules};
 use ocb_core::link::{LinkEvent, Phase};
-use ocb_core::protocol::consts::{MSG_HELLO, MSG_SET_STATE, NAK_VERSION};
-use ocb_core::protocol::{NEUTRAL, NakReason, RxSide, decode_frame};
+use ocb_core::protocol::consts::{BTN_A, MSG_HELLO, MSG_SET_STATE, MSG_STOP, NAK_VERSION};
+use ocb_core::protocol::{Mode, NEUTRAL, NakReason, RxSide, State, decode_frame};
 use ocb_services::log::{LogHandle, Logger, MemorySink};
 use ocb_services::port::OpenError;
 use ocb_services::sim::{FakeBackend, FakePort, SimRig};
@@ -984,4 +984,384 @@ fn c27_nothing_written_when_incompatible() {
     r.run_until(now + 1_000_000);
     assert_eq!(writes(&r), at_info, "the refused command wrote nothing");
     assert_eq!(r.backend.state().writes_of(CU).len(), raw_at_info);
+}
+
+// ------------------------------------------------------------ C.28
+
+/// The STOP frames among the chunks written to `CU` (a chunk may carry
+/// several frames, each ended by its `00`), with the chunk's time.
+fn stop_frames(r: &SimRig) -> Vec<u64> {
+    let st = r.backend.state();
+    let mut out = Vec::new();
+    for (t, name, bytes) in &st.writes {
+        if name != CU {
+            continue;
+        }
+        for enc in bytes.split(|&b| b == 0).filter(|f| !f.is_empty()) {
+            if decode_frame(RxSide::Controller, enc).is_ok_and(|f| f.ty == MSG_STOP) {
+                out.push(*t);
+            }
+        }
+    }
+    out
+}
+
+fn writes_to(r: &SimRig, name: &str) -> u64 {
+    r.snapshot
+        .clone()
+        .unwrap()
+        .port_writes
+        .iter()
+        .find(|(n, _)| n == name)
+        .map_or(0, |(_, w)| *w)
+}
+
+/// The fake controller behind the first port.
+fn with_ctrl<T>(r: &SimRig, f: impl FnOnce(&ocb_sim::FakeController) -> T) -> T {
+    let st = r.backend.state();
+    match &st.ports[0].device {
+        ocb_services::sim::Device::Controller(c) => f(c),
+        ocb_services::sim::Device::Silent => panic!("no controller"),
+    }
+}
+
+/// The `stop` lines (their text after the kind).
+fn stop_lines(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|l| l.split(' ').nth(2) == Some("stop"))
+        .map(|l| l.splitn(4, ' ').nth(3).unwrap_or("").to_owned())
+        .collect()
+}
+
+/// A `stop` worker line against its pattern (Story 4.7 Dev Notes › Log
+/// lines): the verb, then exactly these `key=value` fields in order.
+fn stop_line_ok(text: &str) -> bool {
+    let mut it = text.split(' ');
+    let verb = it.next().unwrap_or("");
+    let fields: Vec<(&str, &str)> = it.filter_map(|f| f.split_once('=')).collect();
+    let keys: Vec<&str> = fields.iter().map(|f| f.0).collect();
+    let get = |k: &str| fields.iter().find(|f| f.0 == k).map(|f| f.1);
+    let non_empty = |k: &str| get(k).is_some_and(|v| !v.is_empty());
+    let one_of = |k: &str, set: &[&str]| get(k).is_some_and(|v| set.contains(&v));
+    let digits =
+        |k: &str| get(k).is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
+    let n = text.split(' ').count() - 1;
+    if fields.len() != n {
+        return false;
+    }
+    match verb {
+        "sent" | "pending" => keys == ["port"] && non_empty("port"),
+        "skipped" => {
+            keys == ["reason", "port"]
+                && one_of("reason", &["no_port", "opening", "incompatible", "closed"])
+                && non_empty("port")
+        }
+        "acked" => {
+            keys == ["port", "after_us", "by"]
+                && non_empty("port")
+                && (digits("after_us") || get("after_us") == Some("-"))
+                && one_of("by", &["command", "session"])
+        }
+        "after" => {
+            keys == ["port", "mode", "abort_count"]
+                && non_empty("port")
+                && one_of("mode", &["idle", "direct", "playing"])
+                && digits("abort_count")
+        }
+        _ => false,
+    }
+}
+
+fn logged_rig(ports: Vec<FakePort>) -> (SimRig, Logger, MemorySink) {
+    let sink = MemorySink::new();
+    let logger = Logger::spawn(Box::new(sink.clone()), false, None);
+    let mut b = FakeBackend::new(FakeClock::at(0));
+    for p in ports {
+        b = b.with(p);
+    }
+    let r = SimRig::new(b, Rules::MACOS, logger.handle());
+    (r, logger, sink)
+}
+
+fn finish(r: SimRig, logger: Logger, sink: &MemorySink) -> Vec<String> {
+    drop(r);
+    logger.stop();
+    stop_lines(&sink.lines())
+}
+
+/// C.28 (Story 4.7 AC 7): the STOP frame is queued to the port in the very
+/// worker pass that takes the `Stop` command, at the same fake time.
+#[test]
+fn c28_stop_frame_same_pass() {
+    let mut r = rig(
+        vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))],
+        Rules::MACOS,
+    );
+    step_to(&mut r, 1_000_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::Connected(_)))
+    });
+    r.run_until(400_000);
+    assert_eq!(r.snapshot.clone().unwrap().phase, Phase::Connected);
+    let before = writes_to(&r, CU);
+    assert!(stop_frames(&r).is_empty());
+    let t = r.clock.now_us();
+    r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    r.step();
+    assert_eq!(
+        writes_to(&r, CU),
+        before + 1,
+        "one frame queued in the pass"
+    );
+    assert_eq!(
+        stop_frames(&r),
+        vec![t],
+        "the STOP frame, same pass, same time"
+    );
+}
+
+/// C.28 (AC 7): an input held through the session is released: the
+/// controller goes IDLE and publishes NEUTRAL, the ACK brings the session
+/// back to `Connected`, and the three worker lines are written.
+#[test]
+fn c28_stop_releases_inputs() {
+    let (mut r, logger, sink) = logged_rig(vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))]);
+    step_to(&mut r, 1_000_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::Connected(_)))
+    });
+    let held = State {
+        buttons: BTN_A,
+        ..NEUTRAL
+    };
+    r.core.session_mut().unwrap().set_state(held).unwrap();
+    let t = r.clock.now_us();
+    r.run_until(t + 20_000);
+    assert_eq!(with_ctrl(&r, |c| c.mode()), Mode::Direct);
+    assert_eq!(with_ctrl(&r, |c| c.published().buttons), BTN_A, "A held");
+    let seen = r.events.len();
+    let t0 = r.clock.now_us();
+    r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    let mut steps = 0;
+    while !r.events[seen..]
+        .iter()
+        .any(|e| e.event == WorkerEvent::Link(LinkEvent::Stopped))
+    {
+        assert!(steps < 5, "no ACK within 5 steps");
+        r.step();
+        steps += 1;
+    }
+    assert!(r.clock.now_us() - t0 <= 5_000);
+    assert_eq!(with_ctrl(&r, |c| c.mode()), Mode::Idle);
+    assert_eq!(
+        with_ctrl(&r, |c| c.published()),
+        NEUTRAL,
+        "every input released"
+    );
+    assert_eq!(with_ctrl(&r, |c| c.log().stops), 1);
+    assert_eq!(r.snapshot.clone().unwrap().phase, Phase::Connected);
+    // The first STATUS after the ACK.
+    let t = r.clock.now_us();
+    r.run_until(t + 100_000);
+    let lines = finish(r, logger, &sink);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0], format!("sent port={CU}"));
+    assert!(
+        lines[1].starts_with(&format!("acked port={CU} after_us=")),
+        "{lines:?}"
+    );
+    assert!(lines[1].ends_with(" by=command"), "{lines:?}");
+    let after: u64 = lines[1]
+        .split(' ')
+        .find_map(|f| f.strip_prefix("after_us="))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(after <= 100_000, "H.34 pass value: {after}");
+    assert!(
+        lines[2].starts_with(&format!("after port={CU} mode=idle abort_count=")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().all(|l| stop_line_ok(l)), "{lines:?}");
+}
+
+/// C.28 (AC 7): while a STOP waits for its ACK, more commands send no new
+/// frame (the pending one keeps its 50 ms resend) and each logs `pending`.
+#[test]
+fn c28_stop_while_stopping() {
+    let (mut r, logger, sink) = logged_rig(vec![
+        FakePort::bridge(CU, S, Some("Bonooru Bridge")).mute_at(500_000),
+    ]);
+    r.run_until(600_000);
+    assert_eq!(r.snapshot.clone().unwrap().phase, Phase::Connected);
+    let t0 = r.clock.now_us();
+    for _ in 0..10 {
+        r.ends.commands.send(WorkerCommand::Stop).unwrap();
+        r.step();
+    }
+    assert!(r.clock.now_us() - t0 <= 10_000);
+    let frames: Vec<u64> = stop_frames(&r)
+        .into_iter()
+        .filter(|&t| t < t0 + 10_000)
+        .collect();
+    assert_eq!(frames, vec![t0], "exactly one STOP frame in 10 ms");
+    assert_eq!(r.snapshot.clone().unwrap().phase, Phase::Stopping);
+    let lines = finish(r, logger, &sink);
+    assert_eq!(lines[0], format!("sent port={CU}"));
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| **l == format!("pending port={CU}"))
+            .count(),
+        9,
+        "{lines:?}"
+    );
+    assert_eq!(lines.len(), 10, "{lines:?}");
+}
+
+/// C.28 (AC 7, 8; issue #45 context): with the controller cut off the
+/// STOP is resent every 50 ms (20 frames a second, the bound this story
+/// adds to the port's write rate); once it is back the next STOP is ACKed
+/// and the `after_us` shows the failing H.34 value (> 100 000).
+#[test]
+fn c28_stop_resend_unanswered() {
+    let (mut r, logger, sink) = logged_rig(vec![
+        FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+            .mute_at(500_000)
+            .unmute_at(2_000_000),
+    ]);
+    r.run_until(600_000);
+    assert_eq!(r.snapshot.clone().unwrap().phase, Phase::Connected);
+    let t0 = r.clock.now_us();
+    r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    r.run_until(t0 + 1_000_000);
+    let frames = stop_frames(&r);
+    let n = frames.iter().filter(|&&t| t < t0 + 1_000_000).count();
+    assert!((19..=21).contains(&n), "{n} STOP frames in 1 s: {frames:?}");
+    assert!(diffs(&frames).iter().all(|&d| d == 50_000), "{frames:?}");
+    assert_eq!(with_ctrl(&r, |c| c.log().stops), 0, "nothing reached it");
+    step_to(&mut r, 3_000_000, |e| {
+        *e == WorkerEvent::Link(LinkEvent::Stopped)
+    });
+    assert_eq!(
+        with_ctrl(&r, |c| c.log().stops),
+        1,
+        "the next STOP is ACKed"
+    );
+    r.run_until(r.clock.now_us() + 100_000);
+    let lines = finish(r, logger, &sink);
+    let acked = lines.iter().find(|l| l.starts_with("acked")).unwrap();
+    let after: u64 = acked
+        .split(' ')
+        .find_map(|f| f.strip_prefix("after_us="))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(after > 100_000, "H.34 failing value shown: {after}");
+    assert!(after >= 2_000_000 - t0, "{after}");
+    assert!(acked.ends_with("by=command"), "{acked}");
+}
+
+/// C.28 (AC 8): without a port, with a bridge alone (`Opening`) and with an
+/// incompatible controller a STOP writes nothing (same writes as the same
+/// run without it) and logs why.
+#[test]
+fn c28_stop_harmless() {
+    // No port.
+    let (mut r, logger, sink) = logged_rig(vec![]);
+    r.run_until(100_000);
+    r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    r.run_until(200_000);
+    assert!(r.backend.state().writes.is_empty());
+    assert_eq!(
+        finish(r, logger, &sink),
+        vec!["skipped reason=no_port port=-"]
+    );
+    // Bridge alone and incompatible controller: with and without STOP.
+    type Case = (&'static str, fn() -> FakePort, u64);
+    let cases: Vec<Case> = vec![
+        (
+            "opening",
+            || FakePort::bridge(CU, S, Some("Bonooru Bridge")).silent(),
+            550_000,
+        ),
+        (
+            "incompatible",
+            || {
+                FakePort::bridge(CU, S, Some("Bonooru Bridge")).controller(ControllerConfig {
+                    proto_ver: 2,
+                    ..ControllerConfig::default()
+                })
+            },
+            1_500_000,
+        ),
+    ];
+    for (reason, port, at) in cases {
+        let run = |stop: bool| {
+            let (mut r, logger, sink) = logged_rig(vec![port()]);
+            r.run_until(at);
+            if stop {
+                r.ends.commands.send(WorkerCommand::Stop).unwrap();
+            }
+            r.run_until(at + 1_000_000);
+            let writes: Vec<(u64, Vec<u8>)> = r
+                .backend
+                .state()
+                .writes
+                .iter()
+                .map(|w| (w.0, w.2.clone()))
+                .collect();
+            let phase = r.snapshot.clone().unwrap().phase;
+            let counted = writes_to(&r, CU);
+            (writes, counted, phase, finish(r, logger, &sink))
+        };
+        let (w0, c0, p0, l0) = run(false);
+        let (w1, c1, p1, l1) = run(true);
+        assert_eq!(p0, p1);
+        assert_eq!(w0, w1, "{reason}: identical writes");
+        assert_eq!(c0, c1, "{reason}: identical port_writes");
+        assert!(l0.is_empty());
+        assert_eq!(l1, vec![format!("skipped reason={reason} port={CU}")]);
+    }
+}
+
+/// C.28 (AC 11): every worker `stop` line matches its pattern, one per
+/// event; the `after` line can show `direct` (the failing H.34 value);
+/// nothing is logged while nothing happens.
+#[test]
+fn c28_stop_log_lines() {
+    let (mut r, logger, sink) = logged_rig(vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))]);
+    // Idle for 3 s: no stop line.
+    r.run_until(3_000_000);
+    r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    step_to(&mut r, 4_000_000, |e| {
+        *e == WorkerEvent::Link(LinkEvent::Stopped)
+    });
+    // An input held right after the ACK, before the next STATUS.
+    let held = State {
+        buttons: BTN_A,
+        ..NEUTRAL
+    };
+    r.core.session_mut().unwrap().set_state(held).unwrap();
+    r.run_until(r.clock.now_us() + 200_000);
+    // Several STATUS later: still one `after` line per ACK.
+    r.run_until(r.clock.now_us() + 2_000_000);
+    let lines = finish(r, logger, &sink);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines.iter().all(|l| stop_line_ok(l)), "{lines:?}");
+    assert!(
+        lines[2].starts_with(&format!("after port={CU} mode=direct ")),
+        "{lines:?}"
+    );
+    // The pattern rejects what it must.
+    for bad in [
+        "sent",
+        "sent port=",
+        "skipped reason=asleep port=-",
+        "acked port=x after_us=12a by=command",
+        "acked port=x after_us=1 by=user",
+        "after port=x mode=idle",
+        "after port=x mode=idle abort_count=1 extra=1",
+    ] {
+        assert!(!stop_line_ok(bad), "{bad}");
+    }
 }

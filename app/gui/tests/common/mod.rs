@@ -382,7 +382,26 @@ pub fn fake_worker(
     published: std::sync::Arc<std::sync::atomic::AtomicU64>,
     wake: Wake,
 ) -> ocb_services::worker::WorkerHandle {
-    use ocb_services::log::LogHandle;
+    fake_worker_logged(
+        ctx,
+        backend,
+        clock,
+        published,
+        wake,
+        ocb_services::log::LogHandle::disabled(),
+    )
+}
+
+/// [`fake_worker`] writing its own lines to `log` (Story 4.7: the worker's
+/// `stop` lines and the app's land in one sink, in FIFO order).
+pub fn fake_worker_logged(
+    ctx: &egui::Context,
+    backend: ocb_services::sim::FakeBackend,
+    clock: ocb_services::worker::FakeClock,
+    published: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    wake: Wake,
+    log: ocb_services::log::LogHandle,
+) -> ocb_services::worker::WorkerHandle {
     use ocb_services::worker::spawn_with;
     backend.state().read_sleep = Some(std::time::Duration::from_millis(1));
     let app_waker = (wake == Wake::App).then(|| ocb_app::app::repaint_waker(ctx));
@@ -390,7 +409,7 @@ pub fn fake_worker(
         backend,
         clock,
         ocb_core::device::Rules::MACOS,
-        LogHandle::disabled(),
+        log,
         Box::new(move || {
             published.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if let Some(w) = &app_waker {

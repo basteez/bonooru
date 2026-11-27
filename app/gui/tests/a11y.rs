@@ -47,6 +47,24 @@ fn g10_buttons_are_named_buttons() {
     }
 }
 
+/// Story 4.7 AC 9: STOP is one enabled `Role::Button` "Stop" with its
+/// description; the painted ■ inside it adds no `Image` node.
+#[test]
+fn g10_stop_is_a_described_button() {
+    let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(190.0, 60.0));
+    let h = harness(move |ui| {
+        widgets::stop_button(ui, rect);
+    });
+    let node = h.get_by_role_and_label(Role::Button, ocb_app::stop::STOP_A11Y_NAME);
+    assert!(!node.accesskit_node().is_disabled());
+    assert_eq!(
+        node.accesskit_node().description().as_deref(),
+        Some(ocb_app::stop::STOP_A11Y_DESCRIPTION)
+    );
+    assert_eq!(h.query_all_by_role(Role::Image).count(), 0, "no Image node");
+    assert_eq!(h.query_all_by_role(Role::Button).count(), 1);
+}
+
 #[test]
 fn g10_symbols_are_images_named_in_words() {
     let h = harness(|ui| {

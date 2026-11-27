@@ -295,7 +295,8 @@ fn seq(t: &[String], i: usize, want: &[&str]) -> bool {
 }
 
 /// AC 1 in `app/gui/src`: no `serialport`, no log file opened, no blocking
-/// receive or join (`recv()`, `recv_timeout`, `recv_deadline`, `.join()`).
+/// receive, send or join (`recv()`, `recv_timeout`, `recv_deadline`,
+/// `.send(`, `.join()`). Story 4.7: commands go with `try_send` only.
 fn ui_hits(src: &str) -> Vec<String> {
     let t = tokens(src);
     let mut out = Vec::new();
@@ -312,6 +313,9 @@ fn ui_hits(src: &str) -> Vec<String> {
         }
         if seq(&t, i, &[".", "join", "(", ")"]) {
             out.push(".join()".to_owned());
+        }
+        if seq(&t, i, &[".", "send", "("]) {
+            out.push(".send(".to_owned());
         }
     }
     out
@@ -373,12 +377,16 @@ fn g13_scanners_self_test() {
         let s = "recv() File::open fs";
         while let Ok(e) = rx.try_recv() {}
         let j = names.join(", "); fn join_reach() {}
+        let _ = tx.try_send(WorkerCommand::Stop); ctx.send_viewport_cmd(c);
+        // tx.send(WorkerCommand::Stop) in a comment
     "#;
     assert_eq!(ui_hits(good_ui), Vec::<String>::new());
     for (bad, want) in [
         ("let e = self.rx.recv();", ".recv()"),
         ("rx.recv_timeout(d)", "recv_timeout"),
         ("let _ = handle.join();", ".join()"),
+        ("tx.send(WorkerCommand::Stop).unwrap();", ".send("),
+        ("self.link.handle.commands . send (c)", ".send("),
         ("serialport::available_ports()", "serialport"),
         ("std::fs::OpenOptions::new()", "fs"),
         ("File::create(p)", "File"),

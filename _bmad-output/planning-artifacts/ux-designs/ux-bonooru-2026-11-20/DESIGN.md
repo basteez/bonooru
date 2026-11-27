@@ -156,6 +156,11 @@ typography:
     fontFamily: Nunito Sans
     fontSize: 10px
     fontWeight: '600'
+  safety-note:                      # lifted from mockups/key-empty-state.html (Story 4.7)
+    fontFamily: Nunito Sans
+    fontSize: 13px
+    fontWeight: '400'
+    lineHeight: '1.35'
   code:
     note: 'egui bundled monospace (Hack, default_fonts feature) for the text-score editor and log view; size 13px (confirmed 2026-11-27, OQ-7)'
 rounded:
@@ -397,6 +402,19 @@ components:
     foreground: '{colors.on-ember}'
     glow: 'Shadow blur 18px {colors.ember}'
     radius: '{rounded.xl}'
+  bottom-bar:
+    padding-x: 16px                  # lifted from mockups/key-empty-state.html (Story 4.7)
+    gap: 14px                        # lifted from mockups/key-empty-state.html (Story 4.7)
+  big-button:
+    padding-x: 22px                  # lifted from mockups/key-empty-state.html (Story 4.7)
+    icon-size: 16px                  # lifted from mockups/key-empty-state.html (Story 4.7)
+    icon-gap: 12px                   # lifted from mockups/key-empty-state.html (Story 4.7)
+    sub-opacity: 0.85                # lifted from mockups/key-empty-state.html (Story 4.7)
+  safety-note:
+    typography: '{typography.safety-note}'
+    foreground: '{colors.text-muted}'
+    padding-right: 6px               # lifted from mockups/key-empty-state.html (Story 4.7)
+    second-line-opacity: 0.7         # lifted from mockups/key-empty-state.html (Story 4.7)
   banner-dialogue:
     background: '{colors.banner-fill}'
     border: '1px {colors.banner-border}'
@@ -667,7 +685,7 @@ An `unknown` LED shows its label only ("Switch"), with no detail text. → Refer
 - **Lit-key visualizer** (during countdown and Play): the panel shows `chip-locked` "Locked · live view"; every control the song is pressing turns `gamepad-control-lit` (amber fill with Shadow glow, ink letter); a caption under the pad names the current input, e.g. "Now: Y + D↑ (C5)".
 - **Compact variant** (< 1280 px wide): the silhouette is dropped; the controls render as a tight grid of buttons in the same styles, with no key chips (key hints move to tooltips). Spine-only: no mock.
 
-**Bottom bar.** → Reference: [mockups/key-editor-staff.html](mockups/key-editor-staff.html) (Play off, Listen on) and [mockups/key-empty-state.html](mockups/key-empty-state.html) (all off but STOP). Left to right: **Play from cursor** (`button-play-primary`, amber, ▶ painted, label "Play from cursor" + sub-line with the cursor position, e.g. "0:12"), **Play from start** (`button-play-secondary`, ⏮ painted, sub-line "0:00"), **Listen** (`button-listen`: the secondary style, fairy-orb icon, label "Listen" + sub-line "on this PC"). Disabled buttons use `button-disabled` (45 % opacity, no glow; the orb loses its glow too) and show a tooltip naming the first blocking reason. Centre-right: safety note, two lines, right-aligned in `{colors.text-muted}`: "Don't dock the Switch mid-song." / "Esc stops at any time." (second line 70 %). Right: **STOP** with sub-line "Esc". Idle STOP is `button-stop-idle` (dim, 75 % opacity, still clickable); during countdown and Play it becomes `button-stop-live` (ember fill, on-ember text 4.96:1, ember glow). Big buttons: `{spacing.big-button-height}` high, min `{spacing.big-button-min-width}` wide, 22 px side padding, `{rounded.xl}`, 14 px apart.
+**Bottom bar.** → Reference: [mockups/key-editor-staff.html](mockups/key-editor-staff.html) (Play off, Listen on) and [mockups/key-empty-state.html](mockups/key-empty-state.html) (all off but STOP). Left to right: **Play from cursor** (`button-play-primary`, amber, ▶ painted, label "Play from cursor" + sub-line with the cursor position, e.g. "0:12"), **Play from start** (`button-play-secondary`, ⏮ painted, sub-line "0:00"), **Listen** (`button-listen`: the secondary style, fairy-orb icon, label "Listen" + sub-line "on this PC"). Disabled buttons use `button-disabled` (45 % opacity, no glow; the orb loses its glow too) and show a tooltip naming the first blocking reason. Centre-right: safety note, two lines, right-aligned in `{colors.text-muted}`: "Don't dock the Switch mid-song." / "Esc stops at any time." (second line 70 %). Right: **STOP** with sub-line "Esc". Idle STOP is `button-stop-idle` (dim, 75 % opacity, still clickable); during countdown and Play it becomes `button-stop-live` (ember fill, on-ember text 4.96:1, ember glow). Big buttons: `{spacing.big-button-height}` high, min `{spacing.big-button-min-width}` wide, 22 px side padding, `{rounded.xl}`, 14 px apart. Epic 4 (Story 4.7): STOP idle and the safety note; the three Play/Listen slots are reserved and empty until Epics 5–6; STOP's content sits at 22 px left padding (mock flex start). Tokens: `components.bottom-bar`, `components.big-button`, `components.safety-note`, `typography.safety-note`.
 
 **Fairy-orb icon** (Listen; a quiet easter egg). `fairy-orb-icon`, `{spacing.orb-icon-size}`: an **original** small glowing winged light — a round cream core (`{colors.on-ember}`) with an amber `Shadow` glow, **one** pair of rounded leaf-shaped wings angled up (convex ellipses, cream outline, faint cream fill) and two tiny amber sparkle dots trailing below-left. It nods to the idea of a fairy companion without reproducing the game's character: never two wing pairs, never the blue/white palette, no face, no outline traced from game art, and no "Hey! Listen!" or other quoted catchphrase anywhere in copy, tooltips or docs. Drawn with `Painter` circles/ellipses only (all convex).
 

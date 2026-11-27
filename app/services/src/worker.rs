@@ -14,13 +14,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-pub use crossbeam_channel::TryRecvError;
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
+pub use crossbeam_channel::{TryRecvError, TrySendError};
 use ocb_core::device::{self, Class, PortInfo, Rules};
 use ocb_core::link::AbandonReason;
 use ocb_core::link::{LinkEvent, Phase, Session, SessionConfig, StatusView};
 use ocb_core::protocol::consts::MSG_HELLO;
-use ocb_core::protocol::{Info, NakReason, RxSide, decode_frame};
+use ocb_core::protocol::{Info, Mode, NakReason, RxSide, decode_frame};
 
 use crate::log::LogHandle;
 use crate::port::{Backend, OpenError, OpenPort, PortLost, permission_message};
@@ -110,13 +110,16 @@ pub const fn host_rules() -> Rules {
     }
 }
 
-/// What the UI asks of the worker. Later stories add `SetState`, `Stop`,
-/// the 1200-baud touch and the post-flash checks (AD-16).
+/// What the UI asks of the worker (AD-16). Later stories add `SetState`,
+/// the 1200-baud touch and the post-flash checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum WorkerCommand {
     /// Close the port and end the thread.
     Shutdown,
+    /// Release every input: STOP to the controller if a session is
+    /// connected; harmless otherwise (Story 4.7).
+    Stop,
 }
 
 /// Something the UI (or the probe) should know. Scans are not events (one
@@ -388,6 +391,11 @@ pub struct WorkerCore<B: Backend, C: Clock> {
     shutdown: bool,
     dirty: bool,
     buf: Vec<u8>,
+    /// When the first unanswered `Stop` command was handled (worker clock),
+    /// for the `stop acked … after_us` line (Story 4.7).
+    stop_cmd_us: Option<u64>,
+    /// A STOP was ACKed: the next STATUS writes the `stop after` line.
+    stop_after_pending: bool,
 }
 
 /// When the worker ends (shutdown, or a panic unwinding its thread) its
@@ -463,6 +471,8 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             shutdown: false,
             dirty: true,
             buf: vec![0; 4096],
+            stop_cmd_us: None,
+            stop_after_pending: false,
         };
         let ends = Endpoints {
             commands: cmd_tx,
@@ -509,13 +519,13 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         if self.shutdown {
             return;
         }
-        // Only `Shutdown` exists so far; later commands join here. A
-        // dropped handle (every sender gone) is a shutdown too, so a worker
-        // never outlives its owner.
-        if self
-            .cmd_rx
-            .try_iter()
-            .any(|cmd| cmd == WorkerCommand::Shutdown)
+        // Every queued command is taken (none is dropped unseen). A
+        // `Shutdown` anywhere wins: a STOP queued with it is not sent, the
+        // close lowers DTR, which aborts DIRECT on the controller (AD-5).
+        // A dropped handle (every sender gone) is a shutdown too, so a
+        // worker never outlives its owner.
+        let commands: Vec<WorkerCommand> = self.cmd_rx.try_iter().collect();
+        if commands.contains(&WorkerCommand::Shutdown)
             || matches!(self.cmd_rx.try_recv(), Err(TryRecvError::Disconnected))
         {
             let now = self.clock.now_us();
@@ -524,6 +534,13 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             self.dirty = true;
             self.publish();
             return;
+        }
+        // Commands before `io_pass`: a STOP frame goes out in this pass.
+        for cmd in commands {
+            if cmd == WorkerCommand::Stop {
+                let now = self.clock.now_us();
+                self.handle_stop(now);
+            }
         }
         if let Some(reason) = self.log.take_unavailable() {
             let now = self.clock.now_us();
@@ -912,6 +929,8 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         self.connected_us = None;
         self.required_update = None;
         self.last_nak = None;
+        self.stop_cmd_us = None;
+        self.stop_after_pending = false;
         self.dirty = true;
         Some(c)
     }
@@ -938,6 +957,44 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                     last_rx_us: c.last_rx_us,
                 },
             );
+        }
+    }
+
+    // ------------------------------------------------------------ stop
+
+    /// A `Stop` command (Story 4.7): `Session::stop()` in `Connected` (the
+    /// frame goes out in this step's `io_pass`); nothing new while a STOP
+    /// waits for its ACK; nothing written in any other phase (`Opening`:
+    /// every HELLO has STOP semantics, AD-7; `Incompatible`: C.27).
+    fn handle_stop(&mut self, now: u64) {
+        self.dirty = true;
+        let Some(c) = self.conn.as_mut() else {
+            self.log.log("stop", "skipped reason=no_port port=-");
+            return;
+        };
+        let port = c.name.clone();
+        match c.session.phase() {
+            Phase::Connected => {
+                // `stop()` cannot fail in `Connected`.
+                let _ = c.session.stop();
+                self.stop_cmd_us = Some(now);
+                self.log.log("stop", format!("sent port={port}"));
+            }
+            Phase::Stopping => {
+                // The first unanswered command keeps its time; a session
+                // STOP (abandon) gets this command's.
+                self.stop_cmd_us.get_or_insert(now);
+                self.log.log("stop", format!("pending port={port}"));
+            }
+            phase @ (Phase::Opening | Phase::Incompatible | Phase::Closed) => {
+                let reason = match phase {
+                    Phase::Opening => "opening",
+                    Phase::Incompatible => "incompatible",
+                    _ => "closed",
+                };
+                self.log
+                    .log("stop", format!("skipped reason={reason} port={port}"));
+            }
         }
     }
 
@@ -1017,6 +1074,21 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             LinkEvent::Status(v) => {
                 self.status = Some((*v, now));
                 self.dirty = true;
+                if std::mem::take(&mut self.stop_after_pending) {
+                    let mode = match v.mode {
+                        Mode::Idle => "idle".to_owned(),
+                        Mode::Direct => "direct".to_owned(),
+                        Mode::Playing => "playing".to_owned(),
+                        Mode::Unknown(m) => format!("0x{m:02x}"),
+                    };
+                    self.log.log(
+                        "stop",
+                        format!(
+                            "after port={port} mode={mode} abort_count={}",
+                            v.abort_count
+                        ),
+                    );
+                }
                 return;
             }
             LinkEvent::Connected(info) => {
@@ -1084,6 +1156,8 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                 self.connected_us = None;
                 self.status = None;
                 self.last_nak = None;
+                self.stop_cmd_us = None;
+                self.stop_after_pending = false;
                 self.log.log("reboot", format!("controller rebooted port={port}"));
             }
             LinkEvent::ControllerEvent(code) => self.log.log(
@@ -1115,7 +1189,17 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                 format!("unknown reason=0x{reason:02x} expected={expected} got={got}"),
             ),
             LinkEvent::Malformed { ty } => self.log.log("malformed", format!("ty=0x{ty:02x}")),
-            LinkEvent::Stopped => {}
+            LinkEvent::Stopped => {
+                let (after, by) = match self.stop_cmd_us.take() {
+                    Some(t) => (now.saturating_sub(t).to_string(), "command"),
+                    None => ("-".to_owned(), "session"),
+                };
+                self.stop_after_pending = true;
+                self.log.log(
+                    "stop",
+                    format!("acked port={port} after_us={after} by={by}"),
+                );
+            }
         }
         self.emit(now, WorkerEvent::Link(ev));
     }

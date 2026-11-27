@@ -209,3 +209,56 @@ pub fn inline_hint(ui: &mut Ui, rect: Rect, text: &str) -> Response {
     let box_rect = Rect::from_min_size(rect.min, vec2(rect.width(), galley.rect.height()));
     text_node_colored(ui, box_rect, galley, Align2::LEFT_TOP, theme::TEXT_MUTED)
 }
+
+/// STOP, idle look (`button-stop-idle`, Story 4.7): `stop-idle-fill`, 1 pt
+/// `ember` border, radius `rounded.xl`, the painted ■ (16 pt box, no node)
+/// at 22 pt from the left, 12 pt gap, then "STOP" (`button-lg`) over "Esc"
+/// (`button-lg-sub` at 85 %), the block vertically centred; everything at
+/// 75 % opacity, no glow. Always enabled; focusable, clicked by a click,
+/// Enter with focus or an AccessKit click (Space never reaches it: the
+/// frame start consumes it, `ui::keys`). The focus ring is painted at full
+/// opacity. One `Role::Button` node "Stop" with the description "Esc stops
+/// at any time.". Epic 6 adds the live look.
+pub fn stop_button(ui: &mut Ui, rect: Rect) -> Response {
+    use crate::stop::{STOP_A11Y_DESCRIPTION, STOP_A11Y_NAME, STOP_LABEL, STOP_SUB};
+    use theme::components::big_button::{ICON_GAP, ICON_SIZE, PADDING_X, SUB_OPACITY};
+    let resp = ui.interact(rect, super::bottom_bar::stop_id(), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let mut faded = ui.painter().clone();
+        faded.multiply_opacity(theme::components::STOP_IDLE_OPACITY);
+        let painter = &faded;
+        let ppp = ui.ctx().pixels_per_point();
+        let radius = theme::corner(theme::rounded::XL);
+        painter.rect_filled(rect, radius, theme::STOP_IDLE_FILL);
+        painter.rect_stroke(
+            rect,
+            radius,
+            paint::stroke(1.0, theme::EMBER, ppp),
+            StrokeKind::Inside,
+        );
+        let icon = Rect::from_min_size(
+            egui::pos2(rect.left() + PADDING_X, rect.center().y - ICON_SIZE / 2.0),
+            vec2(ICON_SIZE, ICON_SIZE),
+        );
+        symbols::paint_symbol(painter, icon, Symbol::Stop, theme::STOP_IDLE_TEXT, ppp);
+        let sub_color = theme::STOP_IDLE_TEXT.gamma_multiply(SUB_OPACITY);
+        let label = paint::layout_line(
+            ui.ctx(),
+            &theme::BUTTON_LG,
+            STOP_LABEL,
+            theme::STOP_IDLE_TEXT,
+        );
+        let sub = paint::layout_line(ui.ctx(), &theme::BUTTON_LG_SUB, STOP_SUB, sub_color);
+        let x = icon.right() + ICON_GAP;
+        let block_h = label.rect.height() + sub.rect.height();
+        let top = rect.center().y - block_h / 2.0;
+        let label_h = label.rect.height();
+        painter.galley(egui::pos2(x, top), label, theme::STOP_IDLE_TEXT);
+        painter.galley(egui::pos2(x, top + label_h), sub, sub_color);
+    }
+    paint::paint_focus_ring(ui, &resp, theme::rounded::XL, false);
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, STOP_A11Y_NAME));
+    ui.ctx()
+        .accesskit_node_builder(resp.id, |n| n.set_description(STOP_A11Y_DESCRIPTION));
+    resp
+}

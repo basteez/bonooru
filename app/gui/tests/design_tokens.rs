@@ -362,10 +362,19 @@ fn g3_component_sizes() {
         theme::components::STATUS_LED_SIZE,
     );
     // Story 4.5: the strip and LED spacing lifted from the mock.
-    use theme::components::{inline_hint, status_led, status_strip};
+    use theme::components::{
+        big_button, bottom_bar, inline_hint, safety_note, status_led, status_strip,
+    };
     for (group, key, ours) in [
         // Story 4.6: the hint's inset in its region.
         ("inline-hint", "inset", inline_hint::INSET),
+        // Story 4.7: the bottom bar, its big buttons and the safety note.
+        ("bottom-bar", "padding-x", bottom_bar::PADDING_X),
+        ("bottom-bar", "gap", bottom_bar::GAP),
+        ("big-button", "padding-x", big_button::PADDING_X),
+        ("big-button", "icon-size", big_button::ICON_SIZE),
+        ("big-button", "icon-gap", big_button::ICON_GAP),
+        ("safety-note", "padding-right", safety_note::PADDING_RIGHT),
         ("status-led", "gap", status_led::GAP),
         ("status-led", "symbol-gap", status_led::SYMBOL_GAP),
         ("status-led", "detail-gap", status_led::DETAIL_GAP),
@@ -374,6 +383,26 @@ fn g3_component_sizes() {
     ] {
         let what = format!("{group}.{key}");
         eq(&mut errs, &what, px(&field(group, key), &what), ours);
+    }
+    // Story 4.7: plain-number opacities.
+    for (group, key, ours) in [
+        ("big-button", "sub-opacity", big_button::SUB_OPACITY),
+        (
+            "safety-note",
+            "second-line-opacity",
+            safety_note::SECOND_LINE_OPACITY,
+        ),
+        (
+            "button-stop-idle",
+            "opacity",
+            theme::components::STOP_IDLE_OPACITY,
+        ),
+    ] {
+        let what = format!("{group}.{key}");
+        eq(&mut errs, &what, num(&field(group, key), &what), ours);
+    }
+    if field("safety-note", "typography") != "{typography.safety-note}" {
+        errs.push("components.safety-note.typography: not {typography.safety-note}".to_owned());
     }
     let padding = field("status-led", "padding");
     let (py, px_) = padding

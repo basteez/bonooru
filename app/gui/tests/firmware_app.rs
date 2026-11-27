@@ -235,12 +235,14 @@ fn g18_modal_on_mismatch() {
     assert!(r.dialog_drawn());
     assert_eq!(r.h.state().modals().open_id(), Some(firmware::dialog_id()));
     let _ = r.h.get_by_role_and_label(Role::Label, MODAL_BODY);
-    // Exactly one button in the window (the LEDs are Status nodes), "OK".
+    // Exactly one dialog button, "OK" (the LEDs are Status nodes); the
+    // bottom bar's STOP (Story 4.7) is the only other button, under the
+    // scrim, and comes first in the tree.
     let buttons: Vec<String> =
         r.h.query_all_by_role(Role::Button)
             .map(|n| n.accesskit_node().label().unwrap_or_default())
             .collect();
-    assert_eq!(buttons, vec!["OK".to_owned()]);
+    assert_eq!(buttons, vec!["Stop".to_owned(), "OK".to_owned()]);
     let spec = firmware::required_update_dialog();
     assert_eq!(spec.secondary, None);
     assert!((spec.outer_width() - 440.0).abs() < f32::EPSILON);
