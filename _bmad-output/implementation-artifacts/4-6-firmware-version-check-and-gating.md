@@ -4,7 +4,7 @@ baseline_commit: 4b2842bdac3033d409b33bc51e0f15ce51f21f22
 
 # Story 4.6: Firmware version check and gating
 
-Status: in-progress
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -90,7 +90,7 @@ Numbers no tool measures: none. Claims measured on the host only (no real board 
   - [x] 7.5 `app/README.md`: one line each for `gating` (`src/gating.rs`) and `ui::firmware` in the module list, and that gate and dialog changes appear as `gate` / `dialog` lines in `bonooru.log`.
 - [ ] **Task 8: verify on the host (AC 11).** In `app/` with `/opt/homebrew/opt/rustup/bin` first on `PATH`: `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace`, `cargo deny --locked check licenses bans`, the G.8 scripts, `cargo run -p ocb-app -- --smoke-test` and `-- --smoke-test --gallery` (checker green, `worker=` ≥ 1). Red proofs recorded (Task 10). Push the branch; the `app` workflow green on three OS.
   - [x] 8.1 Host checks green on macOS (2026-11-27): fmt, clippy, 399 tests, deny, G.8 scripts, both smoke runs (`worker=1`), "ocb-sim never ships" for ocb-app, ocb-services, ocb-core.
-  - [ ] 8.2 CI on three OS: push the branch, the `app` workflow green on ubuntu, windows and macos (coordinator).
+  - [x] 8.2 CI on three OS: push the branch, the `app` workflow green on ubuntu, windows and macos (coordinator). Green at `66d44db` (app on three OS, probe artifacts, firmware).
 - [x] **Task 9 (OWNER, late): eye check in the gallery.** `cd app && cargo run -p ocb-app -- --gallery` (no boards needed). Questions, one at a time: (1) Open the "Firmware update needed" sample: title, flourish, body wording and line breaks, one OK button: OK? (2) Is the body clear enough to reflash both boards without the wizard? Any word to change (draft, OQ-13)? (3) The inline-hint cells at 300 and 200 pt: readable, muted enough, wrapping acceptable? Record each answer; make and re-check any change before review.
 - [x] **Task 10: red proofs (AC 11, E3-A2).** For each new check, the Debug Log names the code change that makes it fail and the failure seen (minimum list: Dev Notes › Red proofs). No bench tool is new or changed in this story (`ocb-probe`, `ocb-dev`, `link_probe.py` untouched), so E3-A2's per-verdict-branch rule owes nothing; say so in the Debug Log.
 
@@ -343,7 +343,7 @@ Not red-proved: the hint-before-scrim index comparison in `g18_hint` (it needs t
 - Docs: `EXPERIENCE.md`, `DESIGN.md`, `epics.md`, `docs/test-plan.md` (C.27, G.17, G.18, no-H-row sentence), `app/README.md`.
 - Review fixes (2026-11-27): findings 1–13 fixed (opening-Esc opt-out in `Modals` for the firmware dialog, `shown`/discard only when the dialog is actually open, drain in pass 0 only, gallery outcome not read, `Secondary` not logged, tests strengthened, story text aligned), 14–16 deferred to Story 4.8; 5 new tests; 404 tests green.
 - Owner eye check done (Task 9): no changes.
-- Open: Task 8.2 CI on three OS (coordinator pushes).
+- Task 8.2 done: CI green on three OS at `66d44db`. Status `review`.
 
 ### File List
 
@@ -382,3 +382,4 @@ Not red-proved: the hint-before-scrim index comparison in `g18_hint` (it needs t
 - 2026-11-27: owner accepted every Open question default ("ok"); recorded under Open questions.
 - 2026-11-27: implemented (gds-dev-story): gate model, firmware dialog, gamepad hint, `gate`/`dialog` log lines, C2 tooltip, C.27/G.17/G.18/G.1 tests, docs; host checks and red proofs done. Status in-progress: CI on three OS (Task 8.2) and the owner eye check (Task 9) open.
 - 2026-11-27: code review fixes: findings 1–13 fixed, 14–16 deferred to Story 4.8; owner eye check recorded (no changes); 404 tests. Status stays in-progress for CI on three OS (Task 8.2).
+- 2026-11-27: CI green on three OS at `66d44db` (Task 8.2); status `review`.
