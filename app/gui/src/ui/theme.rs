@@ -67,7 +67,7 @@ color_tokens! {
     AMBER = "amber" 0xf0b43cff;
     AMBER_GLOW = "amber-glow" 0xf0b43c66;
     AMBER_WASH = "amber-wash" 0xf0b43c22;
-    /// `[ASSUMPTION]` until UX Open Question 7 is answered (Story 4.1 AC 11).
+    /// Confirmed by the owner 2026-11-27 (UX Open Question 7, Story 4.1 AC 11).
     AMBER_INK = "amber-ink" 0x8a5a12ff;
     // Ember.
     EMBER = "ember" 0xb8432fff;
@@ -82,17 +82,17 @@ color_tokens! {
     OUT_OF_RANGE_NOTE = "out-of-range-note" 0xb9b0a0ff;
     // Status.
     STATUS_OK = "status-ok" 0x8fd16fff;
-    /// `[ASSUMPTION]` until UX Open Question 7 is answered.
+    /// Confirmed by the owner 2026-11-27 (UX Open Question 7).
     STATUS_WARNING = "status-warning" 0xf08a4bff;
-    /// `[ASSUMPTION]` until UX Open Question 7 is answered.
+    /// Confirmed by the owner 2026-11-27 (UX Open Question 7).
     STATUS_ERROR = "status-error" 0xef6a55ff;
-    /// `[ASSUMPTION]` until UX Open Question 7 is answered.
+    /// Confirmed by the owner 2026-11-27 (UX Open Question 7).
     STATUS_UNKNOWN = "status-unknown" 0x9a8a72ff;
     // Overlays.
     BANNER_FILL = "banner-fill" 0x1c1610e0;
     BANNER_BORDER = "banner-border" 0xe9dcbc66;
     VEIL = "veil" 0x16110ccc;
-    /// `[ASSUMPTION]` until UX Open Question 7 is answered.
+    /// Confirmed by the owner 2026-11-27 (UX Open Question 7).
     SCRIM = "scrim" 0x0b0806b3;
 }
 
@@ -324,7 +324,7 @@ pub const NOTE_LABEL: TypeStyle = TypeStyle::new(Body, 11.5, 700.0);
 pub const GLYPH: TypeStyle = TypeStyle::new(Body, 10.5, 700.0);
 pub const KEY_CHIP: TypeStyle = TypeStyle::new(Body, 10.0, 600.0);
 /// `typography.code` is a note in `DESIGN.md` ("Hack, size 13px",
-/// `[ASSUMPTION]` until UX Open Question 7 is answered). Hack is static: the
+/// confirmed by the owner 2026-11-27, UX Open Question 7). Hack is static: the
 /// weight is its only weight, Regular.
 pub const CODE: TypeStyle = TypeStyle::new(Code, 13.0, 400.0);
 

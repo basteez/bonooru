@@ -124,13 +124,37 @@ fn status_samples(ui: &mut Ui) {
     status_strip(ui, "well", theme::WELL, &error);
 }
 
-/// A sample control on `bg` with the 2 pt `amber-ink` ring at 2 pt offset.
+/// A sample control on `bg` with the 2 pt `amber-ink` ring at 2 pt offset,
+/// its label laid out first and the control stacked below it, so the ring
+/// never covers the label (owner review 2026-11-27).
 fn ring_sample(ui: &mut Ui, bg_name: &str, bg: Color32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(220.0, 64.0), Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, theme::corner(theme::rounded::MD), bg);
-    let control = Rect::from_center_size(rect.center(), vec2(120.0, 28.0));
+    let font = theme::SMALL.font_id();
+    let label = ui
+        .painter()
+        .layout_no_wrap(bg_name.to_owned(), font.clone(), theme::INK_SOFT);
+    let inset = theme::spacing::CARD_INSET;
+    let gap = theme::spacing::S2;
+    let control_size = vec2(120.0, 28.0);
     let radius = theme::rounded::MD;
+    let offset = theme::spacing::FOCUS_RING_OFFSET;
+    let ring_outer = offset + theme::spacing::FOCUS_RING_WIDTH;
+    let label_ink = label.rect.union(label.mesh_bounds);
+    let width = (control_size.x + 2.0 * ring_outer)
+        .max(label_ink.width())
+        .max(220.0)
+        + 2.0 * inset;
+    let height = inset + label_ink.height() + gap + control_size.y + 2.0 * ring_outer + inset;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, theme::corner(radius), bg);
+    let label_pos = rect.left_top() + vec2(inset, inset) - label_ink.min.to_vec2();
+    let control = Rect::from_min_size(
+        egui::pos2(
+            rect.center().x - control_size.x / 2.0,
+            rect.top() + inset + label_ink.height() + gap + ring_outer,
+        ),
+        control_size,
+    );
     p.rect_filled(control, theme::corner(radius), theme::PARCHMENT_HEADER_ALT);
     p.rect_stroke(
         control,
@@ -138,28 +162,20 @@ fn ring_sample(ui: &mut Ui, bg_name: &str, bg: Color32) {
         Stroke::new(1.0, theme::INK),
         StrokeKind::Inside,
     );
-    let offset = theme::spacing::FOCUS_RING_OFFSET;
     p.rect_stroke(
         control.expand(offset),
         theme::corner(radius + offset),
         Stroke::new(theme::spacing::FOCUS_RING_WIDTH, theme::AMBER_INK),
         StrokeKind::Outside,
     );
-    let font = theme::SMALL.font_id();
     p.text(
         control.center(),
         Align2::CENTER_CENTER,
         "Control",
-        font.clone(),
+        font,
         theme::INK,
     );
-    p.text(
-        rect.left_top() + vec2(theme::spacing::CARD_INSET, theme::spacing::S1),
-        Align2::LEFT_TOP,
-        bg_name,
-        font,
-        theme::INK_SOFT,
-    );
+    p.galley(label_pos, label, theme::INK_SOFT);
 }
 
 fn amber_ink_rings(ui: &mut Ui) {
@@ -215,7 +231,11 @@ fn text_score(ui: &mut Ui) {
 }
 
 /// One row per typography token: its exact name (queryable by tests), a
-/// specimen in the token, and its family, size and weight.
+/// specimen in the token, and its family, size and weight. The specimen's
+/// cell is sized from the laid-out galley's ink bounds (layout rect united
+/// with the glyph mesh bounds): Cormorant Garamond's default old-style
+/// figures descend below the baseline, so the `countdown` "3" is taller
+/// than its 1.0 line height (owner review 2026-11-27).
 fn typography(ui: &mut Ui) {
     egui::Grid::new("gallery-typography")
         .num_columns(3)
@@ -233,7 +253,7 @@ fn typography(ui: &mut Ui) {
                 } else {
                     sample.to_owned()
                 };
-                ui.label(theme::rich(style, text).color(theme::TEXT));
+                specimen(ui, theme::rich(style, text).color(theme::TEXT));
                 let spec = format!(
                     "{} {} pt, wght {}",
                     style.family.design_name(),
@@ -244,4 +264,18 @@ fn typography(ui: &mut Ui) {
                 ui.end_row();
             }
         });
+}
+
+/// Paints `text` in a cell as large as its ink bounds.
+fn specimen(ui: &mut Ui, text: egui::RichText) {
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Body,
+    );
+    let ink = galley.rect.union(galley.mesh_bounds);
+    let (cell, _) = ui.allocate_exact_size(ink.size(), Sense::hover());
+    ui.painter()
+        .galley(cell.min - ink.min.to_vec2(), galley, theme::TEXT);
 }

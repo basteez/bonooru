@@ -1,7 +1,7 @@
 ---
 name: bonooru
 status: final
-updated: 2026-11-20
+updated: 2026-11-27
 description: Desktop app (Rust + egui/eframe) that plays melodies on the ocarina in Ocarina of Time (Switch 2) through two RP2040 boards. Dark warm frame, music on a parchment card, amber glow for selection. Direction "Hybrid". Dark only.
 colors:
   # Frame and panels (dark, warm). Values lifted from mockups/directions-oot-2026-11-20.html, direction 3.
@@ -33,7 +33,7 @@ colors:
   amber: '#f0b43c'
   amber-glow: '#f0b43c66'
   amber-wash: '#f0b43c22'
-  amber-ink: '#8a5a12'            # [ASSUMPTION] parchment-safe accent (song name on end card, focus ring on parchment); amber itself is ~1.5:1 on parchment
+  amber-ink: '#8a5a12'            # parchment-safe accent (confirmed 2026-11-27, OQ-7) (song name on end card, focus ring on parchment); amber itself is ~1.5:1 on parchment
   # Ember: official-song warning, playhead, live STOP
   ember: '#b8432f'
   ember-wash: '#b8432f2e'
@@ -45,16 +45,16 @@ colors:
   out-of-range-zone: '#cfc6b4'
   out-of-range-ink: '#55504a'     # 4.71:1 on out-of-range-zone (AA for the 11 px label)
   out-of-range-note: '#b9b0a0'
-  # Status (LEDs, banners, errors). status-ok is lifted from the mock; the other three hexes are [ASSUMPTION] proposals.
+  # Status (LEDs, banners, errors). status-ok is lifted from the mock; the other three hexes were confirmed by the owner 2026-11-27 (OQ-7, Story 4.1 gallery review).
   status-ok: '#8fd16f'
-  status-warning: '#f08a4b'       # [ASSUMPTION] orange, hue ~22deg vs amber ~40deg; never used without the triangle symbol
-  status-error: '#ef6a55'         # [ASSUMPTION] hex; the error red itself is decided (LED error, too-short value, editor underline)
-  status-unknown: '#9a8a72'       # [ASSUMPTION]
+  status-warning: '#f08a4b'       # orange, hue ~22deg vs amber ~40deg; never used without the triangle symbol
+  status-error: '#ef6a55'         # the error red itself is decided (LED error, too-short value, editor underline)
+  status-unknown: '#9a8a72'       # confirmed 2026-11-27 (OQ-7)
   # Overlays (8-digit hex = alpha, egui Color32::from_rgba_unmultiplied)
   banner-fill: '#1c1610e0'
   banner-border: '#e9dcbc66'
   veil: '#16110ccc'               # 80 %; over parchment composites to ~#413a2d
-  scrim: '#0b0806b3'              # [ASSUMPTION] modal backdrop
+  scrim: '#0b0806b3'              # modal backdrop (confirmed 2026-11-27, OQ-7)
 typography:
   brand:
     fontFamily: Cormorant Garamond
@@ -148,7 +148,7 @@ typography:
     fontSize: 10px
     fontWeight: '600'
   code:
-    note: '[ASSUMPTION] egui bundled monospace (Hack, default_fonts feature) for the text-score editor and log view; size 13px'
+    note: 'egui bundled monospace (Hack, default_fonts feature) for the text-score editor and log view; size 13px (confirmed 2026-11-27, OQ-7)'
 rounded:
   xs: 2px
   sm: 4px
@@ -524,11 +524,11 @@ Dark only. The app ignores the OS light/dark setting; there is no light theme.
 - **Text `#f3e3bd` / Text-muted `#c4a676`** — cream body text and muted labels on dark. Cream on Frame is 14.8:1; muted on Panel is 7.8:1, on Well 7.0:1.
 - **Parchment `#ecdcb2`** and its family (`parchment-lane-alt` for accidental lanes, `parchment-header`/`-alt` for lane headers and the card header, `parchment-ruler`, `parchment-rule`, `parchment-grid`) — only the note view, the end-of-song card and diagram/illustration sheets use parchment. Ink `#2b2015` on parchment is 11.7:1.
 - **Note `#5b3d22`** — note bars (7.2:1 on parchment). **Control `#56402a`** — gamepad buttons at rest (cream on control 7.7:1).
-- **Amber `#f0b43c`** — the one accent. It means *selected, focused, or the thing you will start*: the selected note's glow, focus rings, the focused gamepad ring and "Keys active" chip, the active stepper segment, the Play button, lit keys while playing, the countdown halo. Never used for warnings or status. Ink on amber is 8.6:1; amber on Panel 9.7:1, on Well 8.7:1 (focus ring on dark). **Amber-ink `#8a5a12`** [ASSUMPTION] is the accent's parchment-safe variant: the song name on the end card (4.35:1, large text) and the focus ring on parchment (4.35:1 on parchment, 3.85:1 on parchment-header, both ≥ 3:1 for non-text).
+- **Amber `#f0b43c`** — the one accent. It means *selected, focused, or the thing you will start*: the selected note's glow, focus rings, the focused gamepad ring and "Keys active" chip, the active stepper segment, the Play button, lit keys while playing, the countdown halo. Never used for warnings or status. Ink on amber is 8.6:1; amber on Panel 9.7:1, on Well 8.7:1 (focus ring on dark). **Amber-ink `#8a5a12`** (confirmed 2026-11-27, OQ-7) is the accent's parchment-safe variant: the song name on the end card (4.35:1, large text) and the focus ring on parchment (4.35:1 on parchment, 3.85:1 on parchment-header, both ≥ 3:1 for non-text).
 - **Ember `#b8432f`** — the official-song warning (group outline, label tab, note fill), the playhead, and the live STOP button. Ember-text `#f2a58f` is its readable form on dark (8.6:1 on Panel-raised). On-ember `#fff4e0` on ember is 4.96:1 (label tab, live STOP label). The playhead on parchment is 3.98:1 (non-text, ≥ 3:1).
 - **Out-of-range grey** (`out-of-range-zone #cfc6b4`, `out-of-range-ink #55504a`, `out-of-range-note #b9b0a0`) — deliberately desaturated so out-of-range notes read as "not part of the playable song yet". The zone label is 4.71:1 (AA for 11 px). The ghost-note fill vs the zone is only 1.27:1 by design; the dashed `out-of-range-ink` border (4.71:1) carries the shape.
-- **Status colours** — `status-ok #8fd16f` (lifted from the mock), `status-warning #f08a4b`, `status-error #ef6a55`, `status-unknown #9a8a72` (three hexes are [ASSUMPTION] proposals). **Rule: the warning hue must be distinguishable from amber.** Warning sits at ~22° hue against amber's ~40°, but the two are only 1.34:1 apart in luminance, so the symbol (triangle) carries the meaning; colour is never the only signal. On Panel-raised: ok 9.4:1, warning 6.9:1, error 5.6:1, unknown 5.1:1; error on Panel 5.9:1, on Well 5.3:1. **`status-error` is the one error red**: LED error, the tempo "too short" value, editor error underlines, error rows in the log view.
-- **Overlays** — `banner-fill` (88 % alpha; over parchment it composites to ~#352e24, cream text 10.6:1), `banner-border` (40 %), `veil` (80 %, countdown; over parchment ~#413a2d), `scrim` (modal backdrop, [ASSUMPTION]). In egui these are `Color32::from_rgba_unmultiplied`.
+- **Status colours** — `status-ok #8fd16f` (lifted from the mock), `status-warning #f08a4b`, `status-error #ef6a55`, `status-unknown #9a8a72` (the three hexes confirmed by the owner 2026-11-27 in the Story 4.1 token gallery, OQ-7). **Rule: the warning hue must be distinguishable from amber.** Warning sits at ~22° hue against amber's ~40°, but the two are only 1.34:1 apart in luminance, so the symbol (triangle) carries the meaning; colour is never the only signal. On Panel-raised: ok 9.4:1, warning 6.9:1, error 5.6:1, unknown 5.1:1; error on Panel 5.9:1, on Well 5.3:1. **`status-error` is the one error red**: LED error, the tempo "too short" value, editor error underlines, error rows in the log view.
+- **Overlays** — `banner-fill` (88 % alpha; over parchment it composites to ~#352e24, cream text 10.6:1), `banner-border` (40 %), `veil` (80 %, countdown; over parchment ~#413a2d), `scrim` (modal backdrop, confirmed 2026-11-27, OQ-7). In egui these are `Color32::from_rgba_unmultiplied`.
 
 Avoid: gradients (the Lantern direction's gold gradient was not chosen); extra accents; `ember` for anything other than the official-song warning, the playhead and live STOP; any red (ember or `status-error`) for generic errors inside the note view — note-view problems use the out-of-range grey or the ember official-song group only.
 
@@ -538,7 +538,7 @@ Two OFL fonts, bundled as TTF in egui and listed in About with their licence tex
 
 - **Cormorant Garamond** (700) — display only: `{typography.brand}` (status strip), `{typography.panel-tab}` ("Song" / "Gamepad" tabs, banner name tab), `{typography.dialog-title}` ("Ready to play?"), `{typography.card-title}` ("You played <Song>!"), `{typography.countdown}` (numerals).
 - **Nunito Sans** (400/600/700) — everything else. Labels are bold uppercase with 0.06 em tracking (`extra_letter_spacing`) in `{colors.text-muted}`. Values that change while you tune them (transpose, tempo) are large: `{typography.value-lg}`, `{typography.value-md}`.
-- **Code** — the text-score editor and the log view need a monospace face that neither font provides. [ASSUMPTION] keep egui's bundled monospace (Hack, `default_fonts` feature) and ship its licence.
+- **Code** — the text-score editor and the log view need a monospace face that neither font provides. Decided 2026-11-27 (OQ-7): egui's bundled monospace (Hack, `default_fonts` feature) at 13 px, its licence shipped.
 
 **egui implementation notes** (egui/epaint 0.37, per `review-egui-feasibility.md`):
 

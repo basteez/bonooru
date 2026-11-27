@@ -155,7 +155,7 @@ UX open questions to carry as spikes or explicit AC TODOs (not guesses)
 - OQ-4 `console_ready` 100 ms polling-stall rule unverified on hardware (H.3); Play gating to be revisited after hands-on testing. RESOLVED 2026-11-26 (Story 3.5): verified and kept at 100 ms.
 - OQ-5 Windows, bridge alone, main screen: how to show an unconfirmed bridge (no product string, no INFO).
 - OQ-6 Bridge LED label without INFO ("Bridge – found" assumed).
-- OQ-7 Status warning/error/unknown hexes, `amber-ink`, `scrim`, editor font (proposed).
+- OQ-7 Status warning/error/unknown hexes, `amber-ink`, `scrim`, editor font (proposed). RESOLVED 2026-11-27 (Story 4.1, owner gallery review): all kept as proposed (`#f08a4b`, `#ef6a55`, `#9a8a72`, `#8a5a12`, `#0b0806b3`, Hack 13 px). Same question as `EXPERIENCE.md` Open Questions item 6.
 - OQ-8 Update flow key flow (required/recommended → wizard → reflash → Play re-enabled) — states-only coverage today.
 - OQ-9 Screen reader / AccessKit support level — must be decided before the shared widget helpers are built.
 - OQ-10 Text score file extension and save-as defaults; grammar details owned by `score`.

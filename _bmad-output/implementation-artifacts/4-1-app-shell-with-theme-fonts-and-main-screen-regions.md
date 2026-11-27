@@ -4,7 +4,7 @@ baseline_commit: 004bda3
 
 # Story 4.1: App shell with theme, fonts and main-screen regions
 
-Status: in-progress
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -100,10 +100,10 @@ Every number in the ACs and the tool and field that measure it. All host-side; n
 - [x] **Task 9: Docs and test plan (AC: 10, 11)**
   - [x] 9.1 `app/README.md`: the `gui/` crate (`ocb-app`, binary `bonooru`), the run commands (`cargo run -p ocb-app`, `-- --gallery`, `-- --smoke-test`), the font provenance (3.1) and the new checks (`cargo deny check licenses bans`).
   - [x] 9.2 `docs/test-plan.md`: a new section "App GUI tests (`ocb-app`, no hardware)" after the C table, rows G.1–G.9 as named in the AC → measurement table (G.1 regions, G.2 window, G.3 tokens + gallery, G.4 fonts, G.5 licences, G.6 contrast, G.7 smoke, G.8 Linux feature, G.9 deny), each with pass criterion and Binds (UX-DR1/2/5, AD-18, AD-21). Update the intro sentence of the C section that lists the CI gates.
-- [ ] **Task 10: Verify, owner review, close (AC: 10, 11)**
-  - [ ] 10.1 Locally in `app/`: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo deny check licenses bans` (install `cargo-deny@0.22.0` as CI does if missing), `cargo run -p ocb-app -- --smoke-test`. Push the branch and get the `app` workflow green on the three OS.
-  - [ ] 10.2 Ask the owner to run `cargo run -p ocb-app -- --gallery` (and the plain main screen) and to confirm or change each OQ-7 value; apply the result to `DESIGN.md` (frontmatter and prose, remove `[ASSUMPTION]` of confirmed values), `theme.rs`, `EXPERIENCE.md` Open Questions item 6 ("RESOLVED <date>: ..."), and `epics.md` OQ-7. Run G.3 and G.6 again. If the owner is not available, leave this subtask open, move the story to `review` with the open item stated in the Completion Notes.
-  - [ ] 10.3 `sprint-status.yaml`: story to `review`.
+- [x] **Task 10: Verify, owner review, close (AC: 10, 11)**
+  - [x] 10.1 Locally in `app/`: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo deny check licenses bans` (install `cargo-deny@0.22.0` as CI does if missing), `cargo run -p ocb-app -- --smoke-test`. Push the branch and get the `app` workflow green on the three OS.
+  - [x] 10.2 Ask the owner to run `cargo run -p ocb-app -- --gallery` (and the plain main screen) and to confirm or change each OQ-7 value; apply the result to `DESIGN.md` (frontmatter and prose, remove `[ASSUMPTION]` of confirmed values), `theme.rs`, `EXPERIENCE.md` Open Questions item 6 ("RESOLVED <date>: ..."), and `epics.md` OQ-7. Run G.3 and G.6 again. If the owner is not available, leave this subtask open, move the story to `review` with the open item stated in the Completion Notes.
+  - [x] 10.3 `sprint-status.yaml`: story to `review`.
 
 ### Review Findings
 
@@ -158,6 +158,10 @@ A new GUI crate that opens one themed window and draws five empty regions. Nothi
 - Fonts: `FontDefinitions::default()` with `default_fonts` holds `Hack`, `Ubuntu-Light`, `egui-icons` (5 brand glyphs; Noto Emoji only with `monochrome_emoji_fonts`). `FontData::from_static(..).tweak(FontTweak { coords: VariationCoords::new([("wght", 400.0)]), .. })`; `FontData::variation_axes()` lists the axes. `RichText::variation("wght", w)`, `RichText::extra_letter_spacing(pt)`, `line_height(Some(pt))`. `RichText::strong()` only changes colour. No OpenType feature switch (no `tnum`).
 - `egui_kittest 0.37.0` (MIT OR Apache-2.0, MSRV 1.95, features `eframe`, `snapshot`, `video`, `wgpu`, `x11`): `Harness::builder().with_size(v).with_pixels_per_point(p).with_theme(t).build_eframe(|cc| app)`, `build_ui(|ui| ..)`, `run()`, `run_steps(n)`, `output()` (the `FullOutput`, its `shapes`), `ctx`, `get_by_label`. It panics on a missing glyph by default (good: keep it) and runs an accessibility check that every input widget has a name (no input widgets here yet). Its `eframe` feature enables `eframe/accesskit` only, with eframe default features off.
 - Variable-font defaults (measured at story creation with fontTools): Cormorant Garamond `wght` 300–700, default 300; Nunito Sans `wght` 200–1000 default 200, `wdth` 75–125 default 100, `opsz` 6–12 default 12, `YTLC` 440–540 default 500. Glyph coverage: Nunito Sans has `× – − · … “ ” ’` but none of `▶ ■ ⏮ ▾ ▲ ⌫ ↵ ↑ ♯ ♪ ↶ ↷ ↔`; Cormorant has `▶ ■ ▲ ↑ ↔` but not `⏮ ▾ ⌫ ↵ ♯ ♪ ↶ ↷`. This confirms UX-DR3 (painted symbols, Story 4.3) and matters for Story 4.5 if a label ever writes `PC↔Bridge`.
+
+### Forward note for Story 6.4 (countdown), added 2026-11-27
+
+Cormorant Garamond's default figures are old-style: "3", "4", "5", "7" and "9" descend below the baseline, past a 1.0 line height (seen in the token gallery's 128 pt "3"). egui 0.37 cannot select OpenType features such as `lnum` (epaint shapes with `harfrust::ShapeOptions::new()` and exposes only variation axes; Debug Log, 2026-11-27). The countdown numeral must therefore be sized and centred from its ink bounds (`Galley::mesh_bounds`), not from the line height.
 
 ### Licences (AD-21, NFR-07)
 
@@ -273,6 +277,16 @@ Red proofs (each check made to fail for the reason it claims, then reverted; fin
 - **Linux (Docker, ubuntu 24.04, CI apt list, Xvfb, `WAYLAND_DISPLAY=ocb-no-such-socket`):** `--smoke-test` → `OCB_SMOKE ok frames=3 ppp=1 inner=1280x800 min=1024x680 theme=dark backend=Xlib`, rc 0, checker rc 0; `--smoke-test --gallery` the same; fail case (viewport 900×600, min 600×400) → `OCB_SMOKE fail (inner=900x600 below min=1024x680) frames=3 ppp=1 inner=900x600 min=1024x680 theme=dark backend=Xlib`, rc 4, checker rc 1 with its `::error::`. stderr: libEGL DRI3 warnings and the four `XDG_RUNTIME_DIR` lines (container, harmless).
 - **Verification after the fixes (macOS):** fmt OK; clippy `-D warnings` clean; `cargo test --locked --workspace` 38 binaries, 178 tests, 0 failed; `cargo deny --locked check licenses bans` → `bans ok, licenses ok`; smoke rc 0 for both modes, `check-smoke.sh ... AppKit` ok.
 
+**Owner review of AC 11 / OQ-7, 2026-11-27.** The owner looked at `bonooru --gallery` (macOS, ppp 2) and kept every proposed value: `status-warning #f08a4b`, `status-error #ef6a55`, `status-unknown #9a8a72`, `amber-ink #8a5a12`, `scrim #0b0806b3`, editor font Hack 13 px. Recorded in `DESIGN.md` (frontmatter comments and prose: the `[ASSUMPTION]` tags of these six values removed, `updated: 2026-11-27`; the other `[ASSUMPTION]`s, e.g. `gamepad-compact-width`, are not OQ-7 and stay), `EXPERIENCE.md` Open Questions item 6 (RESOLVED), `epics.md` OQ-7 (RESOLVED). No value changed, so `theme.rs` keeps its values (doc comments now say "confirmed"); G.3 and G.6 pass unchanged. Owner tooling: `cargo` was not on the owner's `PATH` (rustup toolchain at `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin`, no `~/.cargo/bin`); `app/README.md` now says to put that directory first or run `target/debug/bonooru --gallery` after `cargo build -p ocb-app`. This session ran with that toolchain directory first in `PATH` (stable = cargo/rustc 1.100.0, the pinned version).
+
+**Gallery overlaps found at the owner review (fixed 2026-11-27).**
+- (a) The `countdown` specimen "3" (Cormorant Garamond 128, line height 1.0) descended into the next typography row: Cormorant's default figures are old-style, the "3" draws below the baseline and outside the galley's layout rect. Fix: each specimen cell is sized from the galley's ink bounds (`galley.rect ∪ galley.mesh_bounds`) and painted offset by the ink origin (`gallery::specimen`).
+- (b) The amber-ink ring samples drew the label at the sample's top-left corner, under the 2 pt ring of the centred control. Fix: `ring_sample` lays out the label first (ink bounds), then stacks the control below it with `spacing.2` gap plus the ring's outer extent (offset + width), sizing the sample from both.
+- Tests (`tests/gallery.rs`, at ppp 1.0, 1.5 and 2.0 in a 1024×4000 harness so nothing is scrolled out): `g3_gallery_texts_never_overlap` (the ink rects of all text shapes in the frame, `rect ∪ mesh_bounds`, are pairwise disjoint) and `g3_amber_ink_ring_clears_its_label` (the outer rect of each amber-ink ring stroke intersects no `parchment` / `parchment-header` text).
+- Red proofs (new tests run against the unfixed `gallery.rs`, `git stash` of that file only): `ppp 1: `3` [[127.4 2307.0] - [177.8 2448.0]] overlaps `Song of Storms` [[127.4 2443.0] - [221.0 2463.0]]` (ppp 2: `[[127.4 2304.0] - [177.8 2444.5]]` vs `[[127.4 2440.2] - [221.0 2459.8]]`) and `ppp 1: ring [[70.0 1814.0] - [198.0 1850.0]] covers label `parchment` [[30.0 1804.0] - [91.0 1821.0]]`. After the fix: 3 passed.
+- Verification 2026-11-27 (macOS, toolchain dir first in PATH): fmt OK; clippy `-D warnings` clean; `cargo test --locked --workspace` 38 binaries, 180 tests, 0 failed; `cargo deny --locked check licenses bans` → `bans ok, licenses ok`; `--smoke-test` and `--smoke-test --gallery` → `OCB_SMOKE ok frames=3 ppp=2 inner=1280x800 min=1024x680 theme=dark backend=AppKit`, rc 0, `check-smoke.sh ... AppKit` ok.
+- egui OpenType features (for Story 6.4): `ctx7` on `/emilk/egui/0.37.0` returned no documentation for font features. The epaint 0.37 sources settle it: `text_layout.rs:1605` shapes every run with `shaper.shape(buffer, harfrust::ShapeOptions::new())`, i.e. with no features (harfrust's `ShapeOptions::features` exists but epaint never sets it), and neither `TextFormat` nor `FontTweak` has a feature field. Only variation axes (`coords`) are exposed. So egui 0.37 cannot select lining figures (`lnum`) or tabular figures (`tnum`).
+
 Other notes:
 - Font provenance (source commit, paths, sizes, sha256) recorded in `app/README.md` › Bundled fonts (Task 3.1 / 9.1).
 - Fonts downloaded from `google/fonts@5026800714d07231937d92eb4cceabf06e05d74e`: sizes and sha256 match the story exactly (1 195 560 B `b20b7d96...35e0`, 571 240 B `f934d714...491d`). OFL texts from the same commit.
@@ -286,7 +300,9 @@ Other notes:
 - Licence decision (owner, 2026-11-26): `BSL-1.0` added to the allow-list (`clipboard-win`, `error-code`; Windows only, eframe `clipboard` feature; notice obligation for source copies only). AC 9 now reads OFL-1.1, Ubuntu-font-1.0 and BSL-1.0; the NFR-07 amendment in `ARCHITECTURE-SPINE.md` says the same.
 - Local verification (macOS): fmt, clippy `-D warnings`, `cargo test --locked --workspace` (38 test binaries, 168 tests, 0 failed), `cargo deny --locked check licenses bans` rc 0, pins `eframe v0.37.0` / `egui v0.37.0`, smoke rc 0 (`backend=AppKit`). Linux smoke reproduced in Docker (`backend=Xlib`).
 - Review fixes 2026-11-26: all 14 [Review][Patch] findings fixed with red proofs (Debug Log R1 to R14). New exit code 4 (smoke verdict fail); smoke `frames=` now counts completed frames.
-- Open: Task 10.1 (CI on three OS after the push), Task 10.2 / AC 11 (owner looks at `cargo run -p ocb-app -- --gallery` and confirms or changes the OQ-7 values), Task 10.3. Story stays `in-progress`.
+- 2026-11-27: AC 11 closed: the owner kept every OQ-7 value (DESIGN.md, EXPERIENCE.md item 6, epics.md OQ-7 updated). Two gallery overlaps from the review fixed (countdown "3" ink, ring over label) with overlap tests. CI was green on the three OS for 7d48352 (Task 10.1). Story to `review`.
+- **Forward note for Story 6.4 (countdown):** Cormorant Garamond's default figures are old-style: "3", "4", "5", "7" and "9" descend below the baseline (the gallery's 128 pt "3" draws past its 1.0 line height). egui 0.37 cannot switch OpenType features (no `lnum`; epaint shapes with no features, see the Debug Log), so the countdown must size and centre the numeral from its ink bounds (`galley.mesh_bounds`), not from the line height, or use a face or glyphs with lining figures.
+- (Superseded 2026-11-27) Open: Task 10.1 (CI on three OS after the push), Task 10.2 / AC 11 (owner looks at `cargo run -p ocb-app -- --gallery` and confirms or changes the OQ-7 values), Task 10.3. Story stays `in-progress`.
 
 - Story created 2026-11-26 by gds-create-story: ultimate context engine analysis completed, comprehensive developer guide created.
 
@@ -307,9 +323,12 @@ Other notes:
 - app/gui/src/ui/mod.rs, theme.rs, fonts.rs, layout.rs, main_screen.rs, gallery.rs
 - app/gui/tests/design_tokens.rs, fonts.rs, licences.rs, main_screen.rs, window.rs, contrast.rs, gallery.rs
 - app/gui/ci/check-smoke.sh (review fix R1)
+- _bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/DESIGN.md, EXPERIENCE.md (OQ-7 outcome)
+- _bmad-output/planning-artifacts/epics.md (OQ-7 outcome)
 - _bmad-output/implementation-artifacts/sprint-status.yaml (story in-progress)
 
 ### Change Log
 
 - 2026-11-26: App shell implemented (Tasks 1 to 9): `ocb-app` crate, theme, fonts, regions, gallery, smoke run, X11 on Linux, CI steps, deny `[bans]`, BSL-1.0 by owner decision, README and test-plan G rows. Pending: CI on three OS (10.1), owner gallery review AC 11 (10.2).
 - 2026-11-26: Addressed code review findings - 14 items resolved (2 IMPORTANT, 12 MINOR): real smoke verdict with exit 4 and a CI field checker, watchdog armed until the event loop returns, CI exit capture, exact gallery labels, fractional-ppp test, frame counting, strict DESIGN.md parser, backend-name and clamp tests, non-UTF-8 usage error, four more banned crates, identifier-based `strong` scan, gallery sizes from tokens, pixel-snapped hairline.
+- 2026-11-27: Owner review of OQ-7 recorded (all values kept); gallery overlaps fixed (specimen cells from ink bounds, ring label stacked above the control) with overlap tests at three scales; owner PATH note in the README; Tasks 10.1 to 10.3 done; status `review`.

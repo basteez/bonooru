@@ -21,6 +21,8 @@ cargo run -p ocb-app -- --gallery       # the token gallery (design review)
 cargo run -p ocb-app -- --smoke-test    # 3 frames, one OCB_SMOKE ok/fail line: exit 0 ok, 4 fail, 3 watchdog (60 s)
 ```
 
+If `cargo` is not on your `PATH` (rustup installed without `~/.cargo/bin` in the shell profile), put the toolchain first, e.g. `export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"` on an Apple Silicon Mac, or build once and run the binary directly: `cargo build -p ocb-app` then `target/debug/bonooru --gallery` (from `app/`).
+
 `gui/ci/check-smoke.sh <file> <backend-regex>` re-checks a smoke line (CI). On Linux the build needs the X11 development packages listed in the `app` CI workflow (`.github/workflows/app.yml`, step "Linux system dependencies").
 
 ## Bundled fonts
