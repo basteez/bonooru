@@ -379,56 +379,91 @@ fn g12_disabled_button() {
             ModalBody::Text("Body".to_owned()),
             ModalAction::new("Go").disabled(),
         )
-        .with_secondary(ModalAction::new("Back")),
+        .with_secondary(ModalAction::new("Back").disabled()),
     );
-    let go = h.get_by_role_and_label(Role::Button, "Go").rect();
     let flat = flat(&h);
-    disabled_look(&flat, go, "Go");
+    // Primary and ghost look the same when disabled.
+    for label in ["Go", "Back"] {
+        let rect = h.get_by_role_and_label(Role::Button, label).rect();
+        disabled_look(&flat, rect, label);
+    }
 }
 
-/// The painted disabled primary, measured against literals: fill `amber` at
-/// 45 % (premultiplied `#6C511B73`, alpha 115 = round(0.45 × 255)); the label
-/// not faded but in `text` (`#F3E3BD`, effective alpha = section alpha × the
-/// shape's `opacity_factor` = 255); no glow (owner eye check 2026-11-27).
+/// The painted disabled look (owner decision 2026-11-27), measured against
+/// literals: an opaque `panel-raised` fill (`#221A13`), a 1 pt `rule-strong`
+/// border (`#4A3826`) inside, the label in `text-muted` (`#C4A676`) at full
+/// effective alpha (section alpha × the shape's `opacity_factor`), no glow
+/// and no amber or rim anywhere on the button.
 fn disabled_look(flat: &[Flat], go: Rect, label: &str) {
-    // The topmost unblurred rect at the button (the parent `Ui` may paint
-    // its own background there first).
-    let fill = flat
+    // The topmost unblurred filled rect at the button (the parent `Ui` may
+    // paint its own background there first).
+    let face = flat
         .iter()
         .filter_map(|f| match &f.shape {
-            Shape::Rect(r) if common::rect_eq(r.rect, go, 0.01) && r.blur_width == 0.0 => {
-                Some(r.fill)
+            Shape::Rect(r)
+                if common::rect_eq(r.rect, go, 0.01)
+                    && r.blur_width == 0.0
+                    && r.fill != Color32::TRANSPARENT =>
+            {
+                Some(r.clone())
             }
             _ => None,
         })
         .next_back()
         .expect("disabled fill");
     assert_eq!(
-        fill,
-        Color32::from_rgba_premultiplied(108, 81, 27, 115),
-        "fill"
+        face.fill,
+        Color32::from_rgb(0x22, 0x1a, 0x13),
+        "{label}: fill"
     );
+    let border = flat
+        .iter()
+        .filter_map(|f| match &f.shape {
+            Shape::Rect(r) if common::rect_eq(r.rect, go, 0.01) && r.stroke.width > 0.0 => {
+                Some(r.stroke)
+            }
+            _ => None,
+        })
+        .next_back()
+        .expect("disabled border");
+    assert_eq!(
+        border.color,
+        Color32::from_rgb(0x4a, 0x38, 0x26),
+        "{label}: border"
+    );
+    assert_eq!(border.width, 1.0, "{label}: border width");
     let (_, _, t) = text(flat, label);
     let section = t.galley.job.sections[0].format.color;
-    assert_eq!(section, Color32::from_rgb(0xf3, 0xe3, 0xbd), "label colour");
+    assert_eq!(
+        section,
+        Color32::from_rgb(0xc4, 0xa6, 0x76),
+        "{label}: label colour"
+    );
     let effective = f32::from(section.a()) * t.opacity_factor;
     assert!(
         (effective - 255.0).abs() <= 1.0,
-        "label effective alpha {effective} (section {}, opacity {})",
+        "{label}: label effective alpha {effective} (section {}, opacity {})",
         section.a(),
         t.opacity_factor
     );
     assert!(
         !flat.iter().any(
-            |f| matches!(&f.shape, Shape::Rect(r) if r.blur_width > 0.0 && r.rect.contains_rect(go))
+            |f| matches!(&f.shape, Shape::Rect(r) if r.blur_width > 0.0 && r.rect.intersects(go))
         ),
-        "no glow when disabled"
+        "{label}: no glow when disabled"
     );
+    for warm in [theme::AMBER, theme::AMBER_GLOW, theme::RIM] {
+        assert!(
+            !flat.iter().any(|f| common::uses(&f.shape, warm)
+                && common::inside(f.shape.visual_bounding_rect(), go.expand(1.0), 0.01)),
+            "{label}: {warm:?} on a disabled button"
+        );
+    }
 }
 
 /// A button asked enabled inside a disabled parent `Ui` is disabled in look
-/// (fill faded once to 45 %, readable label, no glow), in AccessKit and in behaviour (a click does
-/// nothing).
+/// (the neutral disabled look, with no extra egui fade), in AccessKit and in
+/// behaviour (a click does nothing).
 #[test]
 fn g12_button_in_a_disabled_parent() {
     let mut h = Harness::builder()

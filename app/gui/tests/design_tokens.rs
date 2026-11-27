@@ -367,38 +367,45 @@ fn g3_component_sizes() {
         px(&field("corner-bracket", "inset"), "corner-bracket.inset"),
         theme::components::CORNER_BRACKET_INSET,
     );
-    eq(
-        &mut errs,
-        "button-disabled.fill-opacity",
-        num(
-            &field("button-disabled", "fill-opacity"),
-            "button-disabled.fill-opacity",
-        ),
-        theme::components::BUTTON_DISABLED_FILL_OPACITY,
-    );
-    // Colour references: `'{colors.<name>}'` must name the token whose
-    // colour the theme constant holds.
-    for (key, ours) in [
-        ("foreground", theme::components::BUTTON_DISABLED_TEXT),
-        (
-            "foreground-on-primary",
-            theme::components::BUTTON_DISABLED_TEXT_ON_PRIMARY,
-        ),
-    ] {
-        let v = field("button-disabled", key);
+    // `button-disabled` (owner decision 2026-11-27): colour references
+    // `'{colors.<name>}'` (the border `'<w>px {colors.<name>}'`) must name
+    // the token whose colour the theme constant holds.
+    let colour = |key: &str, v: &str| -> egui::Color32 {
         let name = v
             .strip_prefix("{colors.")
             .and_then(|r| r.strip_suffix('}'))
             .unwrap_or_else(|| panic!("button-disabled.{key}: `{v}` is not a colour reference"));
-        let token = theme::color_tokens()
+        theme::color_tokens()
             .iter()
             .find(|t| t.name == name)
-            .unwrap_or_else(|| panic!("button-disabled.{key}: no colour `{name}`"));
-        if token.color != ours {
+            .unwrap_or_else(|| panic!("button-disabled.{key}: no colour `{name}`"))
+            .color
+    };
+    for (key, ours) in [
+        ("background", theme::components::BUTTON_DISABLED_FILL),
+        ("foreground", theme::components::BUTTON_DISABLED_TEXT),
+    ] {
+        let v = field("button-disabled", key);
+        if colour(key, &v) != ours {
             errs.push(format!(
-                "components.button-disabled.{key}: DESIGN.md {name}, theme {ours:?}"
+                "components.button-disabled.{key}: DESIGN.md {v}, theme {ours:?}"
             ));
         }
+    }
+    let border = field("button-disabled", "border");
+    let (w, c) = border
+        .split_once(' ')
+        .unwrap_or_else(|| panic!("button-disabled.border: `{border}`"));
+    eq(
+        &mut errs,
+        "button-disabled.border width",
+        px(w, "button-disabled.border"),
+        theme::components::BUTTON_DISABLED_BORDER_WIDTH,
+    );
+    if colour("border", c) != theme::components::BUTTON_DISABLED_BORDER {
+        errs.push(format!(
+            "components.button-disabled.border: DESIGN.md {c}, theme differs"
+        ));
     }
     let modal = groups
         .get("modal-dialog")

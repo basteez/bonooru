@@ -207,17 +207,19 @@ pub mod components {
     /// `components.corner-bracket.inset`: the bracket box sits this far
     /// inside the card corner on both axes (Story 4.3).
     pub const CORNER_BRACKET_INSET: f32 = 4.0;
-    /// `components.button-disabled.fill-opacity`: alpha factor of a
-    /// disabled button's fill and border (no glow). The label is not faded:
-    /// it switches to [`BUTTON_DISABLED_TEXT`] (ghost) or
-    /// [`BUTTON_DISABLED_TEXT_ON_PRIMARY`] (primary), so it stays readable
-    /// (owner eye check 2026-11-27; G.6 checks ≥ 3:1 against the faded fill
-    /// composited over the panels).
-    pub const BUTTON_DISABLED_FILL_OPACITY: f32 = 0.45;
-    /// `components.button-disabled.foreground` = `colors.text-muted`.
+    /// `components.button-disabled.background` = `colors.panel-raised`: a
+    /// disabled button (primary or ghost) is neutral, never amber (owner
+    /// decision 2026-11-27); no glow.
+    pub const BUTTON_DISABLED_FILL: egui::Color32 = super::PANEL_RAISED;
+    /// `components.button-disabled.border` = `1px {colors.rule-strong}`: the
+    /// neutral border that separates the button from a `panel-raised`
+    /// surface.
+    pub const BUTTON_DISABLED_BORDER: egui::Color32 = super::RULE_STRONG;
+    /// The width of `components.button-disabled.border`, in points.
+    pub const BUTTON_DISABLED_BORDER_WIDTH: f32 = 1.0;
+    /// `components.button-disabled.foreground` = `colors.text-muted`
+    /// (G.6: ≥ 3:1 on the fill over every surface).
     pub const BUTTON_DISABLED_TEXT: egui::Color32 = super::TEXT_MUTED;
-    /// `components.button-disabled.foreground-on-primary` = `colors.text`.
-    pub const BUTTON_DISABLED_TEXT_ON_PRIMARY: egui::Color32 = super::TEXT;
 
     /// `components.modal-dialog` sizes (Story 4.3, from
     /// `mockups/key-dialogs.html`).

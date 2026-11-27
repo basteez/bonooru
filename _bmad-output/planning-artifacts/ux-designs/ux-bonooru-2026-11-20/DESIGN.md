@@ -376,9 +376,9 @@ components:
     wings: 'one pair of rounded leaf ellipses, 1px {colors.text} stroke at 85 %, {colors.text} fill at 22 %'
     sparkle: 'two small {colors.amber} dots trailing below-left'
   button-disabled:
-    fill-opacity: 0.45
+    background: '{colors.panel-raised}'
+    border: '1px {colors.rule-strong}'
     foreground: '{colors.text-muted}'
-    foreground-on-primary: '{colors.text}'
     glow: 'none'
   button-stop-idle:
     background: '{colors.stop-idle-fill}'

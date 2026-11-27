@@ -36,10 +36,10 @@ pub fn button_size(ui: &Ui, label: &str, icon: bool) -> egui::Vec2 {
 
 /// A themed dialog-size button (AC 10): 34 pt high, 18 pt side padding,
 /// text in `button-md`, radius `rounded.lg`. Primary has the 12 pt amber
-/// glow; disabled has its fill and border at `button-disabled.fill-opacity`,
-/// its label in `button-disabled.foreground` (ghost) or
-/// `foreground-on-primary` (primary), no glow, and
-/// is neither clickable nor focusable. Paints the focus ring and is one
+/// glow; disabled (primary or ghost alike, owner decision 2026-11-27) is
+/// neutral: `button-disabled` fill, 1 pt neutral border, label in
+/// `button-disabled.foreground`, no glow, no amber; it is neither clickable
+/// nor focusable. Paints the focus ring and is one
 /// `Role::Button` node named `label`.
 ///
 /// Disabled means `enabled == false` or a disabled parent `Ui`: the look,
@@ -75,21 +75,19 @@ pub fn button(
         let painter = &faded;
         let ppp = ui.ctx().pixels_per_point();
         use theme::components::{
-            BUTTON_DISABLED_FILL_OPACITY, BUTTON_DISABLED_TEXT, BUTTON_DISABLED_TEXT_ON_PRIMARY,
-        };
-        // Disabled: the fill and border fade, the label switches to a colour
-        // that stays readable on the faded fill (never faded itself).
-        let alpha = if enabled {
-            1.0
-        } else {
-            BUTTON_DISABLED_FILL_OPACITY
+            BUTTON_DISABLED_BORDER, BUTTON_DISABLED_BORDER_WIDTH, BUTTON_DISABLED_FILL,
+            BUTTON_DISABLED_TEXT,
         };
         let radius = theme::rounded::LG;
+        // Disabled: one neutral look for both kinds (no amber, no glow).
         let (fill, text_color, border) = match (kind, enabled) {
             (ButtonKind::Primary, true) => (theme::AMBER, theme::INK, None),
-            (ButtonKind::Primary, false) => (theme::AMBER, BUTTON_DISABLED_TEXT_ON_PRIMARY, None),
-            (ButtonKind::Ghost, true) => (theme::WELL, theme::TEXT, Some(theme::RIM)),
-            (ButtonKind::Ghost, false) => (theme::WELL, BUTTON_DISABLED_TEXT, Some(theme::RIM)),
+            (ButtonKind::Ghost, true) => (theme::WELL, theme::TEXT, Some((1.0, theme::RIM))),
+            (_, false) => (
+                BUTTON_DISABLED_FILL,
+                BUTTON_DISABLED_TEXT,
+                Some((BUTTON_DISABLED_BORDER_WIDTH, BUTTON_DISABLED_BORDER)),
+            ),
         };
         if kind == ButtonKind::Primary && enabled {
             paint::paint_glow(
@@ -100,12 +98,12 @@ pub fn button(
                 theme::AMBER_GLOW,
             );
         }
-        painter.rect_filled(rect, theme::corner(radius), fill.gamma_multiply(alpha));
-        if let Some(border) = border {
+        painter.rect_filled(rect, theme::corner(radius), fill);
+        if let Some((width, color)) = border {
             painter.rect_stroke(
                 rect,
                 theme::corner(radius),
-                paint::stroke(1.0, border.gamma_multiply(alpha), ppp),
+                paint::stroke(width, color, ppp),
                 StrokeKind::Inside,
             );
         }
