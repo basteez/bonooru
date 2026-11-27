@@ -4,7 +4,7 @@ baseline_commit: 196717fdc1d4428b79576ddf723453f44e193efb
 
 # Story 4.5: Status strip with three live LEDs
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
