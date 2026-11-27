@@ -1,0 +1,20 @@
+[package]
+name = "ocb-probe"
+description = "Dev-only discovery bench tool (Story 4.4): runs the ocb-services worker headless and prints machine-checkable lines; never shipped"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ocb-core = { path = "../../core" }
+ocb-services = { path = "../../services" }
+ctrlc = "=3.5.3"
+
+[dev-dependencies]
+ocb-services = { path = "../../services", features = ["sim"] }
+ocb-sim = { path = "../../sim" }
+
+[lints]
+workspace = true

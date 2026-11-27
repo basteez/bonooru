@@ -1,10 +1,12 @@
 # Bonooru app workspace (AD-18, Story 3.2). `core` is the GUI-free crate
 # `ocb-core`: no egui/eframe, no threads, no I/O (checked by tests/purity.rs).
 # `gui` is `ocb-app`, the egui/eframe desktop app (binary `bonooru`, Story 4.1);
-# it is the only crate that depends on egui.
+# it is the only crate that depends on egui. `services` is `ocb-services`
+# (Story 4.4): the serial worker, the serialport adapter and the file log,
+# no GUI. `sim` and `tools/*` are dev-only and never shipped.
 [workspace]
 resolver = "3"
-members = ["core", "gui", "sim", "tools/ocb-dev"]
+members = ["core", "gui", "services", "sim", "tools/ocb-dev", "tools/ocb-probe"]
 
 [workspace.package]
 version = "0.0.0" # placeholder: the app version comes from git describe (core/build.rs, AD-14)

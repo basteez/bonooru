@@ -1,0 +1,31 @@
+[package]
+name = "ocb-services"
+description = "Bonooru app services (Story 4.4): the serial worker, the serialport adapter and the rotating file log; no GUI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Exact pins (AD-18). `serialport` keeps its default `libudev` feature: on
+# Linux it is what reports the USB vendor, product and serial of a port
+# (the sysfs fallback reports less and may list ports that do not exist).
+# Build needs `pkg-config` and `libudev-dev`, run time `libudev.so.1`.
+[dependencies]
+ocb-core = { path = "../core" }
+serialport = "=4.10.1"
+crossbeam-channel = "=0.5.17"
+directories = "=6.0.0"
+# The fake backend for tests and dry runs (feature `sim`). Never enabled by
+# a shipped build: CI checks that `ocb-sim` is not in `ocb-app`'s normal
+# dependency graph.
+ocb-sim = { path = "../sim", optional = true }
+
+[features]
+sim = ["dep:ocb-sim"]
+
+[dev-dependencies]
+ocb-sim = { path = "../sim" }
+
+[lints]
+workspace = true

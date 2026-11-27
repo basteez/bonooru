@@ -21,6 +21,10 @@ path = "src/main.rs"
 # `web_screen_reader`, no `winit/default` (it would bring Wayland back).
 [dependencies]
 ocb-core = { path = "../core" }
+# The serial worker and the file log (Story 4.4). Without `sim`: the fake
+# backends are for the tests only (CI checks `ocb-sim` is not in this
+# crate's normal dependency graph).
+ocb-services = { path = "../services" }
 eframe = { version = "=0.37.0", default-features = false, features = [
     "accesskit",
     "clipboard",
@@ -40,6 +44,8 @@ winit = { version = "=0.30.13", default-features = false, features = ["x11"] }
 # adapter (Story 4.1 D6).
 [dev-dependencies]
 egui_kittest = { version = "=0.37.0", features = ["eframe"] }
+# Tests never start the real backend or write the real log (Story 4.4).
+ocb-services = { path = "../services", features = ["sim"] }
 
 [lints]
 workspace = true

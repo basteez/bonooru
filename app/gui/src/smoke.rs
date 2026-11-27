@@ -1,5 +1,6 @@
 //! The smoke run (`bonooru --smoke-test`, AC 8): open the real window,
-//! render [`FRAMES`] frames, judge what the window really is (theme, measured
+//! render [`FRAMES`] frames and wait for the serial worker's first snapshot
+//! (Story 4.4), judge what the window really is (theme, measured
 //! inner size, window-system backend), print one `OCB_SMOKE ok ...` or
 //! `OCB_SMOKE fail (...) ...` line and close. A watchdog ends the process
 //! with [`EXIT_TIMEOUT`] if the event loop has not returned in time.
@@ -59,6 +60,8 @@ pub struct Report {
     pub min: (f32, f32),
     pub dark: bool,
     pub backend: &'static str,
+    /// Scans the serial worker had done (its latest snapshot, Story 4.4).
+    pub worker: u64,
 }
 
 impl Report {
@@ -66,7 +69,7 @@ impl Report {
     ///
     /// # Errors
     /// Fewer than [`FRAMES`] frames, a light theme, no or a too small
-    /// measured inner size, or a backend not in `expected`.
+    /// measured inner size, a backend not in `expected`, or no worker scan.
     pub fn verdict(&self, expected: &[&str]) -> Result<(), String> {
         if self.frames < FRAMES {
             return Err(format!("frames={} < {FRAMES}", self.frames));
@@ -90,6 +93,9 @@ impl Report {
                 expected.join("|")
             ));
         }
+        if self.worker < 1 {
+            return Err(format!("worker={} < 1", self.worker));
+        }
         Ok(())
     }
 
@@ -99,18 +105,19 @@ impl Report {
             |(w, h)| format!("{}x{}", w.round(), h.round()),
         );
         format!(
-            "frames={} ppp={} inner={inner} min={}x{} theme={} backend={}",
+            "frames={} ppp={} inner={inner} min={}x{} theme={} backend={} worker={}",
             self.frames,
             self.ppp,
             self.min.0.round(),
             self.min.1.round(),
             if self.dark { "dark" } else { "light" },
             self.backend,
+            self.worker,
         )
     }
 
     /// The single stdout line for a verdict, e.g.
-    /// `OCB_SMOKE ok frames=3 ppp=2 inner=1280x800 min=1024x680 theme=dark backend=AppKit`
+    /// `OCB_SMOKE ok frames=3 ppp=2 inner=1280x800 min=1024x680 theme=dark backend=AppKit worker=1`
     /// or `OCB_SMOKE fail (theme=light) frames=3 ...`.
     #[must_use]
     pub fn line(&self, verdict: &Result<(), String>) -> String {
@@ -184,13 +191,15 @@ impl Smoke {
         }
     }
 
-    /// Called once per egui pass with `ctx.cumulative_frame_nr()`. Returns
-    /// `true` exactly once, in the first pass after [`FRAMES`] frames have
-    /// completed: the caller then measures and calls [`Smoke::finish`].
-    /// Extra passes of one frame (an egui discard) do not count.
+    /// Called once per egui pass with `ctx.cumulative_frame_nr()` and the
+    /// scan count of the latest worker snapshot (`None` before the first).
+    /// Returns `true` exactly once, in the first pass after [`FRAMES`]
+    /// frames have completed and a worker snapshot has arrived: the caller
+    /// then measures and calls [`Smoke::finish`]. Extra passes of one frame
+    /// (an egui discard) do not count.
     #[must_use]
-    pub fn due(&self, completed_frames: u64) -> bool {
-        self.report.is_none() && completed_frames >= FRAMES
+    pub fn due(&self, completed_frames: u64, worker_scans: Option<u64>) -> bool {
+        self.report.is_none() && completed_frames >= FRAMES && worker_scans.is_some()
     }
 
     /// Judges the report, stores the outcome and returns the line to print.
@@ -281,6 +290,7 @@ mod tests {
             min: (1024.0, 680.0),
             dark: true,
             backend: "Xlib",
+            worker: 1,
         }
     }
 
@@ -291,13 +301,13 @@ mod tests {
         let r = good();
         assert_eq!(
             r.line(&r.verdict(X11)),
-            "OCB_SMOKE ok frames=3 ppp=1.5 inner=1280x800 min=1024x680 theme=dark backend=Xlib"
+            "OCB_SMOKE ok frames=3 ppp=1.5 inner=1280x800 min=1024x680 theme=dark backend=Xlib worker=1"
         );
     }
 
     #[test]
     fn every_failed_condition_is_a_fail_line() {
-        let cases: [(Report, &str); 6] = [
+        let cases: [(Report, &str); 7] = [
             (
                 Report {
                     frames: 2,
@@ -340,6 +350,13 @@ mod tests {
                 },
                 "backend=none not one of Xlib|Xcb",
             ),
+            (
+                Report {
+                    worker: 0,
+                    ..good()
+                },
+                "worker=0 < 1",
+            ),
         ];
         for (r, reason) in cases {
             let v = r.verdict(X11);
@@ -380,15 +397,20 @@ mod tests {
     }
 
     #[test]
-    fn due_once_after_three_completed_frames_ignoring_extra_passes() {
+    fn due_once_after_three_completed_frames_and_a_worker_snapshot() {
         let mut s = Smoke::new(OutcomeCell::default());
         // Frame numbers seen per pass; frame 1 has two passes (a discard).
         let passes = [0, 1, 1, 2];
-        assert!(passes.iter().all(|&n| !s.due(n)));
-        assert!(s.due(3));
+        assert!(passes.iter().all(|&n| !s.due(n, Some(1))));
+        assert!(!s.due(3, None), "waits for the first worker snapshot");
+        assert!(!s.due(9, None));
+        assert!(s.due(3, Some(1)));
         let line = s.finish(good());
         assert!(line.starts_with("OCB_SMOKE ok ") || line.starts_with("OCB_SMOKE fail "));
-        assert!(!s.due(3) && !s.due(4), "reports only once");
+        assert!(
+            !s.due(3, Some(1)) && !s.due(4, Some(2)),
+            "reports only once"
+        );
     }
 
     #[test]

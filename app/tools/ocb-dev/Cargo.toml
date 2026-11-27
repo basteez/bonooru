@@ -10,7 +10,9 @@ publish.workspace = true
 [dependencies]
 ocb-core = { path = "../../core" }
 # Default features off: `libudev` only serves port enumeration on Linux,
-# which this tool never does (Story 3.4 D2).
+# which this tool never does (Story 3.4 D2). Cargo unifies features across
+# the workspace, so a workspace build still gets `libudev` here through
+# `ocb-services` (Story 4.4); harmless, the tool never enumerates.
 serialport = { version = "=4.10.1", default-features = false }
 ctrlc = "=3.5.3"
 

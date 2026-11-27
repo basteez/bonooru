@@ -9,6 +9,8 @@ A Cargo workspace (Story 3.2), Rust pinned to 1.100.0 by `rust-toolchain.toml`:
 - `core/`: crate `ocb-core`, the GUI-free core (AD-18): no egui/eframe, no threads, no I/O, no runtime dependencies. Today it holds `protocol` (COBS, CRC-16/CCITT-FALSE, frames, the receive splitter, the canonical state and every message) and `version` (the app version from `git describe`, fallback `0.0.0-dev`). `link` is the sans-IO session (Story 3.3): HELLO and INFO, go-back-N with credits, STOP, PING and typed events; bytes and a µs clock in, bytes and events out.
 - `sim/`: crate `ocb-sim`, dev-only and never shipped: a fake controller that follows `docs/link-protocol.md`, an impaired channel (drop, bit flip, junk, duplicate, reorder) and a driver on a fake clock. The session tests C.6 to C.11 live in `sim/tests/`; Story 3.4 uses it for the dry run of `ocb-dev`.
 - `gui/`: crate `ocb-app`, the desktop app (Story 4.1), binary `bonooru`; the only crate that depends on egui. eframe and egui are pinned at `=0.37.0` with default features off (`accesskit`, `clipboard`, `default_fonts`, `wgpu`, `x11`: no `wayland`, no `system_fonts`); on Linux the app forces winit's X11 backend (AD-18). Modules: `ui::theme` (every `DESIGN.md` token, the single source), `ui::fonts`, `ui::layout` and `ui::main_screen` (the five main-screen regions), `ui::paint` (painter-level helpers that handle egui's limits once: focus ring, glow, text halo, dashed rects, convex-only fills, stroke floor, digit cells, corner brackets, the dialog flourish; no accessibility nodes), `ui::symbols` (the 12 painted symbols), `ui::widgets` (themed button, standalone symbol and time, each one accessible node), `ui::modal` (the modal dialog and `Modals`, the app's one-at-a-time dialog host), `ui::gallery` (the hidden debug gallery), `cli`, `smoke`.
+- `services/`: crate `ocb-services` (Story 4.4), what the app does besides drawing; no egui. `port` (the traits the worker talks to and the real `serialport` 4.10.1 adapter: 460800 8N1, DTR asserted then the input cleared, writes that drop instead of blocking, the handle dropped on the first hard error), `log` (the rotating `bonooru.log`, 1 MiB × 4 files, on its own thread behind a bounded queue), `worker` (the serial worker: one thread named `bonooru-serial` owns the port and the link session, lists ports every second, opens only `Ours`/`Unconfirmed` bridges by the `ocb_core::device` rules, follows the bridge by its serial number; the UI gets events and immutable snapshots over `crossbeam-channel`) and, with the dev-only feature `sim`, `sim` (fake backends for tests and dry runs, never in a shipped build).
+- `tools/ocb-probe/`: crate `ocb-probe` (Story 4.4), dev-only and never shipped: the discovery bench tool. It runs the same worker and log headless and prints machine-checkable lines (`list`, `run`, `run --expect-permission-denied`, `alone`; see `--help` and `docs/test-plan.md` H.28 to H.31). CI builds it in release mode for Windows x64, Linux x64 and arm64 and macOS arm64 (job `probe-artifacts`, artifacts `ocb-probe-<os>-<arch>`), so a bench machine needs no Rust.
 - `profiles/`: the bundled default mapping profiles (TOML, one per game version, AD-17); the first, `oot-switch2-1.1.1.toml`, comes from Story 1.5. Not a crate.
 
 ## Running the app
@@ -25,7 +27,22 @@ If `cargo` is not on your `PATH` (rustup installed without `~/.cargo/bin` in the
 
 The gallery shows every token, then one section per painting helper (focus ring, glow, halo, dashed rects, convex fills, stroke floor, digit cells, the 12 symbols, corner brackets) and buttons that open two sample dialogs.
 
-`gui/ci/check-smoke.sh <file> <backend-regex>` re-checks a smoke line (CI); `gui/ci/check-accesskit.sh [target...]` checks that ocb-app enables eframe's `accesskit` feature in the normal dependency graph (CI, G.8). On Linux the build needs the X11 development packages listed in the `app` CI workflow (`.github/workflows/app.yml`, step "Linux system dependencies").
+The app starts the serial worker at launch (Story 4.4): it finds the bridge by itself (USB `2E8A:000A`, product `Bonooru Bridge` where the OS reports it) and never asks for a port. The smoke line ends with `worker=<scans>` (at least 1). The log is `bonooru.log` in the OS log directory: macOS `~/Library/Logs/Bonooru/`, Windows `%LOCALAPPDATA%\Bonooru\logs\`, Linux `$XDG_STATE_HOME/bonooru/logs/` (default `~/.local/state/bonooru/logs/`); it rotates at 1 MiB and keeps three old files (`bonooru.1.log` to `bonooru.3.log`). On Linux, opening the bridge needs the user in the group of the device node (`dialout` on Debian, Ubuntu and Fedora, `uucp` on Arch); the app says so and never asks for privileges.
+
+## Running the probe (bench)
+
+From `app/` (or the unpacked CI artifact on Windows and Linux):
+
+```sh
+cargo run --release -p ocb-probe -- list          # every serial port, its USB ids and class; never opens a port
+cargo run --release -p ocb-probe -- run           # connect, unplug, replug, log check (prompts on screen)
+cargo run --release -p ocb-probe -- alone         # the bridge without a controller: HELLO only
+cargo run --release -p ocb-probe -- run --expect-permission-denied   # Linux, H.30
+```
+
+Exit codes: 0 PASS, 1 FAIL, 2 usage, 130 interrupted. Every verdict line has a dry run (`cargo test -p ocb-probe -- --nocapture run_pass` prints what the bench shows).
+
+`gui/ci/check-smoke.sh <file> <backend-regex>` re-checks a smoke line (CI); `gui/ci/check-accesskit.sh [target...]` checks that ocb-app enables eframe's `accesskit` feature in the normal dependency graph (CI, G.8). On Linux the build needs `pkg-config` and `libudev-dev` (Fedora: `systemd-devel`; serialport's port enumeration, run time `libudev.so.1`) and the X11 development packages listed in the `app` CI workflow (`.github/workflows/app.yml`, step "Linux system dependencies").
 
 ## Bundled fonts
 
@@ -44,7 +61,7 @@ Run from `app/` (the same gates as the `app` CI workflow on ubuntu, windows and 
 
 ```sh
 cargo fmt --all --check
-cargo test --workspace                       # C.1 to C.20 and G.1 to G.6 in docs/test-plan.md
+cargo test --workspace                       # C.1 to C.25, G.1 to G.6 and G.10 to G.13 in docs/test-plan.md
 cargo clippy --workspace --all-targets -- -D warnings
 cargo deny check licenses bans               # NFR-07 allow-list and the AD-21 network-crate ban, deny.toml
 ```

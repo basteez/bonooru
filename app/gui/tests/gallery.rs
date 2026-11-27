@@ -11,6 +11,8 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
 use egui::{Theme, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -27,7 +29,7 @@ fn g3_gallery_lists_every_colour_and_typography_token() {
             .with_size(vec2(1024.0, 680.0))
             .with_pixels_per_point(ppp)
             .with_theme(Theme::Light)
-            .build_eframe(|cc| App::new(cc, Mode::Gallery));
+            .build_eframe(|cc| App::with_link(cc, Mode::Gallery, common::fake_link(&cc.egui_ctx)));
         h.run();
         let names = theme::color_tokens()
             .iter()
@@ -72,7 +74,7 @@ fn tall_gallery(ppp: f32) -> Harness<'static, App> {
     let mut h = Harness::builder()
         .with_size(vec2(1024.0, 7000.0))
         .with_pixels_per_point(ppp)
-        .build_eframe(|cc| App::new(cc, Mode::Gallery));
+        .build_eframe(|cc| App::with_link(cc, Mode::Gallery, common::fake_link(&cc.egui_ctx)));
     h.run();
     h
 }
