@@ -10,6 +10,8 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
 use egui::epaint::{CornerRadius, Shape};
 use egui::{Color32, Rect, Theme, vec2};
 use egui_kittest::Harness;
@@ -101,5 +103,28 @@ fn g1_rects_in_points_do_not_depend_on_ppp() {
     );
     for ppp in [1.25, 1.5, 1.75, 2.0] {
         assert_eq!(at(ppp), base, "painted rects at ppp {ppp}");
+    }
+}
+
+/// UX-DR4 (Story 4.3 AC 9): the note-view card shows its four corner
+/// brackets in `bracket`, one set per corner, inside the card.
+#[test]
+fn g1_note_card_has_corner_brackets() {
+    for (w, hgt) in [(1024.0, 680.0), (1280.0, 800.0)] {
+        for ppp in [1.0, 1.25] {
+            let h = harness(w, hgt, ppp);
+            let card = regions(h.ctx.content_rect()).note_card;
+            let flat: Vec<_> = common::shapes_flat(&h.output().shapes)
+                .into_iter()
+                .filter(|f| common::uses(&f.shape, theme::BRACKET))
+                .collect();
+            for f in &flat {
+                assert!(
+                    common::inside(f.shape.visual_bounding_rect(), card, 0.01),
+                    "bracket outside the card at {w}x{hgt}"
+                );
+            }
+            common::check_brackets(&flat, card, &format!("{w}x{hgt} ppp {ppp}"));
+        }
     }
 }

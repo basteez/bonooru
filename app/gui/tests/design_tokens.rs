@@ -330,21 +330,168 @@ fn g3_typography() {
     report(&errs);
 }
 
-/// Component sizes the screens draw from `theme::components`.
+/// Component sizes the screens draw from `theme::components`: the LED size,
+/// the corner-bracket inset, the disabled-button opacity and every
+/// `components.modal-dialog` size, compared both ways for the modal group
+/// (a px key without a constant, or a constant without a key, fails naming
+/// it; the group's colour and typography references are not sizes).
 #[test]
 fn g3_component_sizes() {
     let doc = design_md();
     let lines = frontmatter(&doc);
     let groups = grouped_section(&lines, "components").unwrap_or_else(|e| panic!("{e}"));
-    let led = groups
-        .get("status-led")
-        .and_then(|g| g.get("size"))
-        .expect("components.status-led.size");
-    assert_eq!(
-        px(led, "status-led.size"),
+    let field = |group: &str, key: &str| -> String {
+        groups
+            .get(group)
+            .and_then(|g| g.get(key))
+            .unwrap_or_else(|| panic!("components.{group}.{key} missing in DESIGN.md"))
+            .clone()
+    };
+    let mut errs = Vec::new();
+    let eq = |errs: &mut Vec<String>, what: &str, design: f32, ours: f32| {
+        if design != ours {
+            errs.push(format!(
+                "components.{what}: DESIGN.md {design}, theme {ours}"
+            ));
+        }
+    };
+    eq(
+        &mut errs,
+        "status-led.size",
+        px(&field("status-led", "size"), "status-led.size"),
         theme::components::STATUS_LED_SIZE,
-        "components.status-led.size"
     );
+    eq(
+        &mut errs,
+        "corner-bracket.inset",
+        px(&field("corner-bracket", "inset"), "corner-bracket.inset"),
+        theme::components::CORNER_BRACKET_INSET,
+    );
+    eq(
+        &mut errs,
+        "button-disabled.opacity",
+        num(
+            &field("button-disabled", "opacity"),
+            "button-disabled.opacity",
+        ),
+        theme::components::BUTTON_DISABLED_OPACITY,
+    );
+    let modal = groups
+        .get("modal-dialog")
+        .expect("components.modal-dialog in DESIGN.md");
+    let design_px: BTreeMap<&String, &String> =
+        modal.iter().filter(|(_, v)| v.ends_with("px")).collect();
+    let ours = theme::components::modal_dialog_tokens();
+    errs.extend(missing(
+        "components.modal-dialog",
+        design_px.keys().copied(),
+        ours.iter().map(|(n, _)| *n),
+    ));
+    for (name, val) in ours {
+        if let Some(v) = design_px.get(&(*name).to_owned()) {
+            eq(
+                &mut errs,
+                &format!("modal-dialog.{name}"),
+                px(v, name),
+                *val,
+            );
+        }
+    }
+    report(&errs);
+}
+
+/// The blur `<n>` of a glow string written `Shadow blur <n>px ...`, if any.
+fn shadow_blur(glow: &str) -> Option<u8> {
+    let rest = glow.strip_prefix("Shadow blur ")?;
+    let n = rest.split("px").next()?;
+    Some(n.parse().unwrap_or_else(|e| panic!("glow `{glow}`: {e}")))
+}
+
+/// Every `components.*.glow` string that names `Shadow blur <n>px` has a
+/// `theme::glow` constant with the same blur, and every constant has its
+/// string (Story 4.3 AC 2, AC 14). Glow strings without a Shadow blur (a bare
+/// colour reference, `'none'`, the gamepad panel's inset wash) are not blur
+/// tokens and are skipped by name below, so a new kind of glow string fails
+/// until it is listed.
+#[test]
+fn g3_glow_tokens() {
+    let doc = design_md();
+    let lines = frontmatter(&doc);
+    let groups = grouped_section(&lines, "components").unwrap_or_else(|e| panic!("{e}"));
+    let errs = glow_mismatches(&groups, theme::glow_tokens());
+    report(&errs);
+}
+
+/// Components whose `glow` string is not a Shadow blur.
+const GLOW_WITHOUT_BLUR: &[&str] = &[
+    "note-bar-selected",
+    "gamepad-control-lit",
+    "gamepad-panel-focused",
+    "button-disabled",
+];
+
+fn glow_mismatches(
+    groups: &BTreeMap<String, BTreeMap<String, String>>,
+    ours: &[(&str, u8)],
+) -> Vec<String> {
+    let mut design = BTreeMap::new();
+    let mut errs = Vec::new();
+    for (name, fields) in groups {
+        let Some(glow) = fields.get("glow") else {
+            continue;
+        };
+        match shadow_blur(glow) {
+            Some(n) => {
+                design.insert(name.clone(), n);
+            }
+            None if GLOW_WITHOUT_BLUR.contains(&name.as_str()) => {}
+            None => errs.push(format!(
+                "components.{name}.glow: `{glow}` is neither a Shadow blur nor listed as one without"
+            )),
+        }
+    }
+    errs.extend(missing("glow", design.keys(), ours.iter().map(|(n, _)| *n)));
+    for (name, blur) in ours {
+        if let Some(n) = design.get(*name)
+            && n != blur
+        {
+            errs.push(format!("glow.{name}: DESIGN.md blur {n}px, theme {blur}"));
+        }
+    }
+    errs
+}
+
+/// The glow comparison fails on a changed blur, on a blur string without a
+/// constant and on a constant without a string.
+#[test]
+fn g3_glow_self_test() {
+    let group = |glow: &str| {
+        let mut g = BTreeMap::new();
+        g.insert("glow".to_owned(), glow.to_owned());
+        g
+    };
+    let mut groups = BTreeMap::new();
+    groups.insert("a".to_owned(), group("Shadow blur 8px, same hue"));
+    groups.insert("button-disabled".to_owned(), group("none"));
+    assert!(glow_mismatches(&groups, &[("a", 8)]).is_empty());
+    let changed = glow_mismatches(&groups, &[("a", 9)]);
+    assert!(
+        changed[0].starts_with("glow.a: DESIGN.md blur 8px"),
+        "{changed:?}"
+    );
+    let no_constant = glow_mismatches(&groups, &[]);
+    assert!(
+        no_constant[0].starts_with("glow.a: in DESIGN.md"),
+        "{no_constant:?}"
+    );
+    let no_string = glow_mismatches(&groups, &[("a", 8), ("b", 3)]);
+    assert!(
+        no_string[0].starts_with("glow.b: in theme"),
+        "{no_string:?}"
+    );
+    groups.insert("c".to_owned(), group("soft halo"));
+    let unknown = glow_mismatches(&groups, &[("a", 8)]);
+    assert!(unknown[0].contains("components.c.glow"), "{unknown:?}");
 }
 
 /// The parser itself: a comment after a quoted hex is stripped, a `#`

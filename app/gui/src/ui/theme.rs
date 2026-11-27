@@ -204,6 +204,92 @@ pub fn spacing_tokens() -> &'static [(&'static str, f32)] {
 pub mod components {
     /// `components.status-led.size`.
     pub const STATUS_LED_SIZE: f32 = 11.0;
+    /// `components.corner-bracket.inset`: the bracket box sits this far
+    /// inside the card corner on both axes (Story 4.3).
+    pub const CORNER_BRACKET_INSET: f32 = 4.0;
+    /// `components.button-disabled.opacity`: fill and text alpha factor of a
+    /// disabled button (no glow).
+    pub const BUTTON_DISABLED_OPACITY: f32 = 0.45;
+
+    /// `components.modal-dialog` sizes (Story 4.3, from
+    /// `mockups/key-dialogs.html`).
+    pub mod modal_dialog {
+        /// Default outer width (frame stroke included).
+        pub const WIDTH: f32 = 460.0;
+        /// Smallest outer width a dialog may ask for.
+        pub const MIN_WIDTH: f32 = 440.0;
+        pub const PADDING_Y: f32 = 20.0;
+        pub const PADDING_X: f32 = 26.0;
+        pub const FLOURISH_WIDTH: f32 = 220.0;
+        pub const FLOURISH_HEIGHT: f32 = 14.0;
+        pub const FLOURISH_MARGIN_TOP: f32 = 6.0;
+        pub const FLOURISH_MARGIN_BOTTOM: f32 = 10.0;
+        pub const ROW_PADDING_Y: f32 = 7.0;
+        pub const ROW_GAP: f32 = 12.0;
+        /// Side of the checklist diamond (a square turned 45°).
+        pub const BULLET_SIZE: f32 = 9.0;
+        pub const CHECKLIST_MARGIN_BOTTOM: f32 = 14.0;
+        pub const TEXT_MARGIN_BOTTOM: f32 = 16.0;
+        pub const ACTION_HEIGHT: f32 = 34.0;
+        pub const ACTION_PADDING_X: f32 = 18.0;
+        pub const ACTION_GAP: f32 = 10.0;
+    }
+
+    /// Every `components.modal-dialog` size by its `DESIGN.md` key.
+    #[must_use]
+    pub fn modal_dialog_tokens() -> &'static [(&'static str, f32)] {
+        use modal_dialog::*;
+        &[
+            ("width", WIDTH),
+            ("min-width", MIN_WIDTH),
+            ("padding-y", PADDING_Y),
+            ("padding-x", PADDING_X),
+            ("flourish-width", FLOURISH_WIDTH),
+            ("flourish-height", FLOURISH_HEIGHT),
+            ("flourish-margin-top", FLOURISH_MARGIN_TOP),
+            ("flourish-margin-bottom", FLOURISH_MARGIN_BOTTOM),
+            ("row-padding-y", ROW_PADDING_Y),
+            ("row-gap", ROW_GAP),
+            ("bullet-size", BULLET_SIZE),
+            ("checklist-margin-bottom", CHECKLIST_MARGIN_BOTTOM),
+            ("text-margin-bottom", TEXT_MARGIN_BOTTOM),
+            ("action-height", ACTION_HEIGHT),
+            ("action-padding-x", ACTION_PADDING_X),
+            ("action-gap", ACTION_GAP),
+        ]
+    }
+}
+
+/// Glow blur values: the `<n>` of every `components.*.glow` string written
+/// `Shadow blur <n>px` in `DESIGN.md`, used as `epaint::Shadow::blur` as is
+/// (Story 4.3 D3; `u8` because `Shadow.blur` is `u8`).
+pub mod glow {
+    /// `components.status-led.glow`.
+    pub const STATUS_LED: u8 = 8;
+    /// `components.stepper-button-active.glow`.
+    pub const STEPPER_ACTIVE: u8 = 10;
+    /// `components.button-play-primary.glow`.
+    pub const PLAY_PRIMARY: u8 = 16;
+    /// `components.button-stop-live.glow`.
+    pub const STOP_LIVE: u8 = 18;
+    /// `components.fairy-orb-icon.glow`.
+    pub const ORB: u8 = 8;
+    /// `components.modal-dialog.glow` (the primary action button).
+    pub const MODAL_PRIMARY: u8 = 12;
+}
+
+/// Every glow constant by the `DESIGN.md` component that names it.
+#[must_use]
+pub fn glow_tokens() -> &'static [(&'static str, u8)] {
+    use glow::*;
+    &[
+        ("status-led", STATUS_LED),
+        ("stepper-button-active", STEPPER_ACTIVE),
+        ("button-play-primary", PLAY_PRIMARY),
+        ("button-stop-live", STOP_LIVE),
+        ("fairy-orb-icon", ORB),
+        ("modal-dialog", MODAL_PRIMARY),
+    ]
 }
 
 /// The three bundled type families (UX-DR2).
@@ -310,6 +396,8 @@ pub const COUNTDOWN: TypeStyle = TypeStyle::new(Display, 128.0, 700.0).lh(1.0);
 pub const BODY: TypeStyle = TypeStyle::new(Body, 13.5, 400.0).lh(1.45);
 pub const BODY_STRONG: TypeStyle = TypeStyle::new(Body, 13.5, 600.0);
 pub const BANNER_TEXT: TypeStyle = TypeStyle::new(Body, 15.0, 400.0).lh(1.4);
+/// Dialog body text and checklist rows (Story 4.3, from the mock).
+pub const DIALOG_BODY: TypeStyle = TypeStyle::new(Body, 14.5, 400.0).lh(1.5);
 pub const LABEL: TypeStyle = TypeStyle::new(Body, 11.5, 700.0).ls(0.06);
 pub const SMALL: TypeStyle = TypeStyle::new(Body, 12.5, 400.0);
 pub const FILENAME: TypeStyle = TypeStyle::new(Body, 15.0, 600.0);
@@ -317,6 +405,8 @@ pub const VALUE_LG: TypeStyle = TypeStyle::new(Body, 24.0, 700.0);
 pub const VALUE_MD: TypeStyle = TypeStyle::new(Body, 17.0, 700.0);
 pub const BUTTON_LG: TypeStyle = TypeStyle::new(Body, 17.0, 700.0).lh(1.1);
 pub const BUTTON_LG_SUB: TypeStyle = TypeStyle::new(Body, 12.5, 400.0);
+/// Dialog action buttons (Story 4.3, from the mock).
+pub const BUTTON_MD: TypeStyle = TypeStyle::new(Body, 14.0, 700.0);
 pub const LANE_NAME: TypeStyle = TypeStyle::new(Body, 12.0, 700.0);
 pub const LANE_FINGERING: TypeStyle = TypeStyle::new(Body, 10.5, 400.0);
 pub const RULER: TypeStyle = TypeStyle::new(Body, 10.5, 400.0);
@@ -340,6 +430,7 @@ pub fn typography_tokens() -> &'static [(&'static str, TypeStyle)] {
         ("body", BODY),
         ("body-strong", BODY_STRONG),
         ("banner-text", BANNER_TEXT),
+        ("dialog-body", DIALOG_BODY),
         ("label", LABEL),
         ("small", SMALL),
         ("filename", FILENAME),
@@ -347,6 +438,7 @@ pub fn typography_tokens() -> &'static [(&'static str, TypeStyle)] {
         ("value-md", VALUE_MD),
         ("button-lg", BUTTON_LG),
         ("button-lg-sub", BUTTON_LG_SUB),
+        ("button-md", BUTTON_MD),
         ("lane-name", LANE_NAME),
         ("lane-fingering", LANE_FINGERING),
         ("ruler", RULER),
@@ -385,8 +477,11 @@ pub fn label(text: &str) -> RichText {
     rich(&LABEL, text.to_uppercase())
 }
 
-/// The dark visuals from the tokens. Widget restyling (focus ring, buttons)
-/// is Story 4.3.
+/// The dark visuals from the tokens. egui's built-in widgets keep egui's own
+/// focus look: the themed widgets of `ui::widgets` paint the token focus ring
+/// (`ui::paint::paint_focus_ring`), and a story that first uses a built-in
+/// widget (TextEdit in 9.2, ComboBox in 5.x) wraps it and calls the same
+/// helper (Story 4.3 D8).
 #[must_use]
 pub fn visuals() -> Visuals {
     let mut v = Visuals::dark();

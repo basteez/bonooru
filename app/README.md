@@ -8,7 +8,7 @@ A Cargo workspace (Story 3.2), Rust pinned to 1.100.0 by `rust-toolchain.toml`:
 
 - `core/`: crate `ocb-core`, the GUI-free core (AD-18): no egui/eframe, no threads, no I/O, no runtime dependencies. Today it holds `protocol` (COBS, CRC-16/CCITT-FALSE, frames, the receive splitter, the canonical state and every message) and `version` (the app version from `git describe`, fallback `0.0.0-dev`). `link` is the sans-IO session (Story 3.3): HELLO and INFO, go-back-N with credits, STOP, PING and typed events; bytes and a µs clock in, bytes and events out.
 - `sim/`: crate `ocb-sim`, dev-only and never shipped: a fake controller that follows `docs/link-protocol.md`, an impaired channel (drop, bit flip, junk, duplicate, reorder) and a driver on a fake clock. The session tests C.6 to C.11 live in `sim/tests/`; Story 3.4 uses it for the dry run of `ocb-dev`.
-- `gui/`: crate `ocb-app`, the desktop app (Story 4.1), binary `bonooru`; the only crate that depends on egui. eframe and egui are pinned at `=0.37.0` with default features off (`accesskit`, `clipboard`, `default_fonts`, `wgpu`, `x11`: no `wayland`, no `system_fonts`); on Linux the app forces winit's X11 backend (AD-18). Modules: `ui::theme` (every `DESIGN.md` token, the single source), `ui::fonts`, `ui::layout` and `ui::main_screen` (the five main-screen regions), `ui::gallery` (the token gallery), `cli`, `smoke`.
+- `gui/`: crate `ocb-app`, the desktop app (Story 4.1), binary `bonooru`; the only crate that depends on egui. eframe and egui are pinned at `=0.37.0` with default features off (`accesskit`, `clipboard`, `default_fonts`, `wgpu`, `x11`: no `wayland`, no `system_fonts`); on Linux the app forces winit's X11 backend (AD-18). Modules: `ui::theme` (every `DESIGN.md` token, the single source), `ui::fonts`, `ui::layout` and `ui::main_screen` (the five main-screen regions), `ui::paint` (painter-level helpers that handle egui's limits once: focus ring, glow, text halo, dashed rects, convex-only fills, stroke floor, digit cells, corner brackets, the dialog flourish; no accessibility nodes), `ui::symbols` (the 12 painted symbols), `ui::widgets` (themed button, standalone symbol and time, each one accessible node), `ui::modal` (the modal dialog and `Modals`, the app's one-at-a-time dialog host), `ui::gallery` (the hidden debug gallery), `cli`, `smoke`.
 - `profiles/`: the bundled default mapping profiles (TOML, one per game version, AD-17); the first, `oot-switch2-1.1.1.toml`, comes from Story 1.5. Not a crate.
 
 ## Running the app
@@ -17,13 +17,15 @@ From `app/`:
 
 ```sh
 cargo run -p ocb-app                    # the main screen
-cargo run -p ocb-app -- --gallery       # the token gallery (design review)
+cargo run -p ocb-app -- --gallery       # the hidden debug gallery (design review)
 cargo run -p ocb-app -- --smoke-test    # 3 frames, one OCB_SMOKE ok/fail line: exit 0 ok, 4 fail, 3 watchdog (60 s)
 ```
 
 If `cargo` is not on your `PATH` (rustup installed without `~/.cargo/bin` in the shell profile), put the toolchain first, e.g. `export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"` on an Apple Silicon Mac, or build once and run the binary directly: `cargo build -p ocb-app` then `target/debug/bonooru --gallery` (from `app/`).
 
-`gui/ci/check-smoke.sh <file> <backend-regex>` re-checks a smoke line (CI). On Linux the build needs the X11 development packages listed in the `app` CI workflow (`.github/workflows/app.yml`, step "Linux system dependencies").
+The gallery shows every token, then one section per painting helper (focus ring, glow, halo, dashed rects, convex fills, stroke floor, digit cells, the 12 symbols, corner brackets) and buttons that open two sample dialogs.
+
+`gui/ci/check-smoke.sh <file> <backend-regex>` re-checks a smoke line (CI); `gui/ci/check-accesskit.sh [target...]` checks that ocb-app enables eframe's `accesskit` feature in the normal dependency graph (CI, G.8). On Linux the build needs the X11 development packages listed in the `app` CI workflow (`.github/workflows/app.yml`, step "Linux system dependencies").
 
 ## Bundled fonts
 

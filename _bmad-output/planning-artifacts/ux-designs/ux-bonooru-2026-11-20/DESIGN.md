@@ -93,6 +93,11 @@ typography:
     fontSize: 15px
     fontWeight: '400'
     lineHeight: '1.4'
+  dialog-body:
+    fontFamily: Nunito Sans
+    fontSize: 14.5px
+    fontWeight: '400'
+    lineHeight: '1.5'
   label:
     fontFamily: Nunito Sans
     fontSize: 11.5px
@@ -123,6 +128,10 @@ typography:
     fontFamily: Nunito Sans
     fontSize: 12.5px
     fontWeight: '400'
+  button-md:
+    fontFamily: Nunito Sans
+    fontSize: 14px
+    fontWeight: '700'
   lane-name:
     fontFamily: Nunito Sans
     fontSize: 12px
@@ -409,12 +418,30 @@ components:
   corner-bracket:
     stroke: '{colors.bracket}'
     size: '{spacing.corner-bracket-size}'
+    inset: 4px
   modal-dialog:
     background: '{colors.panel-raised}'
     border: '1px {colors.rim}'
     title: '{typography.dialog-title}'
     radius: '{rounded.lg}'
     backdrop: '{colors.scrim}'
+    width: 460px
+    min-width: 440px
+    padding-y: 20px
+    padding-x: 26px
+    flourish-width: 220px
+    flourish-height: 14px
+    flourish-margin-top: 6px
+    flourish-margin-bottom: 10px
+    row-padding-y: 7px
+    row-gap: 12px
+    bullet-size: 9px
+    checklist-margin-bottom: 14px
+    text-margin-bottom: 16px
+    action-height: 34px
+    action-padding-x: 18px
+    action-gap: 10px
+    glow: 'Shadow blur 12px {colors.amber-glow}'
   wizard-step:
     list-width: '{spacing.wizard-list-width}'
     background: '{colors.well}'
@@ -643,7 +670,7 @@ An `unknown` LED shows its label only ("Switch"), with no detail text. → Refer
 
 **End-of-song card.** → Reference: [mockups/key-dialogs.html](mockups/key-dialogs.html). A parchment card (`end-card`, `{rounded.lg}`, about 440 px wide) centred over the note view, with the four corner brackets and a `{spacing.card-inset}` Frame-coloured ring around it so it separates from the parchment beneath. Title in `{typography.card-title}`: "You played " in ink + song name in `{colors.amber-ink}` + "!". Detail line in `{typography.small}` `{colors.ink-soft}`: "1:48 · 62 notes · on time". Two buttons below: Play again (ink fill, parchment text) and Close (ink outline). This ink-fill / ink-outline pair is the button style on every parchment surface (also the empty state). No staff excerpt.
 
-**Modal dialog** (readiness confirm, Settings modal, unsaved changes, restore draft, required update). → Reference: [mockups/key-dialogs.html](mockups/key-dialogs.html) (readiness confirm, "Firmware update needed"). `modal-dialog`, about 440–460 px wide, centred over the whole window; title in `{typography.dialog-title}` centred over a short original flourish rule (two rim hairlines meeting at a small diamond between two leaf curves, stroked path + one convex diamond); checklist rows (14.5 px) with a small amber diamond bullet (convex), separated by 1 px `{colors.rule}`; body text centred; actions right-aligned, primary amber with glow and focus, secondary ghost (Well fill, rim border) to its left; the "Don't ask again" checkbox sits left on the action row. Backdrop `{colors.scrim}`.
+**Modal dialog** (readiness confirm, Settings modal, unsaved changes, restore draft, required update). → Reference: [mockups/key-dialogs.html](mockups/key-dialogs.html) (readiness confirm, "Firmware update needed"). `modal-dialog`, about 440–460 px wide, centred over the whole window; title in `{typography.dialog-title}` centred over a short original flourish rule (two rim hairlines meeting at a small diamond between two leaf curves, stroked path + one convex diamond); checklist rows (14.5 px) with a small amber diamond bullet (convex), separated by 1 px `{colors.rule}`; body text centred; actions right-aligned, primary amber with glow and focus, secondary ghost (Well fill, rim border) to its left; the "Don't ask again" checkbox sits left on the action row. Backdrop `{colors.scrim}`. The outer width is 460 px by default and never below 440 px (`components.modal-dialog.width` / `min-width`), and the dialog has no drop shadow (see Elevation: no drop shadows as hierarchy).
 
 - **Readiness confirm:** title "Ready to play?", three checklist rows, checkbox, Cancel (ghost) + Play (primary, focused).
 - **Firmware update needed** (required update): title "Firmware update needed", one centred body line, Not now (ghost) + Update now (primary, focused). Behind it the status LEDs keep showing the boards' current versions.

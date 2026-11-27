@@ -93,6 +93,19 @@ fn g6_contrast_floors() {
             t::OUT_OF_RANGE_ZONE,
             4.5,
         ),
+        // Story 4.3: dialog buttons, focus ring on dark, dialog title.
+        ("ink", t::INK, "amber", t::AMBER, 4.5),
+        ("text", t::TEXT, "well", t::WELL, 4.5),
+        ("amber", t::AMBER, "panel", t::PANEL, 3.0),
+        ("amber", t::AMBER, "panel-raised", t::PANEL_RAISED, 3.0),
+        ("amber", t::AMBER, "well", t::WELL, 3.0),
+        (
+            "parchment",
+            t::PARCHMENT,
+            "panel-raised",
+            t::PANEL_RAISED,
+            4.5,
+        ),
     ];
     let mut errs = Vec::new();
     for (fg_name, fg, bg_name, bg, floor) in pairs {

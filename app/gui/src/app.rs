@@ -4,6 +4,7 @@ use egui::{Context, ThemePreference};
 use raw_window_handle::HasWindowHandle as _;
 
 use crate::smoke::{self, Report, Smoke};
+use crate::ui::modal::Modals;
 use crate::ui::{gallery, main_screen, theme};
 
 /// Which screen the window shows.
@@ -20,6 +21,8 @@ pub enum Mode {
 pub struct App {
     mode: Mode,
     smoke: Option<Smoke>,
+    /// The one dialog host every screen shares (Story 4.3, UX-DR7).
+    modals: Modals,
 }
 
 impl App {
@@ -27,7 +30,11 @@ impl App {
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>, mode: Mode) -> Self {
         crate::setup(&cc.egui_ctx);
-        Self { mode, smoke: None }
+        Self {
+            mode,
+            smoke: None,
+            modals: Modals::default(),
+        }
     }
 
     /// Same as [`App::new`], in smoke mode.
@@ -37,6 +44,17 @@ impl App {
             smoke: Some(smoke),
             ..Self::new(cc, mode)
         }
+    }
+
+    /// The dialog host, for screens and tests to request dialogs.
+    pub fn modals_mut(&mut self) -> &mut Modals {
+        &mut self.modals
+    }
+
+    /// The dialog host.
+    #[must_use]
+    pub fn modals(&self) -> &Modals {
+        &self.modals
     }
 
     /// The smoke state, if this is a smoke run.
@@ -84,11 +102,16 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // Story 4.7 reads Esc for STOP here, at the top of the frame, before
+        // any screen or dialog code (UX-DR62); nothing consumes Esc earlier.
         match self.mode {
             Mode::Main => main_screen::show(ui),
-            Mode::Gallery => gallery::show(ui),
+            Mode::Gallery => gallery::show(ui, &mut self.modals),
         }
         let ctx = ui.ctx().clone();
+        // Dialogs last: over every screen, one at a time. The gallery's
+        // sample dialogs need no answer, so the outcome is dropped here.
+        let _ = self.modals.show(&ctx);
         self.smoke_frame(&ctx, frame);
     }
 

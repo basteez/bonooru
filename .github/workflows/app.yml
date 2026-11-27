@@ -1,11 +1,11 @@
 # App CI (Stories 3.2 and 4.1, AD-14, AD-18, AD-21): the Cargo workspace in
 # app/ on the three desktop OS. Gates: rustfmt, cargo test (the shared
-# conformance vectors C.1 to C.20 and the GUI tests G.1 to G.6, no GPU),
-# clippy with -D warnings, the eframe/egui version pin, the Linux
-# no-Wayland feature check (G.8), the smoke run of the real window (G.7) and
-# the cargo-deny licence and network-crate gate (G.9). No path filter, like
-# firmware.yml: the vectors are shared, so a firmware change must run the app
-# job too.
+# conformance vectors C.1 to C.20 and the GUI tests G.1 to G.6 and G.10 to
+# G.12, no GPU), clippy with -D warnings, the eframe/egui version pin, the
+# Linux no-Wayland and accesskit feature checks (G.8), the smoke run of the
+# real window (G.7) and the cargo-deny licence and network-crate gate (G.9).
+# No path filter, like firmware.yml: the vectors are shared, so a firmware
+# change must run the app job too.
 name: app
 
 on:
@@ -67,7 +67,7 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      - name: Test (vectors, properties, purity, version, GUI G.1-G.6)
+      - name: Test (vectors, properties, purity, version, GUI G.1-G.6, G.10-G.12)
         run: cargo test --locked --workspace
 
       - name: Clippy
@@ -91,6 +91,15 @@ jobs:
             echo "::error::eframe is built with its wayland feature (AD-18)"
             exit 1
           fi
+
+      # G.8 (Story 4.3 AC 15): eframe's accesskit feature enabled by ocb-app
+      # in the normal (non-dev) graph for all three targets (the feature
+      # graph is computed per --target, so one runner checks them all).
+      # egui_kittest's dev feature turns it back on in test builds, so
+      # cargo test cannot catch it missing.
+      - name: eframe accesskit feature on (G.8, Story 4.2)
+        if: runner.os == 'Linux'
+        run: bash gui/ci/check-accesskit.sh x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc
 
       - name: Build the app
         run: cargo build --locked -p ocb-app
