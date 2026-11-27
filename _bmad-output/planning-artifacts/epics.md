@@ -157,7 +157,7 @@ UX open questions to carry as spikes or explicit AC TODOs (not guesses)
 - OQ-6 Bridge LED label without INFO ("Bridge – found" assumed).
 - OQ-7 Status warning/error/unknown hexes, `amber-ink`, `scrim`, editor font (proposed). RESOLVED 2026-11-27 (Story 4.1, owner gallery review): all kept as proposed (`#f08a4b`, `#ef6a55`, `#9a8a72`, `#8a5a12`, `#0b0806b3`, Hack 13 px). Same question as `EXPERIENCE.md` Open Questions item 6.
 - OQ-8 Update flow key flow (required/recommended → wizard → reflash → Play re-enabled) — states-only coverage today.
-- OQ-9 Screen reader / AccessKit support level — must be decided before the shared widget helpers are built.
+- OQ-9 Screen reader / AccessKit support level — must be decided before the shared widget helpers are built. RESOLVED 2026-11-27 (Story 4.2, owner): basic — every shared helper emits `widget_info` with the closest `egui::Role` and the visible label, the Roll and the Staff are one summary node each, eframe's `accesskit` feature stays on. Same question as `EXPERIENCE.md` Open Questions item 8.
 - OQ-10 Text score file extension and save-as defaults; grammar details owned by `score`.
 - OQ-11 Final list of 3–5 bundled public-domain examples (Ode to Joy, Greensleeves, Frère Jacques, Twinkle Twinkle, B4–F6 scale).
 - OQ-12 Wiring photo of the owner's assembly (not yet taken).
@@ -250,7 +250,7 @@ Settings, log, diagnostics
 
 Interaction, accessibility, voice, platform
 - UX-DR61: Global shortcuts consumed/read at frame start: Esc (STOP, also closes topmost dialog), Cmd/Ctrl+Enter (Play from cursor), Cmd/Ctrl+Shift+Enter (Play from start), Cmd/Ctrl+O, Cmd/Ctrl+S, Cmd/Ctrl+Z / Shift+Z; Space = preview play/stop everywhere except the text editor (consumed at frame start, never activates a button); buttons activate with Enter only; Tab/Shift+Tab move between regions in documented order outside editor and gamepad; Cmd on macOS, Ctrl elsewhere.
-- UX-DR62: Accessibility floor: LEDs never colour alone; focus always visible on every focusable control; every function keyboard-reachable except sticks, Home, Capture and note drawing; no information conveyed only by sound; banned: stacked modals, hover-only actions, automatic reconnect that silently restarts a song, gamepad input during Play, Space activating buttons; AccessKit level = OQ-9 decision before widget helpers.
+- UX-DR62: Accessibility floor: LEDs never colour alone; focus always visible on every focusable control; every function keyboard-reachable except sticks, Home, Capture and note drawing; no information conveyed only by sound; banned: stacked modals, hover-only actions, automatic reconnect that silently restarts a song, gamepad input during Play, Space activating buttons; AccessKit level = OQ-9 decision before widget helpers (basic, Story 4.2).
 - UX-DR63: Voice and copy: operational copy plain, second person, action first, no exclamation marks, every error says what happened then what to do; light game flavour only in ambient moments; no franchise names except detected official song titles; boards named "bridge" / "controller", console "the Switch"; all strings from the EXPERIENCE Voice table; "draft" strings pending approval (OQ-13).
 - UX-DR64: Brand constraint (evoke, don't copy): no Nintendo logos/marks, character/item art, ripped UI, game fonts, sounds or screenshots anywhere in app, mocks, README or repo; ornaments, silhouette, glyphs, illustrations, preview timbre and countdown tick are original; the fairy-orb icon never reproduces the game's companion and no catchphrase appears.
 - UX-DR65: Platform rules: macOS shows/opens only `/dev/cu.*`, RPI-RP2 copy via read/write loop, universal unsigned `.app`; Windows: VID:PID + HELLO probe, step 1 on drive-vanish + new port, port pick before any 1200-baud touch; Linux: X11/XWayland build, `dialout` message with exact command (`sudo usermod -aG dialout $USER`, then log out and in), udisks message ("Open the RPI-RP2 drive in your file manager to mount it, then Retry." + `udisksctl mount` command), never escalate privileges; all: offline only.
@@ -321,7 +321,7 @@ With the bridge firmware flashed, a GUI-free development tool on the PC streams 
 ### Epic 4: App shows the link state and drives the Switch with the virtual gamepad (M5)
 The GUI app starts on Windows, Linux and macOS, finds the bridge by itself, shows the three status LEDs with versions, and its on-screen gamepad (mouse + keyboard) takes the user into ocarina free play; STOP and Esc always release every input.
 **Covers:** FR-08, FR-10 (detection + gating), FR-11, FR-15 (partial), FR-22, FR-23, NFR-01 (CI), NFR-06, NFR-07 (licence gate); AD-7, AD-13, AD-16, AD-18, AD-19, AD-21; UX-DR1–11, UX-DR13 (detection + gating, OK-only dialog), UX-DR35–38, UX-DR41, UX-DR61, UX-DR62, UX-DR65; rotating file log (conventions); OQ-5, OQ-6, OQ-7, OQ-9.
-**Notes:** reuses `ocb-core` from Epic 3. Kept lean: UI foundations (tokens, fonts, painting helpers, layout), status strip and LEDs, gamepad, STOP, file log, and a small decision story for the AccessKit level (OQ-9) before the widget helpers are built. No forward links to the wizard: the required-update dialog has only "OK" with manual-flash instructions (BOOT + drag the matching `.uf2`); "Set up / Reflash…", LED click → wizard, "Update now" and the recommended-update banner arrive in Epic 8. Settings modal moves to Epic 5; Log view, Copy diagnostics and About move to Epic 8.
+**Notes:** reuses `ocb-core` from Epic 3. Kept lean: UI foundations (tokens, fonts, painting helpers, layout), status strip and LEDs, gamepad, STOP, file log, and a small decision story for the AccessKit level (OQ-9) before the widget helpers are built. Decided "basic" (Story 4.2): every helper or custom widget that draws an interactive or informative element calls `Response::widget_info` with the closest `egui::Role` and its visible label as the name (plain words, never symbol glyphs); ornaments get none. No forward links to the wizard: the required-update dialog has only "OK" with manual-flash instructions (BOOT + drag the matching `.uf2`); "Set up / Reflash…", LED click → wizard, "Update now" and the recommended-update banner arrive in Epic 8. Settings modal moves to Epic 5; Log view, Copy diagnostics and About move to Epic 8.
 
 ### Epic 5: Load a song and hear it on the PC (M6)
 The user opens a `.mid` or text score (or an example), picks the track, transpose and tempo, sees the fit proposal and the Roll view with fingerings, and listens to it on the PC; nothing is sent to the Switch.
@@ -858,7 +858,7 @@ So that every widget looks consistent and the egui limits are handled once.
 **Given** a modal dialog request
 **When** it is shown
 **Then** it uses the `modal-dialog` component (440–460 px, flourish rule, checklist rows, primary/ghost actions, scrim), only one modal is open at a time, and Esc closes it (UX-DR7)
-**And** shared helpers emit `widget_info` if Story 4.2 decided so
+**And** every shared helper that draws an interactive or informative element takes an accessible label and calls `Response::widget_info` with the closest `egui::Role` (buttons `Button`, LEDs `Status`, symbols on their own `Image` with a name, decorative ornaments such as corner brackets, glow and halos none); a kittest test checks each one (`docs/test-plan.md` G.10)
 
 ### Story 4.4: Serial worker, bridge discovery and file log
 
@@ -913,6 +913,7 @@ So that I can see at a glance what is ready while my eyes are on the console (FR
 **Given** the app opens no network connections
 **When** it runs
 **Then** nothing in the status strip implies online features (NFR-06)
+**And** each LED is a `Role::Status` AccessKit node named with its visible label + detail, e.g. "Bridge v0.3" (Story 4.2: basic)
 
 ### Story 4.6: Firmware version check and gating
 
@@ -984,6 +985,7 @@ So that I can navigate the game to ocarina free play from the PC (FR-11, FR-22).
 **Given** the owner in game
 **When** they use only the on-screen gamepad
 **Then** they can reach ocarina free play (M5 exit)
+**And** each gamepad control is a `Role::Button` AccessKit node named after the control, e.g. "A", "ZL", "D-pad up"; an AccessKit click is a tap (Story 4.2: basic)
 
 ### Story 4.9: Gamepad keyboard focus and compact layout
 
@@ -1008,6 +1010,7 @@ So that navigating the game is quick and the keyboard never presses buttons by a
 **Given** a window between 1024 and 1279 px wide
 **When** the gamepad is drawn
 **Then** it uses the compact variant (200 px, buttons only, key hints in tooltips) (UX-DR6)
+**And** the panel is a `Role::Group` AccessKit node whose name says whether keys are active (Story 4.2: basic)
 
 ## Epic 5: Load a song and hear it on the PC (M6)
 
@@ -1191,6 +1194,7 @@ So that I understand what will be pressed before playing (FR-12, FR-21).
 **Given** about 2,000 notes on screen
 **When** panning and zooming
 **Then** frame time stays near the spike's numbers (p95 ≈ 1.5 ms on the owner's Mac)
+**And** the Roll is one AccessKit node with a summary name (view, note count, range, e.g. "Roll view, 42 notes, B4 to F6"), no node per note (Story 4.2: basic)
 
 ### Story 5.9: Fit proposal and official-song group in the Roll
 
@@ -1766,6 +1770,7 @@ So that I can write melodies inside the app (FR-16).
 **Given** the editor
 **When** the user types
 **Then** plain Enter is a newline, Space types a space (not preview), egui's built-in TextEdit undoer is disabled and text edits go into the app history from Story 9.1
+**And** the editor `TextEdit` is `labelled_by` its visible label (Story 4.2: basic)
 
 ### Story 9.3: Select notes in the Roll
 
@@ -1847,6 +1852,7 @@ So that I can read the fingering along the melody (FR-21).
 **Given** a switch between views
 **When** it happens
 **Then** scroll, zoom, cursor and selection are kept, and the chosen view persists across launches
+**And** the Staff is one AccessKit node with a summary name (view, note count, range), no node per note (Story 4.2: basic)
 
 ## Epic 10: Pick up where I left off
 

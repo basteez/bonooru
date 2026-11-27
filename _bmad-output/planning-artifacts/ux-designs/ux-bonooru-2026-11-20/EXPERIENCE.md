@@ -303,7 +303,7 @@ Behavioural. Visual contrast lives in `DESIGN.md`.
 - Esc as global STOP never needs focus.
 - Minimum window 1024 × 680 logical points. HiDPI through egui `pixels_per_point`.
 - No information conveyed only by sound (countdown numerals are visible; the end card is silent).
-- Screen-reader support: egui AccessKit coverage not decided (Open Question). If adopted, the shared widget helpers emit `widget_info` from day one.
+- Screen-reader support: basic (owner, Story 4.2, 2026-11-27). Every shared widget helper emits `widget_info` (closest `egui::Role` + the visible label as the accessible name); custom widgets that do not go through a helper do the same; the Roll and the Staff expose one summary node each. No live regions, no per-note nodes, no screen-reader test on real hardware. eframe's `accesskit` feature stays on (egui builds the tree only when an assistive technology asks for it).
 
 ## Key Flows
 
@@ -461,7 +461,7 @@ All remaining questions are **non-blocking**, to resolve during build or hardwar
 5. **Bridge LED label without INFO:** "Bridge – found" (no version) assumed.
 6. **Visual fine-tuning — RESOLVED 2026-11-27 (owner, Story 4.1 token gallery `bonooru --gallery`): every proposed value kept.** `status-warning #f08a4b`, `status-error #ef6a55`, `status-unknown #9a8a72`, `amber-ink #8a5a12`, `scrim #0b0806b3` and the editor font Hack 13 px; DESIGN.md's `[ASSUMPTION]` tags for these are removed. Contrast floors checked by G.6 (`docs/test-plan.md`). Same question as `epics.md` OQ-7.
 7. **Update flow (CAP-6):** add a Key Flow for required/recommended update → wizard → reflash → Play re-enabled, or accept states-only coverage.
-8. **Screen reader / AccessKit** support level (cheap only if decided before the widget helpers are built).
+8. **Screen reader / AccessKit — RESOLVED 2026-11-27 (owner, Story 4.2): basic.** Shared helpers and custom widgets emit `widget_info` with the closest role and the visible label; the Roll and the Staff are one summary node each; eframe's `accesskit` feature stays on. Reason: one call per helper now instead of a retrofit over every widget later, and it makes custom widgets queryable by role + name in `egui_kittest`; "none" saved little (Linux dependency graph only), "full" meant weeks of work, keyboard note editing and manual screen-reader tests on three OS. See Accessibility Floor. Same question as `epics.md` OQ-9.
 9. **Text score file extension** and save-as defaults; grammar details are deferred to `score` (SPINE).
 10. **Bundled example list:** memlog names Ode to Joy, Greensleeves, Frère Jacques; the layouts mock also shows Twinkle Twinkle and a B4–F6 scale. Final 3–5?
 11. **Wiring photo:** a real photo of the owner's assembly is required (SPINE convention); not yet taken.
