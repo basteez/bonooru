@@ -4,7 +4,7 @@ baseline_commit: 693953f
 
 # Story 4.7: STOP, Esc and the bottom bar
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
