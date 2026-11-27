@@ -4,7 +4,7 @@ baseline_commit: 693953f
 
 # Story 4.7: STOP, Esc and the bottom bar
 
-Status: in-progress
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -105,11 +105,11 @@ Numbers no tool measures: **H.34 latency on Windows and Linux** (no machine; iss
   - [x] 8.3 `epics.md`: Story 4.8 gets a line under its ACs: "Bench (from Story 4.7): an input held on the on-screen pad is released on the Switch by Esc and by STOP; `stop after … mode=idle` in the log".
   - [x] 8.4 `docs/test-plan.md`: C.28 (App core tests), G.19, G.20 (App GUI tests; section intro "G.19 and G.20 come with Story 4.7"), H.34 (Hardware-in-the-loop, Result empty until the bench) and the rig block "STOP bench rig (Story 4.7)" (Dev Notes › Rig block) after the Status LED bench rig.
   - [x] 8.5 `app/README.md`: module list lines for `stop` (`src/stop.rs`), `ui::keys`, `ui::bottom_bar`; "STOP requests and their handling appear as `stop` lines in `bonooru.log`".
-- [ ] **Task 9: verify on the host (AC 12).** In `app/` with `/opt/homebrew/opt/rustup/bin` first on `PATH`: fmt, clippy, `cargo test --locked --workspace`, deny, G.8 scripts, `cargo run -p ocb-app -- --smoke-test` and `-- --smoke-test --gallery` (checker green, `worker=` ≥ 1), `cargo tree -e normal -i ocb-sim` empty for ocb-app, ocb-services, ocb-core. Push the branch; the `app` workflow green on three OS.
+- [x] **Task 9: verify on the host (AC 12).** In `app/` with `/opt/homebrew/opt/rustup/bin` first on `PATH`: fmt, clippy, `cargo test --locked --workspace`, deny, G.8 scripts, `cargo run -p ocb-app -- --smoke-test` and `-- --smoke-test --gallery` (checker green, `worker=` ≥ 1), `cargo tree -e normal -i ocb-sim` empty for ocb-app, ocb-services, ocb-core. Push the branch; the `app` workflow green on three OS.
 - [x] **Task 10: red proofs (AC 12, E3-A2).** For each new check, the Debug Log names the code change that makes it fail and the failure seen (minimum list: Dev Notes › Red proofs). No bench tool is new or changed (`ocb-probe`, `ocb-dev`, `link_probe.py` untouched); the H.34 instrument is the `stop` log lines, and each H.34 verdict has a host test proving the line can show the failing value too (Dev Notes › Instrument review); say so in the Debug Log.
 - [x] **Task 11: instrument review and dry run before the bench (E3-A2, E3-A3).** Written in the Debug Log before any bench result: every H.34 field maps to a line the code writes; the expected lines per step from `cargo test -p ocb-app -- --nocapture h34_dry_run` on the bench commit pasted into the Debug Log; the rig block's checklist checked against the runbook; the gotchas re-read.
 - [x] **Task 12 (OWNER + agent): H.34 on macOS** (Dev Notes › H.34, › Rig block, › H.34 runbook). Record the results in `docs/test-plan.md` (H.34 Result column, rig block table) and the Debug Log. Windows/Linux: "deferred: owner has no Windows/Linux machine yet; issue #43" (add H.34 to #43's to-do with a comment).
-- [ ] **Task 13 (OWNER, late): eye check of the bottom bar** (Dev Notes › Eye check). Record each answer; make and re-check any change before review. — answers recorded in the Debug Log (owner, 2026-11-27); one change asked (hover and pressed states on every button), implemented; **re-check of hover/pressed pending** (owner).
+- [x] **Task 13 (OWNER, late): eye check of the bottom bar** (Dev Notes › Eye check). Record each answer; make and re-check any change before review. — answers recorded in the Debug Log (owner, 2026-11-27); one change asked (hover and pressed states on every button), implemented; re-checked by the owner in the gallery (2026-11-27): hover and pressed read clearly but subtly, disabled unchanged: ok, no change.
 
 ### Review Findings
 
@@ -467,7 +467,7 @@ Review red proofs (break, run, restore; all FAIL as expected): R-1 intake loop b
 
 Dry run after the fixes: green; it now has step 3c (Enter held): `stop requested source=button dialog=none command=queued`, `stop sent port=…`, `stop acked … after_us=2000 by=command`, `stop after … mode=idle abort_count=0` (one set); steps 1, 2, 3b, 6c checked as "`requested` and `sent` in either order, then `acked`, then `after`", step 4 by counts plus an `acked … by=command` and an idle `after` after the last `sent`/`pending`, step 6a `requested` and `skipped` in either order.
 
-**Not done here (open).** Task 9's three-OS `app` workflow on the final commit (coordinator). Task 13: the owner's re-check of the hover/pressed states.
+**Closed by the coordinator.** Task 9: CI green on three OS at `2b7fab1` (smoke runs included). Task 13: owner re-check of hover/pressed ok.
 
 **H.34 macOS bench (Task 12), 2026-11-27, owner present — PASS.** Rig as in › Rig block: macOS 27.2.1, Mac17,9 (aarch64), release `bonooru` built at `94e9bba` (app code identical at `9a3b3cc`; the later commits change tests only), `g20_h34_dry_run` green on it; bridge Story 3.1 `69f4d2c` `fw-release`, controller `fw-debug-o3`, Switch 2 23.5.0. Results from `bonooru.log`:
 - Start: `start` +0, the three LEDs ok +42.
@@ -534,3 +534,4 @@ Dry run after the fixes: green; it now has step 3c (Enter held): `stop requested
 - 2026-11-27: H.34 macOS bench PASS recorded (Task 12); owner eye check recorded (Task 13: one change, hover and pressed states on every button, implemented with G.21; owner re-check pending); 436 tests.
 - 2026-11-27: code review fixes: 11 patches and 2 decisions fixed (worker intake loop, H.34 order rules, log format docs, Enter repeats dropped, Cmd/Ctrl+Space consumed with focus, `dialog=` meaning, AC 8 checks, AC 4 wording, Tab in a dialog, readiness sample in the dialog test, EXPERIENCE.md), 3 deferred with forward notes (#45/Epic 6); 432 tests.
 - 2026-11-27: implementation (gds-dev-story): worker STOP command and `stop` lines, frame-start keys, bottom bar with STOP and the safety note, app integration, C.28/G.19/G.20 with red proofs, H.34 dry run and instrument review, docs; status in-progress (CI on three OS, H.34 bench and the owner eye check open).
+- 2026-11-27: owner re-checked hover/pressed (ok); H.34 added to #43 (comment posted); CI green on three OS at `2b7fab1`; status `review`.
