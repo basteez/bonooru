@@ -102,15 +102,20 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        // Story 4.7 reads Esc for STOP here, at the top of the frame, before
-        // any screen or dialog code (UX-DR62); nothing consumes Esc earlier.
+        // Story 4.7 reads Esc for STOP here, at the top of the frame, without
+        // consuming it (Esc = STOP always, UX-DR61/62); nothing consumes Esc
+        // before this point. The open dialog, if any, then consumes the same
+        // Esc and closes as `Dismissed`: one press does both (contract on
+        // `ui::modal::Modals`; `modals.is_open()` says whether a dialog will
+        // take it).
         match self.mode {
             Mode::Main => main_screen::show(ui),
             Mode::Gallery => gallery::show(ui, &mut self.modals),
         }
         let ctx = ui.ctx().clone();
-        // Dialogs last: over every screen, one at a time. The gallery's
-        // sample dialogs need no answer, so the outcome is dropped here.
+        // Dialogs last: over every screen, one at a time. Each outcome stays
+        // in `Modals` until the requesting screen reads it with
+        // `take_outcome(id)` (the gallery's samples never read theirs).
         let _ = self.modals.show(&ctx);
         self.smoke_frame(&ctx, frame);
     }

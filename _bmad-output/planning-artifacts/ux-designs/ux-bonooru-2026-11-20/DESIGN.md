@@ -376,7 +376,9 @@ components:
     wings: 'one pair of rounded leaf ellipses, 1px {colors.text} stroke at 85 %, {colors.text} fill at 22 %'
     sparkle: 'two small {colors.amber} dots trailing below-left'
   button-disabled:
-    opacity: 0.45
+    fill-opacity: 0.45
+    foreground: '{colors.text-muted}'
+    foreground-on-primary: '{colors.text}'
     glow: 'none'
   button-stop-idle:
     background: '{colors.stop-idle-fill}'
@@ -603,7 +605,7 @@ Layout is done by computing region rects and filling them with `ui.scope_builder
 
 No drop shadows as hierarchy. Depth comes from tone (Frame → Panel → Panel-raised → Well) and from the one bright surface, the parchment card. Glow is the only "light" effect: amber for selection, focus and primary action; ember for live STOP; the LED's own hue for status.
 
-**Glow in egui:** `epaint::Shadow { offset: [0, 0], blur, spread, color }` (or `RectShape::blur_width`) painted under the control. It works only on **rounded rects and circles** (full radius): LED dot, active stepper, Play, live STOP, selected note, lit gamepad buttons; the D-pad cross is two rects, Home uses its bounding rounded rect. No blur exists for text, arbitrary paths or inset shadows: text gets a soft rounded-rect halo behind it (countdown), and inset glows (gamepad panel focus) are 5–6 stacked inset strokes with falling alpha.
+**Glow in egui:** `epaint::Shadow { offset: [0, 0], blur, spread, color }` (or `RectShape::blur_width`) painted under the control. The `Shadow blur <n>px` values in `components` are CSS `box-shadow` blur radii, as in the mocks (a Gaussian with σ = n / 2); the app converts them to epaint's linear feather (`blur` = round(1.55 × n), the least-squares fit of the feather to that Gaussian) so the halo matches the mock. The colour is used as written. It works only on **rounded rects and circles** (full radius): LED dot, active stepper, Play, live STOP, selected note, lit gamepad buttons; the D-pad cross is two rects, Home uses its bounding rounded rect. No blur exists for text, arbitrary paths or inset shadows: text gets a soft rounded-rect halo behind it (countdown), and inset glows (gamepad panel focus) are 5–6 stacked inset strokes with falling alpha.
 
 Overlays stack in this order: note view → countdown veil / interruption banner / end card (over the note view only) → tooltips and context menus → modal dialogs over `{colors.scrim}`. One modal at a time.
 

@@ -131,3 +131,53 @@ fn g6_formula_self_test() {
     let r = ratio(t::OUT_OF_RANGE_INK, t::OUT_OF_RANGE_ZONE);
     assert!((r - 4.71).abs() < 0.01, "{r}");
 }
+
+/// `fg` at `alpha` over `bg`, blended in gamma space like egui.
+fn over(fg: Color32, alpha: f32, bg: Color32) -> Color32 {
+    let mix = |f: u8, b: u8| (f32::from(f) * alpha + f32::from(b) * (1.0 - alpha)).round() as u8;
+    Color32::from_rgb(
+        mix(fg.r(), bg.r()),
+        mix(fg.g(), bg.g()),
+        mix(fg.b(), bg.b()),
+    )
+}
+
+/// Owner eye check 2026-11-27 (Story 4.3): the disabled label must stay
+/// readable. It is measured against what is really behind it: the faded fill
+/// (`button-disabled.fill-opacity`) composited over each panel a button can
+/// sit on. Floor 3:1 (a disabled control's label, WCAG large/UI floor).
+#[test]
+fn g6_disabled_button_labels() {
+    use t::components::{
+        BUTTON_DISABLED_FILL_OPACITY as A, BUTTON_DISABLED_TEXT, BUTTON_DISABLED_TEXT_ON_PRIMARY,
+    };
+    let backgrounds = [
+        ("frame", t::FRAME),
+        ("panel", t::PANEL),
+        ("panel-raised", t::PANEL_RAISED),
+        ("well", t::WELL),
+    ];
+    let mut errs = Vec::new();
+    for (bg_name, bg) in backgrounds {
+        for (kind, fill, text) in [
+            ("primary", t::AMBER, BUTTON_DISABLED_TEXT_ON_PRIMARY),
+            ("ghost", t::WELL, BUTTON_DISABLED_TEXT),
+        ] {
+            let behind = over(fill, A, bg);
+            let r = ratio(text, behind);
+            println!("disabled {kind} on {bg_name}: {r:.2}:1");
+            if r < 3.0 {
+                errs.push(format!(
+                    "disabled {kind} label on {bg_name}: {r:.2}:1 < 3:1"
+                ));
+            }
+        }
+    }
+    assert!(errs.is_empty(), "{}", errs.join("\n"));
+    // The look the owner rejected: `ink` text and `amber` fill both at 45 %.
+    let old = ratio(
+        over(t::INK, 0.45, over(t::AMBER, 0.45, t::PANEL_RAISED)),
+        over(t::AMBER, 0.45, t::PANEL_RAISED),
+    );
+    assert!(old < 3.0, "the rejected look measured {old:.2}:1");
+}

@@ -36,9 +36,16 @@ pub fn button_size(ui: &Ui, label: &str, icon: bool) -> egui::Vec2 {
 
 /// A themed dialog-size button (AC 10): 34 pt high, 18 pt side padding,
 /// text in `button-md`, radius `rounded.lg`. Primary has the 12 pt amber
-/// glow; disabled is drawn at `button-disabled` opacity with no glow and
+/// glow; disabled has its fill and border at `button-disabled.fill-opacity`,
+/// its label in `button-disabled.foreground` (ghost) or
+/// `foreground-on-primary` (primary), no glow, and
 /// is neither clickable nor focusable. Paints the focus ring and is one
 /// `Role::Button` node named `label`.
+///
+/// Disabled means `enabled == false` or a disabled parent `Ui`: the look,
+/// the sense and the AccessKit state all follow that one effective state,
+/// and the token opacity is the only fade (egui's own `disabled_alpha` fade
+/// of a disabled parent is undone).
 pub fn button(
     ui: &mut Ui,
     kind: ButtonKind,
@@ -46,22 +53,20 @@ pub fn button(
     enabled: bool,
     icon: Option<Symbol>,
 ) -> Response {
-    ui.add_enabled_ui(enabled, |ui| button_inner(ui, kind, label, enabled, icon))
-        .inner
-}
-
-fn button_inner(
-    ui: &mut Ui,
-    kind: ButtonKind,
-    label: &str,
-    enabled: bool,
-    icon: Option<Symbol>,
-) -> Response {
+    let enabled = enabled && ui.is_enabled();
     let size = button_size(ui, label, icon.is_some());
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    // A disabled button senses nothing: not clickable, not focusable. No
+    // `add_enabled_ui` here, so egui adds no fade of its own.
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
     if ui.is_rect_visible(rect) {
-        // A disabled `Ui` fades its painter by egui's `disabled_alpha`;
-        // undo that so the token opacity below is the only fade.
+        // A disabled parent `Ui` has faded its painter by egui's
+        // `disabled_alpha` (once per `Ui::disable`, i.e. per disabled
+        // scope); undo that so the token opacity below is the only fade.
         let mut faded = ui.painter().clone();
         if !ui.is_enabled() {
             let disabled = ui.visuals().disabled_alpha().max(f32::EPSILON);
@@ -69,15 +74,22 @@ fn button_inner(
         }
         let painter = &faded;
         let ppp = ui.ctx().pixels_per_point();
+        use theme::components::{
+            BUTTON_DISABLED_FILL_OPACITY, BUTTON_DISABLED_TEXT, BUTTON_DISABLED_TEXT_ON_PRIMARY,
+        };
+        // Disabled: the fill and border fade, the label switches to a colour
+        // that stays readable on the faded fill (never faded itself).
         let alpha = if enabled {
             1.0
         } else {
-            theme::components::BUTTON_DISABLED_OPACITY
+            BUTTON_DISABLED_FILL_OPACITY
         };
         let radius = theme::rounded::LG;
-        let (fill, text_color, border) = match kind {
-            ButtonKind::Primary => (theme::AMBER, theme::INK, None),
-            ButtonKind::Ghost => (theme::WELL, theme::TEXT, Some(theme::RIM)),
+        let (fill, text_color, border) = match (kind, enabled) {
+            (ButtonKind::Primary, true) => (theme::AMBER, theme::INK, None),
+            (ButtonKind::Primary, false) => (theme::AMBER, BUTTON_DISABLED_TEXT_ON_PRIMARY, None),
+            (ButtonKind::Ghost, true) => (theme::WELL, theme::TEXT, Some(theme::RIM)),
+            (ButtonKind::Ghost, false) => (theme::WELL, BUTTON_DISABLED_TEXT, Some(theme::RIM)),
         };
         if kind == ButtonKind::Primary && enabled {
             paint::paint_glow(
@@ -97,7 +109,6 @@ fn button_inner(
                 StrokeKind::Inside,
             );
         }
-        let text_color = text_color.gamma_multiply(alpha);
         let galley = paint::layout_line(ui.ctx(), &theme::BUTTON_MD, label, text_color);
         let content_w = size.x - 2.0 * theme::components::modal_dialog::ACTION_PADDING_X;
         let mut x = rect.center().x - content_w / 2.0;
@@ -113,7 +124,7 @@ fn button_inner(
         let y = rect.center().y - galley.rect.height() / 2.0;
         painter.galley(egui::pos2(x, y), galley, text_color);
     }
-    paint::paint_focus_ring(&resp, theme::rounded::LG, false);
+    paint::paint_focus_ring(ui, &resp, theme::rounded::LG, false);
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, label));
     resp
 }

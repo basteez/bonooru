@@ -121,16 +121,95 @@ pub fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-/// Source text with `//` line comments removed (prose may name a pattern).
-pub fn strip_line_comments(source: &str) -> String {
-    source
-        .lines()
-        .map(|l| match l.find("//") {
-            Some(i) => &l[..i],
-            None => l,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Rust source reduced to code: `//` and (nested) `/* */` comments removed,
+/// string, raw-string and char literal contents blanked (the quotes stay).
+/// So a `//` inside a string does not cut the line, and a pattern written in
+/// a comment or a string (a scan's own self-test snippets) is not code.
+pub fn code_only(source: &str) -> String {
+    let c: Vec<char> = source.chars().collect();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    let at = |k: usize| c.get(k).copied().unwrap_or('\0');
+    while i < c.len() {
+        let ch = c[i];
+        if ch == '/' && at(i + 1) == '/' {
+            while i < c.len() && c[i] != '\n' {
+                i += 1;
+            }
+        } else if ch == '/' && at(i + 1) == '*' {
+            let mut depth = 0;
+            while i < c.len() {
+                if c[i] == '/' && at(i + 1) == '*' {
+                    depth += 1;
+                    i += 2;
+                } else if c[i] == '*' && at(i + 1) == '/' {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            out.push(' ');
+        } else if ch == 'r'
+            && (at(i + 1) == '"' || (at(i + 1) == '#' && (at(i + 2) == '"' || at(i + 2) == '#')))
+            && !at(i.wrapping_sub(1)).is_alphanumeric()
+            && at(i.wrapping_sub(1)) != '_'
+        {
+            // Raw string r"…" / r#"…"#.
+            let mut k = i + 1;
+            let mut hashes = 0;
+            while at(k) == '#' {
+                hashes += 1;
+                k += 1;
+            }
+            out.push_str("r\"");
+            k += 1;
+            loop {
+                if k >= c.len() {
+                    break;
+                }
+                if c[k] == '"' && (0..hashes).all(|h| at(k + 1 + h) == '#') {
+                    k += 1 + hashes;
+                    break;
+                }
+                k += 1;
+            }
+            out.push('"');
+            i = k;
+        } else if ch == '"' {
+            out.push('"');
+            i += 1;
+            while i < c.len() && c[i] != '"' {
+                if c[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            out.push('"');
+            i += 1;
+        } else if ch == '\'' && (at(i + 2) == '\'' || (at(i + 1) == '\\' && at(i + 1) != '\0')) {
+            // A char literal ('x' or '\n', '\u{…}'); a lifetime has no
+            // closing quote and falls through.
+            let mut k = i + 1;
+            if at(k) == '\\' {
+                k += 2;
+                while k < c.len() && c[k] != '\'' {
+                    k += 1;
+                }
+            } else {
+                k += 1;
+            }
+            out.push_str("' '");
+            i = k + 1;
+        } else {
+            out.push(ch);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// The four bracket boxes of `rect` (TL, TR, BL, BR) and their mirror signs.
@@ -168,7 +247,9 @@ pub fn bracket_boxes(rect: Rect) -> [(Rect, f32, f32); 4] {
 /// dot (r 1.6) inside its box; the sets are mirror images of the top-left.
 pub fn check_brackets(flat: &[Flat], rect: Rect, ctx: &str) {
     let boxes = bracket_boxes(rect);
-    let mut outer: Vec<Vec<Pos2>> = vec![Vec::new(); 4];
+    // Per corner: the outer path's points, the quadratic's three points and
+    // the dot centre, in that order (the mirror check covers all three).
+    let mut sets: Vec<Vec<Pos2>> = vec![Vec::new(); 4];
     for (k, (bx, _, _)) in boxes.iter().enumerate() {
         let mine: Vec<&Flat> = flat
             .iter()
@@ -181,20 +262,30 @@ pub fn check_brackets(flat: &[Flat], rect: Rect, ctx: &str) {
                 _ => None,
             })
             .collect();
-        let quads = mine
+        let quads: Vec<_> = mine
             .iter()
-            .filter(|f| matches!(&f.shape, Shape::QuadraticBezier(q) if (q.stroke.width - 1.2).abs() < 1e-4))
-            .count();
-        let dots = mine
+            .filter_map(|f| match &f.shape {
+                Shape::QuadraticBezier(q) if (q.stroke.width - 1.2).abs() < 1e-4 => {
+                    Some(q.points.to_vec())
+                }
+                _ => None,
+            })
+            .collect();
+        let dots: Vec<_> = mine
             .iter()
-            .filter(|f| matches!(&f.shape, Shape::Circle(c) if (c.radius - 1.6).abs() < 1e-4))
-            .count();
+            .filter_map(|f| match &f.shape {
+                Shape::Circle(c) if (c.radius - 1.6).abs() < 1e-4 => Some(c.center),
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            (paths.len(), quads, dots),
+            (paths.len(), quads.len(), dots.len()),
             (1, 1, 1),
             "{ctx}: corner {k} in {bx:?}"
         );
-        outer[k] = paths[0].clone();
+        sets[k] = paths[0].clone();
+        sets[k].extend(quads[0].iter().copied());
+        sets[k].push(dots[0]);
     }
     assert_eq!(
         flat.len(),
@@ -204,7 +295,12 @@ pub fn check_brackets(flat: &[Flat], rect: Rect, ctx: &str) {
     // Mirror images: corner k's points, mapped back to the top-left box.
     let tl = boxes[0].0;
     for (k, (bx, sx, sy)) in boxes.iter().enumerate() {
-        for (p, q) in outer[k].iter().zip(&outer[0]) {
+        assert_eq!(
+            sets[k].len(),
+            sets[0].len(),
+            "{ctx}: corner {k} point count"
+        );
+        for (i, (p, q)) in sets[k].iter().zip(&sets[0]).enumerate() {
             let local_x = if *sx > 0.0 {
                 p.x - bx.left()
             } else {
@@ -218,7 +314,7 @@ pub fn check_brackets(flat: &[Flat], rect: Rect, ctx: &str) {
             assert!(
                 (local_x - (q.x - tl.left())).abs() < 1e-3
                     && (local_y - (q.y - tl.top())).abs() < 1e-3,
-                "{ctx}: corner {k} is not a mirror image"
+                "{ctx}: corner {k} point {i} is not a mirror image"
             );
         }
     }

@@ -16,7 +16,7 @@ use egui::epaint::{PathShape, QuadraticBezierShape, RectShape, Shadow};
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
     Align, Color32, Context, FontSelection, Galley, Painter, Pos2, Rect, Response, Shape, Stroke,
-    StrokeKind, WidgetText, pos2, vec2,
+    StrokeKind, Ui, WidgetText, pos2, vec2,
 };
 
 use super::theme::{self, TypeStyle};
@@ -38,18 +38,21 @@ fn floored(painter: &Painter, s: Stroke) -> Stroke {
 /// The focus ring (AC 1, UX-DR62): only while `resp.has_focus()`, one
 /// `focus-ring-width` stroke in `amber` (`amber-ink` on parchment), outside
 /// `resp.rect` grown by `focus-ring-offset`, corner radius `radius` +
-/// offset. It paints on the widget's layer with its own clip rect (the
-/// ring's outer rect plus one point for the anti-aliasing fringe), so the
-/// widget's clip rect never hides it (D7).
-pub fn paint_focus_ring(resp: &Response, radius: f32, on_parchment: bool) {
+/// offset. `ui` is the `Ui` the widget was added to: the ring paints with
+/// its painter (layer, opacity, visibility), clipped to that `Ui`'s clip
+/// rect intersected with the ring's own outer rect plus one point for the
+/// anti-aliasing fringe (D7, owner-delegated decision 2026-11-27). So a
+/// scope clipped to the widget never hides the ring, while a `ScrollArea`
+/// still cuts it at its edge, the dialog fade-in fades it and an invisible
+/// `Ui` paints nothing.
+pub fn paint_focus_ring(ui: &Ui, resp: &Response, radius: f32, on_parchment: bool) {
     if !resp.has_focus() {
         return;
     }
     let offset = theme::spacing::FOCUS_RING_OFFSET;
     let width = theme::spacing::FOCUS_RING_WIDTH;
     let ring = resp.rect.expand(offset);
-    let clip = ring.expand(width + 1.0);
-    let painter = Painter::new(resp.ctx.clone(), resp.layer_id, clip);
+    let painter = ui.painter().with_clip_rect(ring.expand(width + 1.0));
     let color = if on_parchment {
         theme::AMBER_INK
     } else {
@@ -77,10 +80,36 @@ pub fn glow_spread(rect: Rect, blur: u8) -> u8 {
     ((need / 2.0).floor() + 1.0) as u8
 }
 
-/// A glow under a control (AC 2): one `epaint::Shadow` with offset 0, the
-/// token blur, the spread of [`glow_spread`] and `color`. A circle is a
-/// square `rect` with `radius` = half its side. Paint it before the control.
-pub fn paint_glow(painter: &Painter, rect: Rect, radius: f32, blur: u8, color: Color32) {
+/// The epaint feather width per point of CSS blur radius.
+///
+/// The glow tokens are CSS `box-shadow` blur radii B (`DESIGN.md`, the
+/// mocks): CSS blurs the shadow with a Gaussian of σ = B / 2 (CSS Backgrounds
+/// and Borders 3, `box-shadow`; measured in headless Chrome on the mock
+/// colours: the profile outside the edge is α · Q(d / σ), Q the Gaussian
+/// tail, to ±0.01). epaint has no Gaussian: `RectShape::blur_width` w turns
+/// into a feathered edge (`tessellator.rs`, `self.feathering = blur_width`),
+/// a linear ramp α · clamp(0.5 − d / w, 0, 1) centred on the edge. The w
+/// minimising ∫₀^{4σ} (ramp − α·Q(d/σ))² dd with zero spread (spread is
+/// `u8`, it cannot be negative) is w = 3.1 σ = 1.55 B; the largest error is
+/// then 0.06 α. Before this the token was used as w directly (w = 2σ), so
+/// the halo ended at d = σ, holding 63 % of the CSS halo's light and half
+/// its reach (owner eye check 2026-11-27: "far too faint").
+pub const CSS_BLUR_TO_FEATHER: f32 = 1.55;
+
+/// The epaint `Shadow::blur` (feather width) for a CSS blur radius.
+#[must_use]
+pub fn feather_from_css_blur(css_blur: u8) -> u8 {
+    // Saturating cast; the tokens are small.
+    (f32::from(css_blur) * CSS_BLUR_TO_FEATHER).round() as u8
+}
+
+/// A glow under a control (AC 2): one `epaint::Shadow` with offset 0 whose
+/// feather is the CSS-style token blur converted by
+/// [`feather_from_css_blur`], the spread of [`glow_spread`] for that feather
+/// and `color` as written in the token. A circle is a square `rect` with
+/// `radius` = half its side. Paint it before the control.
+pub fn paint_glow(painter: &Painter, rect: Rect, radius: f32, css_blur: u8, color: Color32) {
+    let blur = feather_from_css_blur(css_blur);
     let shadow = Shadow {
         offset: [0, 0],
         blur,
@@ -96,21 +125,26 @@ pub fn paint_glow(painter: &Painter, rect: Rect, radius: f32, blur: u8, color: C
 }
 
 /// A soft halo behind text (AC 3): a blurred rounded rect ([`paint_glow`])
-/// over the galley's ink bounds (`galley.rect ∪ galley.mesh_bounds`, moved
-/// to where the galley is painted) grown by `pad`. Paint it before the text.
+/// over the glyphs' ink bounds ([`ink_rect`]) grown by `pad` on every side,
+/// so the padding is even around the glyphs. Paint it before the text.
 pub fn paint_text_halo(painter: &Painter, ink_rect: Rect, pad: f32, blur: u8, color: Color32) {
     paint_glow(painter, ink_rect.expand(pad), pad, blur, color);
 }
 
-/// The ink bounds of a galley painted at `pos` (layout rect united with the
-/// glyph mesh bounds: Cormorant's old-style figures draw outside the layout
-/// rect).
+/// The ink bounds of a galley painted at `pos`: the glyph mesh bounds only
+/// (owner eye check 2026-11-27: united with the layout rect, a Cormorant
+/// old-style "7" got a large empty band above it, since its ink sits low in
+/// the line). A galley with no glyph mesh falls back to its layout rect.
+/// For layout room use `galley.rect ∪ ink` (old-style figures draw outside
+/// the layout rect).
 #[must_use]
 pub fn ink_rect(galley: &Galley, pos: Pos2) -> Rect {
-    galley
-        .rect
-        .union(galley.mesh_bounds)
-        .translate(pos.to_vec2())
+    let ink = if galley.mesh_bounds.is_positive() {
+        galley.mesh_bounds
+    } else {
+        galley.rect
+    };
+    ink.translate(pos.to_vec2())
 }
 
 /// The outline of a rounded rect as one closed point list, clockwise on
@@ -120,6 +154,18 @@ pub fn ink_rect(galley: &Galley, pos: Pos2) -> Rect {
 /// from the true arc.
 #[must_use]
 pub fn rounded_rect_points(rect: Rect, radius: f32, max_chord_error: f32) -> Vec<Pos2> {
+    // An inverted, empty or non-finite rect has no outline (`f32::clamp`
+    // would panic on a negative half side).
+    if !rect.is_finite() || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return Vec::new();
+    }
+    // A non-positive or NaN chord error would ask for infinitely many steps.
+    let max_chord_error = if max_chord_error.is_finite() {
+        max_chord_error.max(MIN_CHORD_ERROR)
+    } else {
+        0.1
+    };
+    let radius = if radius.is_nan() { 0.0 } else { radius };
     let r = radius.clamp(0.0, rect.size().min_elem() / 2.0);
     let quarter = std::f32::consts::FRAC_PI_2;
     // Sagitta of a chord spanning angle θ: r (1 − cos(θ / 2)).
@@ -159,6 +205,9 @@ pub fn rounded_rect_points(rect: Rect, radius: f32, max_chord_error: f32) -> Vec
     points
 }
 
+/// The finest chord error [`rounded_rect_points`] accepts.
+pub const MIN_CHORD_ERROR: f32 = 0.01;
+
 /// A dashed rounded rect (AC 4): the outline of [`rounded_rect_points`]
 /// (chords within 0.1 pt of the arcs) dashed in one `dashed_line_many`
 /// call, so the dash phase runs on around the corners. The stroke width is
@@ -171,7 +220,15 @@ pub fn paint_dashed_rect(
     dash: f32,
     gap: f32,
 ) {
+    // epaint's dash loop advances only by dash and gap: a zero, negative or
+    // non-finite length would never end.
+    if !(dash.is_finite() && gap.is_finite() && dash > 0.0 && gap > 0.0) {
+        return;
+    }
     let points = rounded_rect_points(rect, radius, 0.1);
+    if points.len() < 2 {
+        return;
+    }
     let mut shapes = Vec::new();
     Shape::dashed_line_many(&points, floored(painter, stroke), dash, gap, &mut shapes);
     painter.extend(shapes);
@@ -202,15 +259,34 @@ impl std::error::Error for NotConvex {}
 
 /// Checks that `points` (open or closed, any winding) form a convex
 /// polygon: at least three distinct points, non-zero area, every turn of the
-/// same sign (collinear vertices allowed) and one full turn in total (no
-/// self-intersection such as a star).
+/// same sign (collinear vertices allowed, a vertex that doubles back is not)
+/// and one full turn in total (no self-intersection such as a star).
 ///
 /// # Errors
 /// [`NotConvex`] naming the first rule broken.
 pub fn is_convex(points: &[Pos2]) -> Result<(), NotConvex> {
+    convex_points(points).map(|_| ())
+}
+
+/// [`is_convex`], returning the cleaned point list it validated
+/// (consecutive duplicates and a closing repeat removed): the list
+/// [`fill_convex`] paints.
+///
+/// Thresholds are relative to the polygon's extent, so the result does not
+/// depend on where the polygon sits on screen.
+///
+/// # Errors
+/// [`NotConvex`] naming the first rule broken.
+pub fn convex_points(points: &[Pos2]) -> Result<Vec<Pos2>, NotConvex> {
+    if points.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+        return Err(NotConvex::TooFewPoints);
+    }
+    let bounds = Rect::from_points(points);
+    let extent = bounds.width().max(bounds.height());
+    let same = extent * 1e-6;
     let mut pts: Vec<Pos2> = Vec::with_capacity(points.len());
     for &p in points {
-        if pts.last().is_none_or(|last| last.distance(p) > 1e-6) {
+        if pts.last().is_none_or(|last| last.distance(p) > same) {
             pts.push(p);
         }
     }
@@ -218,15 +294,18 @@ pub fn is_convex(points: &[Pos2]) -> Result<(), NotConvex> {
         && pts
             .first()
             .zip(pts.last())
-            .is_some_and(|(a, b)| a.distance(*b) <= 1e-6)
+            .is_some_and(|(a, b)| a.distance(*b) <= same)
     {
         pts.pop();
     }
     let n = pts.len();
-    if n < 3 {
+    if n < 3 || extent <= 0.0 {
         return Err(NotConvex::TooFewPoints);
     }
-    let at = |i: usize| pts.get(i % n).copied().unwrap_or(Pos2::ZERO);
+    let origin = pts.first().copied().unwrap_or(Pos2::ZERO);
+    // Relative to the first point, so f32 rounding of large screen
+    // coordinates cannot fake an area.
+    let at = |i: usize| pts.get(i % n).copied().unwrap_or(origin) - origin;
     let mut area2 = 0.0_f32;
     let mut sign = 0.0_f32;
     let mut turning = 0.0_f32;
@@ -237,28 +316,33 @@ pub fn is_convex(points: &[Pos2]) -> Result<(), NotConvex> {
         let cross = e1.x * e2.y - e1.y * e2.x;
         let dot = e1.x * e2.x + e1.y * e2.y;
         let scale = e1.length() * e2.length();
-        if cross.abs() > 1e-6 * scale.max(1e-12) {
-            if sign == 0.0 {
-                sign = cross.signum();
-            } else if cross.signum() != sign {
+        if cross.abs() <= 1e-5 * scale {
+            // Collinear vertex: allowed going on, refused doubling back.
+            if dot < 0.0 {
                 return Err(NotConvex::NotConvex);
             }
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if cross.signum() != sign {
+            return Err(NotConvex::NotConvex);
         }
         turning += cross.atan2(dot);
     }
-    if area2.abs() <= 1e-6 {
+    if area2.abs() <= 1e-5 * extent * extent {
         return Err(NotConvex::ZeroArea);
     }
     // A simple convex polygon turns exactly once (±2π); a star turns more.
     if (turning.abs() - std::f32::consts::TAU).abs() > 1e-2 {
         return Err(NotConvex::NotConvex);
     }
-    Ok(())
+    Ok(pts)
 }
 
-/// Adds a filled polygon only if [`is_convex`] accepts it (AC 5); otherwise
-/// adds nothing. epaint fills only convex polygons correctly. The stroke (if
-/// any) is floored.
+/// Adds a filled polygon only if [`convex_points`] accepts it (AC 5), and
+/// paints the cleaned list it validated; otherwise adds nothing. epaint
+/// fills only convex polygons correctly. The stroke (if any) is floored.
 ///
 /// # Errors
 /// [`NotConvex`] when the polygon is refused; nothing is painted then.
@@ -268,7 +352,7 @@ pub fn fill_convex(
     fill: Color32,
     stroke: Stroke,
 ) -> Result<(), NotConvex> {
-    is_convex(&points)?;
+    let points = convex_points(&points)?;
     let stroke = if stroke.is_empty() {
         Stroke::NONE
     } else {
@@ -612,10 +696,8 @@ mod tests {
             is_convex(&p(&[(0.0, 0.0), (1.0, 1.0)])),
             Err(NotConvex::TooFewPoints)
         );
-        assert_eq!(
-            is_convex(&p(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])),
-            Err(NotConvex::ZeroArea)
-        );
+        // Collinear: the closing edge doubles back (or the area is zero).
+        assert!(is_convex(&p(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])).is_err());
         // A five-pointed star turns the same way at every vertex but twice
         // in total.
         let star: Vec<Pos2> = (0..5)

@@ -238,7 +238,14 @@ fn g12_checklist() {
             })
             .collect();
         assert_eq!(rules.len(), 2, "ppp {ppp}: no rule after the last row");
-        let mut prev_bottom: Option<f32> = None;
+        // Row 0 starts where the flourish's bottom margin ends.
+        let (title, _, _) = text(&flat, "Ready to play?");
+        let flourish_bottom = title.bottom()
+            + md::FLOURISH_MARGIN_TOP
+            + md::FLOURISH_HEIGHT
+            + md::FLOURISH_MARGIN_BOTTOM;
+        let mut prev_bottom: Option<f32> = Some(flourish_bottom);
+        let mut last_text_bottom = 0.0;
         for (i, row) in rows.iter().enumerate() {
             let (rect, _, t) = text(&flat, row);
             assert_eq!(t.galley.job.sections[0].format.font_id.size, 14.5, "{row}");
@@ -271,7 +278,16 @@ fn g12_checklist() {
                 );
                 prev_bottom = Some(rule + 1.0);
             }
+            last_text_bottom = rect.bottom();
         }
+        // The last row: 7 pt below its text, then the checklist's bottom
+        // margin, then the action row.
+        let play = h.get_by_role_and_label(Role::Button, "Play").rect();
+        let gap = play.top() - last_text_bottom;
+        assert!(
+            (gap - md::ROW_PADDING_Y - md::CHECKLIST_MARGIN_BOTTOM).abs() <= 0.5,
+            "ppp {ppp}: last row bottom padding + margin {gap}"
+        );
     }
 }
 
@@ -313,7 +329,7 @@ fn g12_actions() {
         let (pi, _) = fill(theme::AMBER, play).expect("amber primary fill");
         let glow = flat
             .iter()
-            .find(|f| matches!(&f.shape, Shape::Rect(r) if r.blur_width == 12.0 && r.fill == theme::AMBER_GLOW && r.rect.contains_rect(play)))
+            .find(|f| matches!(&f.shape, Shape::Rect(r) if r.blur_width == 19.0 && r.fill == theme::AMBER_GLOW && r.rect.contains_rect(play)))
             .expect("primary glow");
         assert!(glow.index < pi, "glow under the primary");
         let (_, ghost) = fill(theme::WELL, cancel).expect("well ghost fill");
@@ -367,21 +383,41 @@ fn g12_disabled_button() {
     );
     let go = h.get_by_role_and_label(Role::Button, "Go").rect();
     let flat = flat(&h);
-    let a = (0.45_f32 * 255.0).round() as u8;
+    disabled_look(&flat, go, "Go");
+}
+
+/// The painted disabled primary, measured against literals: fill `amber` at
+/// 45 % (premultiplied `#6C511B73`, alpha 115 = round(0.45 × 255)); the label
+/// not faded but in `text` (`#F3E3BD`, effective alpha = section alpha × the
+/// shape's `opacity_factor` = 255); no glow (owner eye check 2026-11-27).
+fn disabled_look(flat: &[Flat], go: Rect, label: &str) {
+    // The topmost unblurred rect at the button (the parent `Ui` may paint
+    // its own background there first).
     let fill = flat
         .iter()
-        .find_map(|f| match &f.shape {
+        .filter_map(|f| match &f.shape {
             Shape::Rect(r) if common::rect_eq(r.rect, go, 0.01) && r.blur_width == 0.0 => {
                 Some(r.fill)
             }
             _ => None,
         })
+        .next_back()
         .expect("disabled fill");
-    assert_eq!(fill, theme::AMBER.gamma_multiply(0.45));
-    assert!(fill.a().abs_diff(a) <= 1, "fill alpha {}", fill.a());
-    let (_, _, t) = text(&flat, "Go");
-    let color = t.galley.job.sections[0].format.color;
-    assert!(color.a().abs_diff(a) <= 1, "text alpha {}", color.a());
+    assert_eq!(
+        fill,
+        Color32::from_rgba_premultiplied(108, 81, 27, 115),
+        "fill"
+    );
+    let (_, _, t) = text(flat, label);
+    let section = t.galley.job.sections[0].format.color;
+    assert_eq!(section, Color32::from_rgb(0xf3, 0xe3, 0xbd), "label colour");
+    let effective = f32::from(section.a()) * t.opacity_factor;
+    assert!(
+        (effective - 255.0).abs() <= 1.0,
+        "label effective alpha {effective} (section {}, opacity {})",
+        section.a(),
+        t.opacity_factor
+    );
     assert!(
         !flat.iter().any(
             |f| matches!(&f.shape, Shape::Rect(r) if r.blur_width > 0.0 && r.rect.contains_rect(go))
@@ -390,24 +426,62 @@ fn g12_disabled_button() {
     );
 }
 
+/// A button asked enabled inside a disabled parent `Ui` is disabled in look
+/// (fill faded once to 45 %, readable label, no glow), in AccessKit and in behaviour (a click does
+/// nothing).
+#[test]
+fn g12_button_in_a_disabled_parent() {
+    let mut h = Harness::builder()
+        .with_size(vec2(400.0, 200.0))
+        .with_context_setup(ocb_app::setup)
+        .build_ui_state(
+            |ui, clicks: &mut usize| {
+                ui.add_enabled_ui(false, |ui| {
+                    if widgets::button(ui, ButtonKind::Primary, "Go", true, None).clicked() {
+                        *clicks += 1;
+                    }
+                });
+            },
+            0_usize,
+        );
+    h.run();
+    let node = h.get_by_role_and_label(Role::Button, "Go");
+    assert!(node.accesskit_node().is_disabled(), "AccessKit disabled");
+    let go = node.rect();
+    node.click();
+    h.run();
+    assert_eq!(*h.state(), 0, "a disabled button clicked");
+    disabled_look(&shapes_flat(&h.output().shapes), go, "Go");
+}
+
 #[test]
 fn g12_one_at_a_time() {
     let mut h = harness(1280.0, 800.0, 1.0);
     let a = readiness_dialog();
     let b = update_dialog();
-    h.state_mut().modals.request(a.clone());
-    h.state_mut().modals.request(b.clone());
-    h.state_mut().modals.request(a.clone());
-    assert_eq!(h.state().modals.queued(), 1, "duplicate ignored, B queued");
+    // Each request built separately: dedup is by id, not by value identity.
+    h.state_mut().modals.request(readiness_dialog());
+    h.state_mut().modals.request(update_dialog());
+    h.state_mut().modals.request(readiness_dialog());
+    h.state_mut().modals.request(update_dialog());
+    assert_eq!(
+        h.state().modals.queued(),
+        1,
+        "duplicates ignored, B queued once"
+    );
     let mut frames = 0;
     let mut step_checked = |h: &mut Harness<'_, State>| {
+        let mut shown = 0;
         for _ in 0..8 {
             h.step();
             frames += 1;
-            assert!(scrims(&flat(h)) <= 1, "two scrims in one frame");
+            let n = scrims(&flat(h));
+            assert!(n <= 1, "two scrims in one frame");
+            shown += n;
         }
+        shown
     };
-    step_checked(&mut h);
+    assert!(step_checked(&mut h) >= 6, "A shown in the stepped frames");
     h.run();
     assert_eq!(h.query_all_by_role(Role::Dialog).count(), 1);
     assert!(
@@ -416,7 +490,7 @@ fn g12_one_at_a_time() {
     );
     assert_eq!(scrims(&flat(&h)), 1);
     h.key_press(Key::Escape);
-    step_checked(&mut h);
+    assert!(step_checked(&mut h) >= 6, "B shown after A closed");
     h.run();
     assert_eq!(h.state().outcomes, vec![(a.id, ModalOutcome::Dismissed)]);
     assert_eq!(h.query_all_by_role(Role::Dialog).count(), 1);
@@ -425,7 +499,7 @@ fn g12_one_at_a_time() {
             .is_some()
     );
     h.key_press(Key::Escape);
-    step_checked(&mut h);
+    assert_eq!(step_checked(&mut h), 0, "nothing shown after B closed");
     h.run();
     assert_eq!(
         h.state().outcomes.last(),
@@ -493,4 +567,119 @@ fn g12_esc_backdrop_tab() {
         }
     }
     assert!(h.state().modals.is_open());
+}
+
+/// Each outcome is kept in the host until the requester reads it.
+#[test]
+fn g12_outcome_kept_until_read() {
+    let mut h = harness(1280.0, 800.0, 1.0);
+    let a = readiness_dialog();
+    let b = update_dialog();
+    open(&mut h, a.clone());
+    h.state_mut().modals.request(b.clone());
+    h.key_press(Key::Enter);
+    h.run();
+    h.key_press(Key::Escape);
+    h.run();
+    for _ in 0..3 {
+        h.run(); // frames pass, nothing is read yet
+    }
+    let m = &mut h.state_mut().modals;
+    assert_eq!(m.take_outcome(b.id), Some(ModalOutcome::Dismissed));
+    assert_eq!(m.take_outcome(a.id), Some(ModalOutcome::Primary));
+    assert_eq!(m.take_outcome(a.id), None, "read once");
+    assert_eq!(m.take_outcome(Id::unique("never-requested")), None);
+}
+
+/// After a click on the backdrop the primary still has focus, so Enter
+/// still answers.
+#[test]
+fn g12_enter_after_a_backdrop_click() {
+    let mut h = harness(1280.0, 800.0, 1.0);
+    let spec = readiness_dialog();
+    open(&mut h, spec.clone());
+    click_at(&h, Pos2::new(5.0, 5.0));
+    h.run();
+    assert!(h.state().modals.is_open());
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Play").is_focused(),
+        "focus lost after the backdrop click"
+    );
+    h.key_press(Key::Enter);
+    h.run();
+    assert_eq!(h.state().outcomes, vec![(spec.id, ModalOutcome::Primary)]);
+}
+
+fn key_event(h: &Harness<'_, State>, key: Key, pressed: bool, repeat: bool) {
+    h.event(Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat,
+        modifiers: Modifiers::NONE,
+    });
+}
+
+/// A held Enter (with key repeat) answers the dialog it was pressed in, not
+/// the queued one that opens while it is still down; once released, the
+/// next press answers that one.
+#[test]
+fn g12_held_enter_does_not_answer_the_queued_dialog() {
+    let mut h = harness(1280.0, 800.0, 1.0);
+    let a = readiness_dialog();
+    let b = update_dialog();
+    open(&mut h, a.clone());
+    h.state_mut().modals.request(b.clone());
+    key_event(&h, Key::Enter, true, false);
+    h.step();
+    for _ in 0..20 {
+        key_event(&h, Key::Enter, true, true);
+        h.step();
+    }
+    assert_eq!(h.state().outcomes, vec![(a.id, ModalOutcome::Primary)]);
+    assert_eq!(h.state().modals.open_id(), Some(b.id), "B still open");
+    key_event(&h, Key::Enter, false, false);
+    h.run();
+    assert_eq!(
+        h.state().modals.open_id(),
+        Some(b.id),
+        "release alone answers nothing"
+    );
+    h.key_press(Key::Enter);
+    h.run();
+    assert_eq!(
+        h.state().outcomes.last(),
+        Some(&(b.id, ModalOutcome::Primary))
+    );
+}
+
+/// Esc pressed in the frame a dialog is requested closes it.
+#[test]
+fn g12_esc_on_the_opening_frame() {
+    let mut h = harness(1280.0, 800.0, 1.0);
+    let spec = update_dialog();
+    h.state_mut().modals.request(spec.clone());
+    h.key_press(Key::Escape);
+    h.step();
+    h.run();
+    assert!(!h.state().modals.is_open(), "dialog still open");
+    assert_eq!(h.state().outcomes, vec![(spec.id, ModalOutcome::Dismissed)]);
+}
+
+/// The frame border goes through the stroke floor: at ppp 0.5 one
+/// physical pixel is 2 pt.
+#[test]
+fn g12_border_floor() {
+    let mut h = harness(1280.0, 800.0, 0.5);
+    open(&mut h, update_dialog());
+    let widths: Vec<f32> = flat(&h)
+        .iter()
+        .filter_map(|f| match &f.shape {
+            Shape::Rect(r) if r.fill == theme::PANEL_RAISED && r.stroke.color == theme::RIM => {
+                Some(r.stroke.width)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(widths, vec![2.0], "border at ppp 0.5");
 }

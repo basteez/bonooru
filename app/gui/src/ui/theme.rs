@@ -207,9 +207,17 @@ pub mod components {
     /// `components.corner-bracket.inset`: the bracket box sits this far
     /// inside the card corner on both axes (Story 4.3).
     pub const CORNER_BRACKET_INSET: f32 = 4.0;
-    /// `components.button-disabled.opacity`: fill and text alpha factor of a
-    /// disabled button (no glow).
-    pub const BUTTON_DISABLED_OPACITY: f32 = 0.45;
+    /// `components.button-disabled.fill-opacity`: alpha factor of a
+    /// disabled button's fill and border (no glow). The label is not faded:
+    /// it switches to [`BUTTON_DISABLED_TEXT`] (ghost) or
+    /// [`BUTTON_DISABLED_TEXT_ON_PRIMARY`] (primary), so it stays readable
+    /// (owner eye check 2026-11-27; G.6 checks ≥ 3:1 against the faded fill
+    /// composited over the panels).
+    pub const BUTTON_DISABLED_FILL_OPACITY: f32 = 0.45;
+    /// `components.button-disabled.foreground` = `colors.text-muted`.
+    pub const BUTTON_DISABLED_TEXT: egui::Color32 = super::TEXT_MUTED;
+    /// `components.button-disabled.foreground-on-primary` = `colors.text`.
+    pub const BUTTON_DISABLED_TEXT_ON_PRIMARY: egui::Color32 = super::TEXT;
 
     /// `components.modal-dialog` sizes (Story 4.3, from
     /// `mockups/key-dialogs.html`).
@@ -261,8 +269,10 @@ pub mod components {
 }
 
 /// Glow blur values: the `<n>` of every `components.*.glow` string written
-/// `Shadow blur <n>px` in `DESIGN.md`, used as `epaint::Shadow::blur` as is
-/// (Story 4.3 D3; `u8` because `Shadow.blur` is `u8`).
+/// `Shadow blur <n>px` in `DESIGN.md`. They are CSS `box-shadow` blur radii
+/// (as in the mocks); `ui::paint::paint_glow` converts them to epaint's
+/// feather width (`paint::feather_from_css_blur`, owner eye check
+/// 2026-11-27). `u8` like `Shadow.blur`.
 pub mod glow {
     /// `components.status-led.glow`.
     pub const STATUS_LED: u8 = 8;

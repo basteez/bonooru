@@ -410,7 +410,7 @@ fn parchment_control(ui: &mut Ui) {
     );
     let pos = rect.center() - galley.rect.size() / 2.0;
     p.galley(pos, galley, theme::INK);
-    paint::paint_focus_ring(&resp, radius, true);
+    paint::paint_focus_ring(ui, &resp, radius, true);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
 }
 
@@ -468,8 +468,8 @@ fn glow_samples(ui: &mut Ui) {
         ),
         (
             "Orb 8",
-            vec2(orb, orb) / 2.0,
-            orb / 4.0,
+            vec2(orb, orb),
+            orb / 2.0,
             glow::ORB,
             theme::AMBER,
             theme::ON_EMBER,
@@ -500,15 +500,17 @@ fn glow_samples(ui: &mut Ui) {
     });
 }
 
-/// A Cormorant numeral with its halo sized from the galley's ink bounds.
+/// A Cormorant numeral with its halo centred on the glyph's ink bounds.
 fn halo_sample(ui: &mut Ui) {
     let galley = paint::layout_line(ui.ctx(), &theme::COUNTDOWN, "7", theme::TEXT);
     let pad = theme::spacing::S3;
     let blur = theme::glow::PLAY_PRIMARY;
-    let ink = galley.rect.union(galley.mesh_bounds);
-    let room = pad + f32::from(blur);
-    let (rect, _) = ui.allocate_exact_size(ink.size() + vec2(2.0, 2.0) * room, Sense::hover());
-    let pos = rect.min + vec2(room, room) - ink.min.to_vec2();
+    // The cell holds the layout rect and the ink (no text overlaps); the
+    // halo itself is centred on the ink alone.
+    let bounds = galley.rect.union(paint::ink_rect(&galley, Pos2::ZERO));
+    let room = pad + f32::from(paint::feather_from_css_blur(blur));
+    let (rect, _) = ui.allocate_exact_size(bounds.size() + vec2(2.0, 2.0) * room, Sense::hover());
+    let pos = rect.min + vec2(room, room) - bounds.min.to_vec2();
     let p = ui.painter();
     paint::paint_text_halo(
         p,

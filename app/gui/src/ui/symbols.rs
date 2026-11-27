@@ -261,29 +261,81 @@ fn geometry(symbol: Symbol) -> ((f32, f32), Vec<Prim>) {
     }
 }
 
+/// How far (in half stroke widths) epaint's stroke of `points` reaches from
+/// its centre line at the farthest vertex: 1 at a butt end or a straight
+/// run, `1 / |n|` at a miter join (n = the mean of the two edge normals), and
+/// the cut-corner reach at an open path's corner sharper than a right angle
+/// (epaint `tessellator.rs`, `Path::add_open_points` / `add_line_loop`).
+fn join_reach(points: &[Pos2], closed: bool) -> f32 {
+    let n = points.len();
+    if n < 3 {
+        return 1.0;
+    }
+    let normal = |a: Pos2, b: Pos2| (b - a).normalized().rot90();
+    let mut reach = 1.0_f32;
+    let count = if closed { n } else { n - 2 };
+    for k in 0..count {
+        let (i0, i1, i2) = if closed {
+            (k, (k + 1) % n, (k + 2) % n)
+        } else {
+            (k, k + 1, k + 2)
+        };
+        let (Some(&a), Some(&b), Some(&c)) = (points.get(i0), points.get(i1), points.get(i2))
+        else {
+            continue;
+        };
+        let (n0, n1) = (normal(a, b), normal(b, c));
+        let mean = (n0 + n1) * 0.5;
+        let lsq = mean.length_sq();
+        let miter = if lsq > 0.0 { 1.0 / lsq.sqrt() } else { 1.0 };
+        // Near a right angle f32 rounding decides which join epaint draws
+        // (a mirrored path can fall on the other side), so take the larger.
+        let r = if !closed && lsq < 0.5 + 1e-3 {
+            let centre = mean.normalized();
+            let n0c = (n0 + centre) * 0.5;
+            let n1c = (n1 + centre) * 0.5;
+            let cut = (1.0 / n0c.length()).max(1.0 / n1c.length());
+            if lsq >= 0.5 - 1e-3 {
+                cut.max(miter)
+            } else {
+                cut
+            }
+        } else {
+            miter
+        };
+        if r.is_finite() {
+            reach = reach.max(r);
+        }
+    }
+    reach
+}
+
 /// Paints `symbol` inside `rect` (AC 8): the viewBox scaled uniformly and
 /// centred, then shrunk so every floored stroke (half-width included) stays
 /// inside `rect`. Only rect fills, [`paint::fill_convex`] polygons and
 /// floored strokes; no text, no node.
 pub fn paint_symbol(painter: &Painter, rect: Rect, symbol: Symbol, color: Color32, ppp: f32) {
     let ((vw, vh), prims) = geometry(symbol);
-    let max_half = prims
+    // Per stroke: half its width (viewBox units) times how far epaint's
+    // joins reach beyond the half width (miter up to √2 at a right angle,
+    // more on a closed loop's sharp corner).
+    let strokes: Vec<(f32, f32)> = prims
         .iter()
-        .map(|prim| match prim {
-            Prim::Line(_, w) | Prim::Loop(_, w) => *w / 2.0,
-            _ => 0.0,
+        .filter_map(|prim| match prim {
+            Prim::Line(pts, w) => Some((*w / 2.0, join_reach(pts, false))),
+            Prim::Loop(pts, w) => Some((*w / 2.0, join_reach(pts, true))),
+            _ => None,
         })
-        .fold(0.0_f32, f32::max);
-    let has_stroke = max_half > 0.0;
+        .collect();
     let fit = |r: Rect| (r.width() / vw).min(r.height() / vh).max(0.0);
     let s0 = fit(rect);
-    // Stroke pad: the widest floored half-width at the first scale; the
-    // final scale is smaller, so its strokes are never wider than the pad.
-    let pad = if has_stroke {
-        (max_half * s0).max(0.5 / ppp.max(f32::MIN_POSITIVE))
-    } else {
-        0.0
-    };
+    // Stroke pad: the farthest floored join at the first scale; the final
+    // scale is smaller, so its strokes never reach beyond the pad.
+    let floor_half = 0.5 / ppp.max(f32::MIN_POSITIVE);
+    let pad = strokes
+        .iter()
+        .map(|(half, reach)| (half * s0).max(floor_half) * reach)
+        .fold(0.0_f32, f32::max);
     let inner = rect.shrink(pad);
     let s = fit(inner);
     let origin = inner.center() - vec2(vw, vh) * s / 2.0;

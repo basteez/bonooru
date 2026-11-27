@@ -20,23 +20,27 @@ use ocb_app::ui::theme;
 #[test]
 fn g3_gallery_lists_every_colour_and_typography_token() {
     // At 1024x680 the scroll area clips the rows below the fold, but clipped
-    // widgets stay in the AccessKit tree, so every row is queryable.
-    let mut h = Harness::builder()
-        .with_size(vec2(1024.0, 680.0))
-        .with_theme(Theme::Light)
-        .build_eframe(|cc| App::new(cc, Mode::Gallery));
-    h.run();
-    let names = theme::color_tokens()
-        .iter()
-        .map(|t| t.name)
-        .chain(theme::typography_tokens().iter().map(|(n, _)| *n));
-    for name in names {
-        // Exact label match: `label` does not match `note-label`.
-        assert_eq!(
-            h.query_all_by_label(name).count(),
-            1,
-            "gallery must show `{name}` exactly once"
-        );
+    // widgets stay in the AccessKit tree, so every row is queryable. At the
+    // five scales of AC 13.
+    for ppp in PPPS {
+        let mut h = Harness::builder()
+            .with_size(vec2(1024.0, 680.0))
+            .with_pixels_per_point(ppp)
+            .with_theme(Theme::Light)
+            .build_eframe(|cc| App::new(cc, Mode::Gallery));
+        h.run();
+        let names = theme::color_tokens()
+            .iter()
+            .map(|t| t.name)
+            .chain(theme::typography_tokens().iter().map(|(n, _)| *n));
+        for name in names {
+            // Exact label match: `label` does not match `note-label`.
+            assert_eq!(
+                h.query_all_by_label(name).count(),
+                1,
+                "ppp {ppp}: gallery must name `{name}` exactly once"
+            );
+        }
     }
 }
 
@@ -256,4 +260,40 @@ fn g3_every_focusable_node_shows_its_ring() {
             assert!(!h.state().modals().is_open(), "Esc closes {title}");
         }
     }
+}
+
+/// The orb glow sample sits on the orb's own size (`fairy-orb-icon.size` =
+/// `spacing.orb-icon-size`), a circle (radius half the side), as AC 13 asks
+/// ("glow at each blur token on its control shape").
+#[test]
+fn g3_orb_glow_sample_has_the_orb_size() {
+    use egui::epaint::Shape;
+    let h = tall_gallery(1.0);
+    let orb = theme::spacing::ORB_ICON_SIZE;
+    // The orb's control: an `on-ember` fill with a blurred `amber` glow
+    // centred on it (the colour swatch of `on-ember` has no glow).
+    let rects: Vec<_> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            Shape::Rect(r) => Some(r.clone()),
+            _ => None,
+        })
+        .collect();
+    let found: Vec<_> = rects
+        .iter()
+        .filter(|r| r.fill == theme::ON_EMBER)
+        .filter(|r| {
+            rects.iter().any(|g| {
+                g.blur_width > 0.0
+                    && g.fill == theme::AMBER
+                    && (g.rect.center() - r.rect.center()).length() < 0.01
+            })
+        })
+        .map(|r| (r.rect.size(), r.corner_radius))
+        .collect();
+    assert_eq!(found.len(), 1, "one orb sample: {found:?}");
+    assert_eq!(found[0].0, vec2(orb, orb), "orb sample size");
+    assert_eq!(found[0].1, theme::corner(orb / 2.0), "orb sample radius");
 }

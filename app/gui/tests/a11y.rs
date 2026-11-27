@@ -130,7 +130,7 @@ fn decorate(ui: &mut Ui, which: Option<usize>) {
     match DECORATIVE[i] {
         "focus ring" => {
             resp.request_focus();
-            paint::paint_focus_ring(&resp, 4.0, false);
+            paint::paint_focus_ring(ui, &resp, 4.0, false);
         }
         "glow" => paint::paint_glow(&p, r, 8.0, 12, c),
         "text halo" => paint::paint_text_halo(&p, r, 12.0, 16, c),
@@ -184,28 +184,37 @@ fn g10_decorative_painting_adds_no_node() {
     }
 }
 
-/// Counts calls that turn the harness accessibility check off.
+/// Counts calls of `with_accessibility_check` whose argument is anything
+/// but the literal `true` (`false`, a variable, an expression), comments
+/// and string contents ignored ([`common::code_only`]), whitespace removed.
 fn check_disabled(source: &str) -> usize {
-    let needle = format!("{}(false)", "with_accessibility_check");
-    common::strip_line_comments(source)
-        .replace([' ', '\n', '\t'], "")
-        .matches(&needle)
+    let name = format!("{}(", "with_accessibility_check");
+    let code: String = common::code_only(source)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    code.match_indices(&name)
+        .filter(|(i, _)| !code[i + name.len()..].starts_with("true)"))
         .count()
 }
 
 #[test]
 fn g10_check_off_scan_self_test() {
-    let call = format!(".{}(false)", "with_accessibility_check");
-    assert_eq!(check_disabled(&format!("Harness::builder(){call}")), 1);
-    assert_eq!(
-        check_disabled(&format!("b\n    .{}( false )", "with_accessibility_check")),
-        1
-    );
-    assert_eq!(check_disabled(&format!("// {call}")), 0);
-    assert_eq!(
-        check_disabled(&format!(".{}(true)", "with_accessibility_check")),
-        0
-    );
+    let f = "with_accessibility_check";
+    let cases: Vec<(String, usize)> = vec![
+        (format!("Harness::builder().{f}(false)"), 1),
+        (format!("b\n    .{f}( false )"), 1),
+        (format!("let on = false; b.{f}(on)"), 1),
+        (format!("b.{f}(!strict)"), 1),
+        (format!("// b.{f}(false)"), 0),
+        (format!("/* b.{f}(false) */"), 0),
+        (format!("let s = \"b.{f}(false)\";"), 0),
+        (format!("b.{f}(true)"), 0),
+        (format!("b.{f}( true )"), 0),
+    ];
+    for (src, want) in cases {
+        assert_eq!(check_disabled(&src), want, "{src}");
+    }
 }
 
 #[test]
