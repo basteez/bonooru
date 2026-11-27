@@ -534,8 +534,11 @@ impl eframe::App for App {
             }
             Mode::Gallery => gallery::show(ui, &mut self.modals),
         }
-        // Before `Modals::show`: `dialog=open` names the dialog this same
-        // Esc closes.
+        // Before `Modals::show`: `dialog=open` means a dialog was open or
+        // requested in this frame. It usually takes the same Esc and closes,
+        // but not always: the firmware dialog ignores the Esc of its opening
+        // frame (Story 4.6) and `Modals` ignores Esc with Cmd/Ctrl. STOP is
+        // requested in every case.
         if let Some(source) = stop
             && first_pass
         {

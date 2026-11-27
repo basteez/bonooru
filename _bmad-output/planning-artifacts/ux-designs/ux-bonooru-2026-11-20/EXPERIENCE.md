@@ -264,8 +264,8 @@ Behavioural rules. Visual specs live in `DESIGN.md` › Components.
 
 | Key | When | Action |
 |---|---|---|
-| Space | everywhere except the text editor (including while the gamepad has focus; Space is not a gamepad key) | Preview play / stop (same as Listen and the header ▶). Space is consumed at frame start, so it never activates a focused button: consumed at frame start since Story 4.7 (no preview yet). |
-| Enter | a button has focus | Activates it (buttons activate with Enter, never Space) |
+| Space | everywhere except the text editor (including while the gamepad has focus; Space is not a gamepad key) | Preview play / stop (same as Listen and the header ▶). Space is consumed at frame start (since Story 4.7; no preview yet), with any modifiers while a widget other than a text edit has focus, so it never activates a focused button. |
+| Enter | a button has focus | Activates it (buttons activate with Enter, never Space); once per fresh press: key repeats of a held Enter are dropped at frame start outside a text edit (Story 4.7) |
 | Delete / Backspace | the note view has focus and a selection exists | Delete selected notes |
 | Double-click | empty spot in the note view | Add a note with the last-used duration |
 | Tab / Shift+Tab | anywhere outside the editor and the gamepad | Move focus between controls and regions in the order status → song → note view → gamepad → bottom bar (regions laid out manually to keep this order) |

@@ -31,6 +31,7 @@ use ocb_app::leds::LedState;
 use ocb_app::stop::{self, StopSource};
 use ocb_app::ui::bottom_bar;
 use ocb_app::ui::keys::{self, FrameKeys};
+use ocb_app::ui::modal::ModalOutcome;
 use ocb_app::ui::status_strip::led_id;
 use ocb_app::ui::{firmware, gallery};
 use ocb_core::link::Phase;
@@ -207,11 +208,7 @@ impl Rig {
     }
 
     fn led_states(&self) -> Vec<(LedState, Option<String>)> {
-        let l = self.h.state().leds();
-        [l.pc_bridge, l.bridge_controller, l.switch]
-            .into_iter()
-            .map(|x| (x.state, x.detail))
-            .collect()
+        led_states_of(self.h.state())
     }
 
     fn stop_center(&self) -> egui::Pos2 {
@@ -266,6 +263,15 @@ fn leds_ok(lines: &[String]) -> usize {
     n
 }
 
+/// The three LEDs' state and detail (no ages).
+fn led_states_of(app: &App) -> Vec<(LedState, Option<String>)> {
+    let l = app.leds();
+    [l.pc_bridge, l.bridge_controller, l.switch]
+        .into_iter()
+        .map(|x| (x.state, x.detail))
+        .collect()
+}
+
 fn press(pos: egui::Pos2, pressed: bool) -> Event {
     Event::PointerButton {
         pos,
@@ -301,14 +307,16 @@ fn count(lines: &[String], prefix: &str) -> usize {
 
 /// AC 4: with a dialog open one Esc does both: the STOP is requested
 /// before the dialog consumes the Esc (`dialog=open`), the dialog closes
-/// `Dismissed`, and the worker sends STOP.
+/// `Dismissed`, and the worker sends STOP. The gallery's readiness sample
+/// is used (its own id): the firmware dialog's id would make the main
+/// screen log a `dialog closed` with no `shown`.
 #[test]
 fn g20_esc_with_dialog_open() {
     let mut r = rig(vec![bridge()]);
     r.until_connected();
-    r.h.state_mut()
-        .modals_mut()
-        .request(gallery::update_dialog());
+    let spec = gallery::readiness_dialog();
+    let id = spec.id;
+    r.h.state_mut().modals_mut().request(spec);
     for _ in 0..3 {
         r.h.step();
     }
@@ -325,16 +333,11 @@ fn g20_esc_with_dialog_open() {
         "{stops:?}"
     );
     assert_eq!(count(&stops, "requested"), 1, "{stops:?}");
-    // The main screen read the firmware dialog's outcome: dismissed.
-    let dialog: Vec<String> = r
-        .all_now()
-        .into_iter()
-        .filter(|l| l.starts_with("dialog "))
-        .collect();
     assert_eq!(
-        dialog,
-        vec!["dialog closed id=firmware_update_needed outcome=dismissed"]
+        r.h.state_mut().modals_mut().take_outcome(id),
+        Some(ModalOutcome::Dismissed)
     );
+    assert_eq!(count(&r.all_now(), "dialog "), 0, "no dialog line");
     r.pump_until("stop sent", |l| l.contains(&format!("stop sent port={CU}")));
 }
 
@@ -385,9 +388,10 @@ struct KeysState {
     focus: bool,
 }
 
-/// AC 4, 6: `frame_start` reads Esc without consuming it (also with a
-/// focused text field), consumes Space (not Cmd/Ctrl+Space), and leaves
-/// Space to a focused text edit.
+/// AC 4, 6: `frame_start` reads Esc without consuming it (also when a text
+/// field had focus: egui's `Memory::begin_pass` clears that focus on Esc
+/// before the read, and Esc is read anyway), consumes Space (Cmd/Ctrl+Space
+/// only while a widget has focus), and leaves Space to a focused text edit.
 #[test]
 fn g20_frame_start_keys() {
     let edit_id = egui::Id::unique("g20-edit");
@@ -453,6 +457,10 @@ fn g20_frame_start_keys() {
     assert!(!h.state().keys.stop);
     assert!(h.state().space_left, "Space taken from the text edit");
     assert_eq!(h.state().text, " ", "the text edit got its space");
+    assert!(
+        h.ctx.text_edit_focused(),
+        "the text edit has focus before the Esc"
+    );
     h.input_mut().events.push(esc(false));
     h.step();
     assert!(h.state().keys.stop, "Esc with a focused text edit");
@@ -571,17 +579,24 @@ fn count_worker(lines: &[String]) -> usize {
         .count()
 }
 
-/// AC 6: with STOP focused, Space and Shift+Space click nothing; Enter
-/// does.
+/// AC 5, 6: with STOP focused, Space with any modifiers (none, Shift,
+/// Ctrl, Cmd) clicks nothing; Enter does, once per fresh press even when
+/// held (its key repeats are dropped).
 #[test]
 fn g20_space_never_clicks() {
     let mut r = rig(vec![]);
     r.h.step();
     r.focus_stop();
-    r.h.key_press(Key::Space);
-    r.h.step();
-    r.h.key_press_modifiers(Modifiers::SHIFT, Key::Space);
-    r.h.step();
+    for m in [
+        Modifiers::NONE,
+        Modifiers::SHIFT,
+        Modifiers::CTRL,
+        Modifiers::COMMAND,
+        Modifiers::MAC_CMD,
+    ] {
+        r.h.key_press_modifiers(m, Key::Space);
+        r.h.step();
+    }
     assert_eq!(r.h.ctx.memory(|m| m.focused()), Some(bottom_bar::stop_id()));
     assert_eq!(count(&r.stops(), "requested"), 0, "Space clicked STOP");
     r.h.key_press(Key::Enter);
@@ -592,6 +607,21 @@ fn g20_space_never_clicks() {
             .filter(|l| l.starts_with("requested"))
             .collect::<Vec<_>>(),
         vec!["requested source=button dialog=none command=queued"]
+    );
+    // Enter held: one fresh press, then presses egui marks as repeats.
+    assert_eq!(r.h.ctx.memory(|m| m.focused()), Some(bottom_bar::stop_id()));
+    for _ in 0..10 {
+        r.h.input_mut()
+            .events
+            .push(key_event(Key::Enter, true, Modifiers::NONE));
+        r.h.step();
+    }
+    release(&mut r.h, &[Key::Enter]);
+    r.h.step();
+    assert_eq!(
+        count(&r.stops(), "requested"),
+        2,
+        "a held Enter requested STOP more than once"
     );
 }
 
@@ -617,6 +647,7 @@ fn g20_stop_without_worker() {
     assert!(frame_ms(&mut h) < 100);
     h.step();
     assert_eq!(h.state().leds(), before, "LEDs unchanged");
+    assert!(!h.state().modals().is_open(), "no dialog");
     drop(h);
     assert!(logger.stop());
     assert_eq!(
@@ -633,6 +664,7 @@ fn g20_stop_without_worker() {
     assert!(frame_ms(&mut r.h) < 100);
     r.h.step();
     assert_eq!(r.led_states(), before);
+    assert!(!r.h.state().modals().is_open(), "no dialog");
     assert_eq!(
         r.stops(),
         vec!["requested source=esc dialog=none command=worker_gone"]
@@ -658,12 +690,15 @@ fn g20_stop_without_worker() {
         });
     h.step();
     std::thread::sleep(Duration::from_millis(50));
+    let before = led_states_of(h.state());
     for _ in 0..64 {
         h.state_mut().request_stop(StopSource::Esc);
     }
     h.key_press(Key::Escape);
     assert!(frame_ms(&mut h) < 100, "the UI waited on the worker");
     h.step();
+    assert_eq!(led_states_of(h.state()), before, "LEDs unchanged");
+    assert!(!h.state().modals().is_open(), "no dialog");
     drop(h);
     assert!(logger.stop());
     let stops = common::kind_texts(&sink.lines(), "stop");
@@ -702,6 +737,43 @@ fn g20_stop_no_bridge() {
     r.h.step();
     assert_eq!(r.led_states(), before, "LEDs unchanged");
     assert!(!r.h.state().modals().is_open(), "no dialog");
+}
+
+/// AC 10 (second clause): with a dialog open over the main screen, Tab and
+/// Shift+Tab stay inside it: focus never reaches STOP or a LED.
+#[test]
+fn g20_tab_stays_in_dialog() {
+    let mut r = rig(vec![]);
+    r.h.step();
+    r.h.state_mut()
+        .modals_mut()
+        .request(gallery::readiness_dialog());
+    for _ in 0..3 {
+        r.h.step();
+    }
+    let outside = [
+        led_id("pc_bridge"),
+        led_id("bridge_controller"),
+        led_id("switch"),
+        bottom_bar::stop_id(),
+    ];
+    let mut inside = 0;
+    for i in 0..12 {
+        if i < 6 {
+            r.h.key_press(Key::Tab);
+        } else {
+            r.h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+        }
+        r.h.step();
+        let f = r.h.ctx.memory(|m| m.focused());
+        assert!(
+            f.is_none_or(|f| !outside.contains(&f)),
+            "Tab {i} left the dialog"
+        );
+        inside += usize::from(f.is_some());
+        assert!(r.h.state().modals().is_open());
+    }
+    assert!(inside > 0, "Tab focused nothing in the dialog");
 }
 
 /// AC 10: Tab runs LED, LED, LED, STOP and wraps; Shift+Tab goes back.
@@ -756,28 +828,41 @@ fn g20_h34_dry_run() {
     for l in r.all_now() {
         println!("  {l}");
     }
+    // The runbook's rule: within a request, the app's `requested` and the
+    // worker's `sent` may come in either order (two threads, one log);
+    // `acked` comes after `sent` and `after` after `acked` (worker order).
     let four = |lines: &[String], source: &str| {
         let s: Vec<&String> = lines.iter().filter(|l| l.starts_with("stop ")).collect();
         assert_eq!(s.len(), 4, "{lines:?}");
+        let at = |p: &str| {
+            let v: Vec<usize> = (0..s.len()).filter(|&k| s[k].starts_with(p)).collect();
+            assert_eq!(v.len(), 1, "one `{p}`: {s:?}");
+            v[0]
+        };
+        let req = at("stop requested ");
         assert_eq!(
-            *s[0],
+            *s[req],
             format!("stop requested source={source} dialog=none command=queued")
         );
-        assert_eq!(*s[1], format!("stop sent port={CU}"));
+        let sent = at("stop sent ");
+        assert_eq!(*s[sent], format!("stop sent port={CU}"));
+        let acked = at("stop acked ");
+        let after = at("stop after ");
+        assert!(req < acked && sent < acked && acked < after, "{s:?}");
         assert!(
-            s[2].starts_with(&format!("stop acked port={CU} after_us=")),
+            s[acked].starts_with(&format!("stop acked port={CU} after_us=")),
             "{s:?}"
         );
-        let after_us: u64 = s[2]
+        let after_us: u64 = s[acked]
             .split(' ')
             .find_map(|w| w.strip_prefix("after_us="))
             .unwrap()
             .parse()
             .unwrap();
         assert!(after_us <= 100_000, "{after_us}");
-        assert!(s[2].ends_with(" by=command"), "{s:?}");
+        assert!(s[acked].ends_with(" by=command"), "{s:?}");
         assert!(
-            s[3].starts_with(&format!("stop after port={CU} mode=idle abort_count=")),
+            s[after].starts_with(&format!("stop after port={CU} mode=idle abort_count=")),
             "{s:?}"
         );
         assert!(
@@ -816,13 +901,25 @@ fn g20_h34_dry_run() {
     r.pump_until("step 3", |l| done(l, base + 3));
     let l = print(&r, &mut seen, "step 3b (Enter)");
     four(&l, "button");
+    // Step 3c: Enter held on the focused STOP (one fresh press, repeats).
+    for _ in 0..20 {
+        r.h.input_mut()
+            .events
+            .push(key_event(Key::Enter, true, Modifiers::NONE));
+        r.h.step();
+    }
+    release(&mut r.h, &[Key::Enter]);
+    r.h.step();
+    r.pump_until("step 3c", |l| done(l, base + 4));
+    let l = print(&r, &mut seen, "step 3c (Enter held)");
+    four(&l, "button");
     // Step 4: Esc ×5 quickly (the worker clock does not move between them).
     for _ in 0..5 {
         r.h.key_press(Key::Escape);
         r.h.step();
     }
     r.pump_until("step 4 commands", |l| count_worker(&l[seen..]) == 5);
-    r.pump_until("step 4", |l| done(l, base + 4));
+    r.pump_until("step 4", |l| done(l, base + 5));
     let l = print(&r, &mut seen, "step 4 (Esc x5 quickly)");
     assert_eq!(
         count(&l, "stop requested source=esc dialog=none command=queued"),
@@ -830,14 +927,18 @@ fn g20_h34_dry_run() {
         "{l:?}"
     );
     assert_eq!(count_worker(&l), 5, "{l:?}");
+    // Counts, not order; then an ACK by command and an idle `after` after
+    // the last `sent`/`pending` (worker order).
+    let last_cmd = (0..l.len())
+        .rev()
+        .find(|&k| l[k].starts_with("stop sent ") || l[k].starts_with("stop pending "))
+        .unwrap();
+    let acked = (last_cmd..l.len())
+        .find(|&k| l[k].starts_with("stop acked ") && l[k].ends_with(" by=command"))
+        .unwrap_or_else(|| panic!("no acked after the last command: {l:?}"));
     assert!(
-        count(&l, "stop acked ") >= 1
-            && l.iter()
-                .any(|x| x.starts_with("stop acked") && x.ends_with("by=command"))
-    );
-    assert!(
-        l.iter()
-            .any(|x| x.starts_with("stop after ") && x.contains("mode=idle"))
+        (acked..l.len()).any(|k| l[k].starts_with("stop after ") && l[k].contains(" mode=idle ")),
+        "{l:?}"
     );
     assert_eq!(count(&l, "nak "), 0);
     assert_eq!(count(&l, "led "), 0);
@@ -852,7 +953,7 @@ fn g20_h34_dry_run() {
         .events
         .push(key_event(Key::Escape, false, Modifiers::NONE));
     r.h.step();
-    r.pump_until("step 5", |l| done(l, base + 5));
+    r.pump_until("step 5", |l| done(l, base + 6));
     let l = print(&r, &mut seen, "step 5 (Esc held)");
     assert_eq!(count(&l, "stop requested "), 1, "{l:?}");
     // Step 6: bridge out, Esc, bridge back, Esc.
@@ -873,13 +974,15 @@ fn g20_h34_dry_run() {
         l.iter().any(|x| x.starts_with("stop skipped"))
     });
     let l = print(&r, &mut seen, "step 6a (bridge out, Esc)");
-    let s: Vec<&String> = l.iter().filter(|x| x.starts_with("stop ")).collect();
+    let mut s: Vec<&String> = l.iter().filter(|x| x.starts_with("stop ")).collect();
+    s.sort();
     assert_eq!(
         s,
         vec![
             "stop requested source=esc dialog=none command=queued",
             "stop skipped reason=no_port port=-"
-        ]
+        ],
+        "either order"
     );
     while r.clock.now_us() < REPLUG {
         r.clock.advance(10_000);

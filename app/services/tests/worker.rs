@@ -1034,6 +1034,12 @@ fn stop_lines(lines: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// `0x<hh>`: a controller mode this app does not know (`Mode::Unknown`).
+fn unknown_mode(v: Option<&str>) -> bool {
+    v.and_then(|v| v.strip_prefix("0x"))
+        .is_some_and(|h| h.len() == 2 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// A `stop` worker line against its pattern (Story 4.7 Dev Notes › Log
 /// lines): the verb, then exactly these `key=value` fields in order.
 fn stop_line_ok(text: &str) -> bool {
@@ -1066,7 +1072,7 @@ fn stop_line_ok(text: &str) -> bool {
         "after" => {
             keys == ["port", "mode", "abort_count"]
                 && non_empty("port")
-                && one_of("mode", &["idle", "direct", "playing"])
+                && (one_of("mode", &["idle", "direct", "playing"]) || unknown_mode(get("mode")))
                 && digits("abort_count")
         }
         _ => false,
@@ -1361,7 +1367,70 @@ fn c28_stop_log_lines() {
         "acked port=x after_us=1 by=user",
         "after port=x mode=idle",
         "after port=x mode=idle abort_count=1 extra=1",
+        "after port=x mode=0x7 abort_count=1",
+        "after port=x mode=0xzz abort_count=1",
     ] {
         assert!(!stop_line_ok(bad), "{bad}");
     }
+    for good in [
+        "after port=x mode=0x7f abort_count=3",
+        "acked port=x after_us=- by=session",
+        "skipped reason=no_port port=-",
+    ] {
+        assert!(stop_line_ok(good), "{good}");
+    }
+}
+
+/// C.28 (AC 7; review finding 1): the intake takes every queued command in
+/// one pass: three Stops queued together give `sent`, `pending`, `pending`
+/// and one STOP frame; a Stop queued with a Shutdown is not sent (the
+/// close lowers DTR); a Stop queued before the last sender is dropped is
+/// drained, then the drop is a shutdown.
+#[test]
+fn c28_intake_takes_every_command() {
+    let connect = |r: &mut SimRig| {
+        step_to(r, 1_000_000, |e| {
+            matches!(e, WorkerEvent::Link(LinkEvent::Connected(_)))
+        });
+        r.run_until(r.clock.now_us() + 20_000);
+    };
+    // Three in one batch.
+    let (mut r, logger, sink) = logged_rig(vec![
+        FakePort::bridge(CU, S, Some("Bonooru Bridge")).mute_at(400_000),
+    ]);
+    connect(&mut r);
+    r.run_until(500_000);
+    for _ in 0..3 {
+        r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    }
+    r.step();
+    assert_eq!(stop_frames(&r).len(), 1);
+    let lines = finish(r, logger, &sink);
+    assert_eq!(
+        lines,
+        vec![
+            format!("sent port={CU}"),
+            format!("pending port={CU}"),
+            format!("pending port={CU}"),
+        ]
+    );
+    // Stop with Shutdown: shut down, nothing sent for the Stop.
+    let (mut r, logger, sink) = logged_rig(vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))]);
+    connect(&mut r);
+    r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    r.ends.commands.send(WorkerCommand::Shutdown).unwrap();
+    r.step();
+    assert!(r.core.is_shut_down());
+    assert!(stop_frames(&r).is_empty());
+    assert!(finish(r, logger, &sink).is_empty());
+    // Stop queued, then every sender dropped: drained, then shut down.
+    let (mut r, logger, sink) = logged_rig(vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))]);
+    connect(&mut r);
+    r.ends.commands.send(WorkerCommand::Stop).unwrap();
+    let (gone, _) = crossbeam_channel::bounded(1);
+    drop(std::mem::replace(&mut r.ends.commands, gone));
+    r.step();
+    assert!(r.core.is_shut_down(), "a dropped handle is a shutdown");
+    assert!(stop_frames(&r).is_empty());
+    assert!(finish(r, logger, &sink).is_empty());
 }

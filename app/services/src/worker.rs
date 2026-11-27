@@ -519,15 +519,26 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         if self.shutdown {
             return;
         }
-        // Every queued command is taken (none is dropped unseen). A
-        // `Shutdown` anywhere wins: a STOP queued with it is not sent, the
-        // close lowers DTR, which aborts DIRECT on the controller (AD-5).
-        // A dropped handle (every sender gone) is a shutdown too, so a
-        // worker never outlives its owner.
-        let commands: Vec<WorkerCommand> = self.cmd_rx.try_iter().collect();
-        if commands.contains(&WorkerCommand::Shutdown)
-            || matches!(self.cmd_rx.try_recv(), Err(TryRecvError::Disconnected))
-        {
+        // Every queued command is taken (none is dropped unseen): one
+        // `try_recv` loop, so a command sent while the queue is read is
+        // either taken now or left for the next pass, never read and thrown
+        // away. A `Shutdown` anywhere wins: a STOP queued with it is not
+        // sent, the close lowers DTR, which aborts DIRECT on the controller
+        // (AD-5). A dropped handle (every sender gone, the queue drained)
+        // is a shutdown too, so a worker never outlives its owner.
+        let mut commands: Vec<WorkerCommand> = Vec::new();
+        let mut disconnected = false;
+        loop {
+            match self.cmd_rx.try_recv() {
+                Ok(cmd) => commands.push(cmd),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        if disconnected || commands.contains(&WorkerCommand::Shutdown) {
             let now = self.clock.now_us();
             self.close(now);
             self.shutdown = true;

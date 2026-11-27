@@ -5,11 +5,17 @@
 //!   modifiers) sets [`FrameKeys::stop`]. It is read, never consumed: the
 //!   open dialog, if any, consumes the same Esc afterwards and closes as
 //!   `Dismissed` (the contract on [`super::modal::Modals`]), so one press
-//!   does both. Key repeats of a held Esc never ask again.
-//! - **Space is consumed here** so it never activates a focused button
-//!   (egui fake-clicks a focused clickable widget on Space or Enter);
-//!   Cmd/Ctrl+Space stays for the OS and later shortcuts, and a focused
-//!   text edit keeps Space. Epic 5 adds preview play/stop on it here.
+//!   does both (except an Esc with Cmd/Ctrl, which `Modals` ignores, and
+//!   the firmware dialog's opening frame, Story 4.6). Key repeats of a
+//!   held Esc never ask again.
+//! - **Buttons activate with Enter only (UX-DR61).** egui fake-clicks a
+//!   focused clickable widget on Space or Enter, whatever the modifiers,
+//!   and counts key repeats. Unless a text edit has focus, every Space
+//!   press is consumed here (Cmd/Ctrl+Space too while a widget has focus;
+//!   with nothing focused Cmd/Ctrl+Space stays for the OS and later
+//!   shortcuts), and Enter key repeats are dropped, so a held Enter
+//!   activates a focused button once, like Esc. A focused text edit keeps
+//!   Space and Enter repeats. Epic 5 adds preview play/stop on Space here.
 //!
 //! Call [`frame_start`] once per frame, in the first pass only
 //! (`ctx.current_pass_index() == 0`): input events reach only that pass
@@ -29,8 +35,8 @@ fn command_held(m: Modifiers) -> bool {
     m.command || m.ctrl || m.mac_cmd
 }
 
-/// Reads Esc (not consumed) and consumes Space (unless a text edit has
-/// focus or Cmd/Ctrl is held). See the module doc.
+/// Reads Esc (not consumed), consumes Space and drops Enter repeats
+/// (unless a text edit has focus). See the module doc.
 pub fn frame_start(ctx: &Context) -> FrameKeys {
     let stop = ctx.input(|i| {
         i.events.iter().any(|e| {
@@ -46,17 +52,22 @@ pub fn frame_start(ctx: &Context) -> FrameKeys {
         })
     });
     if !ctx.text_edit_focused() {
+        let focused = ctx.memory(|m| m.focused()).is_some();
         ctx.input_mut(|i| {
-            i.events.retain(|e| {
-                !matches!(
-                    e,
-                    Event::Key {
-                        key: Key::Space,
-                        pressed: true,
-                        modifiers,
-                        ..
-                    } if !command_held(*modifiers)
-                )
+            i.events.retain(|e| match e {
+                Event::Key {
+                    key: Key::Space,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => !(focused || !command_held(*modifiers)),
+                Event::Key {
+                    key: Key::Enter,
+                    pressed: true,
+                    repeat: true,
+                    ..
+                } => false,
+                _ => true,
             });
         });
     }
