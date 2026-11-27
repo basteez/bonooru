@@ -337,3 +337,52 @@ pub fn fake_link(ctx: &egui::Context) -> ocb_services::worker::WorkerHandle {
     )
     .expect("worker thread")
 }
+
+/// A UI clock moved by hand (Story 4.5): clones share the time.
+#[derive(Clone, Debug, Default)]
+pub struct TestClock(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl TestClock {
+    /// The time, µs.
+    pub fn now_us(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Moves the time forward.
+    pub fn advance_us(&self, d: u64) {
+        self.0.fetch_add(d, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The clock for `App::ui_clock`.
+    pub fn ui_clock(&self) -> ocb_app::app::UiClock {
+        let c = self.clone();
+        std::sync::Arc::new(move || std::time::Duration::from_micros(c.now_us()))
+    }
+}
+
+/// A worker thread on `backend` and its fake `clock` (macOS rules, no log),
+/// whose waker counts the snapshots it published and asks `ctx` for a
+/// repaint. Its fake ports never spin the thread: reads with nothing to
+/// return sleep 1 ms of real time.
+pub fn fake_worker(
+    ctx: &egui::Context,
+    backend: ocb_services::sim::FakeBackend,
+    clock: ocb_services::worker::FakeClock,
+    published: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> ocb_services::worker::WorkerHandle {
+    use ocb_services::log::LogHandle;
+    use ocb_services::worker::spawn_with;
+    backend.state().read_sleep = Some(std::time::Duration::from_millis(1));
+    let ctx = ctx.clone();
+    spawn_with(
+        backend,
+        clock,
+        ocb_core::device::Rules::MACOS,
+        LogHandle::disabled(),
+        Box::new(move || {
+            published.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ctx.request_repaint();
+        }),
+    )
+    .expect("worker thread")
+}

@@ -361,6 +361,33 @@ fn g3_component_sizes() {
         px(&field("status-led", "size"), "status-led.size"),
         theme::components::STATUS_LED_SIZE,
     );
+    // Story 4.5: the strip and LED spacing lifted from the mock.
+    use theme::components::{status_led, status_strip};
+    for (group, key, ours) in [
+        ("status-led", "gap", status_led::GAP),
+        ("status-led", "symbol-gap", status_led::SYMBOL_GAP),
+        ("status-strip", "padding-x", status_strip::PADDING_X),
+        ("status-strip", "brand-gap", status_strip::BRAND_GAP),
+    ] {
+        let what = format!("{group}.{key}");
+        eq(&mut errs, &what, px(&field(group, key), &what), ours);
+    }
+    let padding = field("status-led", "padding");
+    let (py, px_) = padding
+        .split_once(' ')
+        .unwrap_or_else(|| panic!("status-led.padding: `{padding}` is not `<y>px <x>px`"));
+    eq(
+        &mut errs,
+        "status-led.padding y",
+        px(py, "status-led.padding"),
+        status_led::PADDING_Y,
+    );
+    eq(
+        &mut errs,
+        "status-led.padding x",
+        px(px_, "status-led.padding"),
+        status_led::PADDING_X,
+    );
     eq(
         &mut errs,
         "corner-bracket.inset",

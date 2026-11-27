@@ -171,11 +171,24 @@ pub fn text_node(
     galley: std::sync::Arc<egui::Galley>,
     align: Align2,
 ) -> Response {
+    text_node_colored(ui, rect, galley, align, theme::TEXT)
+}
+
+/// [`text_node`] whose galley's placeholder colour (sections laid out with
+/// `Color32::PLACEHOLDER`) paints in `color`, e.g. the `parchment` brand
+/// of the status strip (Story 4.5).
+pub fn text_node_colored(
+    ui: &mut Ui,
+    rect: Rect,
+    galley: std::sync::Arc<egui::Galley>,
+    align: Align2,
+    color: Color32,
+) -> Response {
     let resp = ui.allocate_rect(rect, Sense::hover());
     let text = galley.text().to_owned();
     let pos =
         align.align_size_within_rect(galley.rect.size(), rect).min - galley.rect.min.to_vec2();
-    ui.painter().galley(pos, galley, theme::TEXT);
+    ui.painter().galley(pos, galley, color);
     resp.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
     resp
 }

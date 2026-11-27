@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod leds;
 pub mod smoke;
 pub mod ui;
 

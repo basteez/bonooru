@@ -17,9 +17,10 @@ use std::time::{Duration, Instant};
 pub use crossbeam_channel::TryRecvError;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ocb_core::device::{self, Class, PortInfo, Rules};
+use ocb_core::link::AbandonReason;
 use ocb_core::link::{LinkEvent, Phase, Session, SessionConfig, StatusView};
 use ocb_core::protocol::consts::MSG_HELLO;
-use ocb_core::protocol::{Info, RxSide, decode_frame};
+use ocb_core::protocol::{Info, NakReason, RxSide, decode_frame};
 
 use crate::log::LogHandle;
 use crate::port::{Backend, OpenError, OpenPort, PortLost, permission_message};
@@ -299,6 +300,26 @@ pub struct LinkSnapshot {
     pub port_writes: Vec<(String, u64)>,
     /// The last problem worth showing.
     pub last_error: Option<LastError>,
+    /// When the current session last entered `Opening` (worker clock, µs):
+    /// set when a session is opened on a port and again when the
+    /// controller rebooted (mid-session `NAK VERSION`, or a STATUS of a
+    /// freshly booted controller); `None` without a port. The LEDs time
+    /// their INFO grace from it (Story 4.5).
+    pub session_since_us: Option<u64>,
+    /// When the INFO that made the session `Connected` or `Incompatible`
+    /// arrived (worker clock, µs); cleared on open, reboot and loss. The
+    /// STATUS staleness of the LEDs counts from it until the first STATUS.
+    pub connected_us: Option<u64>,
+    /// The INFO of a protocol mismatch ([`LinkEvent::RequiredUpdate`]):
+    /// the session keeps no INFO in `Incompatible`, so the versions the
+    /// LEDs show come from here (Story 4.5, 4.6). Cleared on open and loss.
+    pub required_update: Option<Info>,
+    /// The latest `NAK NOT_READY` or `NAK NO_LINK` (from
+    /// [`LinkEvent::Refused`] or [`LinkEvent::PieceAbandoned`]) and when it
+    /// arrived (worker clock, µs); other reasons are not kept. The LEDs
+    /// treat it like the STATUS flag until a newer STATUS. Cleared on open,
+    /// reboot and loss.
+    pub last_nak: Option<(NakReason, u64)>,
 }
 
 /// The receiving ends and the command sender of a worker.
@@ -358,6 +379,10 @@ pub struct WorkerCore<B: Backend, C: Clock> {
     port_writes: Vec<(String, u64)>,
     last_error: Option<LastError>,
     status: Option<(StatusView, u64)>,
+    session_since_us: Option<u64>,
+    connected_us: Option<u64>,
+    required_update: Option<Info>,
+    last_nak: Option<(NakReason, u64)>,
     scans: u64,
     recent_scans: std::collections::VecDeque<(u64, u64)>,
     shutdown: bool,
@@ -417,6 +442,10 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             port_writes: Vec::new(),
             last_error: None,
             status: None,
+            session_since_us: None,
+            connected_us: None,
+            required_update: None,
+            last_nak: None,
             scans: 0,
             recent_scans: std::collections::VecDeque::with_capacity(RECENT_SCANS),
             shutdown: false,
@@ -752,6 +781,10 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                     self.last_error = None;
                 }
                 self.status = None;
+                self.session_since_us = Some(now);
+                self.connected_us = None;
+                self.required_update = None;
+                self.last_nak = None;
                 self.conn = Some(Conn {
                     name,
                     serial,
@@ -856,6 +889,10 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             ch.open = false;
         }
         self.status = None;
+        self.session_since_us = None;
+        self.connected_us = None;
+        self.required_update = None;
+        self.last_nak = None;
         self.dirty = true;
         Some(c)
     }
@@ -969,6 +1006,7 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                     self.last_serial.clone_from(&c.serial);
                     self.last_name = Some(c.name.clone());
                 }
+                self.connected_us = Some(now);
                 self.rotate_after = None;
                 self.log.log(
                     "version",
@@ -994,6 +1032,8 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                 if let Some(c) = self.conn.as_mut() {
                     c.answered = true;
                 }
+                self.connected_us = Some(now);
+                self.required_update = Some(*info);
                 self.log.log(
                 "version",
                 format!(
@@ -1019,6 +1059,12 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                 ),
             ),
             LinkEvent::ControllerRebooted => {
+                // The session HELLOs again: a new INFO grace, and nothing
+                // of the previous boot may keep the LEDs "fresh".
+                self.session_since_us = Some(now);
+                self.connected_us = None;
+                self.status = None;
+                self.last_nak = None;
                 self.log.log("reboot", format!("controller rebooted port={port}"));
             }
             LinkEvent::ControllerEvent(code) => self.log.log(
@@ -1027,12 +1073,20 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             ),
             LinkEvent::PlaybackDone => self.log.log("event", "PLAYBACK_DONE"),
             LinkEvent::PieceAbandoned { reason } => {
+                if let AbandonReason::Nak(r @ (NakReason::NotReady | NakReason::NoLink)) = reason {
+                    self.last_nak = Some((*r, now));
+                }
                 self.log.log("nak", format!("PieceAbandoned reason={reason:?}"));
             }
-            LinkEvent::Refused { reason, ty } => self.log.log(
-                "nak",
-                format!("Refused reason={reason:?} ty=0x{ty:02x}"),
-            ),
+            LinkEvent::Refused { reason, ty } => {
+                if matches!(reason, NakReason::NotReady | NakReason::NoLink) {
+                    self.last_nak = Some((*reason, now));
+                }
+                self.log.log(
+                    "nak",
+                    format!("Refused reason={reason:?} ty=0x{ty:02x}"),
+                );
+            }
             LinkEvent::UnknownNak {
                 reason,
                 expected,
@@ -1079,6 +1133,10 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             counters,
             port_writes: self.port_writes.clone(),
             last_error: self.last_error.clone(),
+            session_since_us: self.session_since_us,
+            connected_us: self.connected_us,
+            required_update: self.required_update,
+            last_nak: self.last_nak,
         }
     }
 
