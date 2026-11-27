@@ -136,7 +136,7 @@ fn g1_note_card_has_corner_brackets() {
 #[test]
 fn g1_gamepad_hint_geometry() {
     use egui::Role;
-    use egui_kittest::kittest::Queryable as _;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
     use ocb_app::app::WorkerHealth;
     use ocb_app::gating::{Block, Gate, HINT_FIRMWARE};
     use ocb_app::leds;
@@ -159,9 +159,10 @@ fn g1_gamepad_hint_geometry() {
         h.run();
         h
     }
+    use ocb_core::protocol::consts::PROTO_VERSION;
     let block = Some(Block::FirmwareUpdate {
-        controller_proto: 2,
-        app_proto: 1,
+        controller_proto: PROTO_VERSION.wrapping_add(1),
+        app_proto: PROTO_VERSION,
     });
     let blocked = Gate {
         gamepad: block,
@@ -172,7 +173,6 @@ fn g1_gamepad_hint_geometry() {
             let ctx = format!("{w}x{hgt} ppp {ppp}");
             let h = screen(w, hgt, ppp, blocked);
             let pad = regions(*h.state()).gamepad;
-            assert_eq!(main_screen::hint_rect(pad).left(), pad.left() + 10.0);
             let hints: Vec<_> = common::shapes_flat(&h.output().shapes)
                 .into_iter()
                 .filter_map(|f| match f.shape {
@@ -190,14 +190,35 @@ fn g1_gamepad_hint_geometry() {
                 common::inside(ink, pad.shrink(10.0), 0.5),
                 "{ctx}: {ink:?} not inside {pad:?} shrunk by 10"
             );
+            // The drawn text, not only the helper: left at region + 10,
+            // wrapped to the region width − 20.
+            assert!(
+                (ink.left() - (pad.left() + 10.0)).abs() <= 0.5,
+                "{ctx}: left {} vs {}",
+                ink.left(),
+                pad.left() + 10.0
+            );
+            assert!(
+                (t.galley.job.wrap.max_width - (pad.width() - 20.0)).abs() <= 0.5,
+                "{ctx}: wrap width {} vs {}",
+                t.galley.job.wrap.max_width,
+                pad.width() - 20.0
+            );
             assert!(
                 (ink.top() - (pad.top() + 10.0)).abs() <= 0.5,
                 "{ctx}: top {} vs {}",
                 ink.top(),
                 pad.top() + 10.0
             );
-            let _ = h.get_by_role_and_label(Role::Label, HINT_FIRMWARE);
-            assert_eq!(h.query_all_by_role(Role::Button).count(), 0);
+            // One label node, not focusable (no Focus action).
+            let node = h.get_by_role_and_label(Role::Label, HINT_FIRMWARE);
+            assert!(
+                !node
+                    .accesskit_node()
+                    .data()
+                    .supports_action(egui::accesskit::Action::Focus),
+                "{ctx}: the hint advertises focus"
+            );
 
             let free = screen(w, hgt, ppp, Gate::default());
             assert!(

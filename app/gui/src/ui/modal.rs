@@ -4,7 +4,8 @@
 //! dialog: a request while one is open waits in a FIFO queue (a request with
 //! the id of the open or a queued dialog is ignored) and opens after the
 //! current one closes, never in the same frame. Esc closes the open dialog
-//! (`Dismissed`), also on the frame it opens; a click on the backdrop does
+//! (`Dismissed`), also on the frame it opens (unless the spec opts out with
+//! [`ModalSpec::ignoring_opening_esc`], Story 4.6); a click on the backdrop does
 //! not (D4). The primary button has keyboard focus when the dialog opens and
 //! whenever no button of the dialog has it; Enter activates the focused
 //! button (egui: a focused clickable widget is clicked by Enter). Enter,
@@ -78,6 +79,14 @@ pub struct ModalSpec {
     pub primary: ModalAction,
     /// The ghost button to its left, if any.
     pub secondary: Option<ModalAction>,
+    /// Whether a fresh Esc press in the frame the dialog opens dismisses it
+    /// (the Story 4.3 rule, default `true`). `false` for a dialog the app
+    /// opens by itself in a frame whose first pass is discarded (Story 4.6,
+    /// the firmware dialog): that Esc was pressed before the dialog was ever
+    /// painted, so it must not close it. The Esc is not consumed either (it
+    /// stays readable for STOP); the dialog answers Esc once every answer
+    /// key has been up since it opened (the armed rule).
+    pub opening_esc_dismisses: bool,
 }
 
 impl ModalSpec {
@@ -96,6 +105,7 @@ impl ModalSpec {
             body,
             primary,
             secondary: None,
+            opening_esc_dismisses: true,
         }
     }
 
@@ -104,6 +114,16 @@ impl ModalSpec {
     pub fn with_secondary(self, secondary: ModalAction) -> Self {
         Self {
             secondary: Some(secondary),
+            ..self
+        }
+    }
+
+    /// A fresh Esc in the opening frame does not dismiss this dialog (see
+    /// [`ModalSpec::opening_esc_dismisses`]).
+    #[must_use]
+    pub fn ignoring_opening_esc(self) -> Self {
+        Self {
+            opening_esc_dismisses: false,
             ..self
         }
     }
@@ -271,6 +291,7 @@ fn show_dialog(ctx: &Context, open: &mut Open) -> Option<ModalOutcome> {
     // A fresh Esc press (not a repeat) in the opening frame dismisses even
     // though the key is still down: it was pressed with the dialog there.
     let fresh_esc = first_frame
+        && spec.opening_esc_dismisses
         && ctx.input(|i| {
             i.events.iter().any(|e| {
                 matches!(

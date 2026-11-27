@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::{Context, ThemePreference};
+use ocb_core::protocol::Info;
 use ocb_services::log::{LogHandle, Logger};
 use ocb_services::port::SerialBackend;
 use ocb_services::worker::{self, LinkSnapshot, TimedEvent, TryRecvError, WorkerHandle};
@@ -177,6 +178,10 @@ pub struct App {
     /// Requests the firmware dialog once per mismatching connection
     /// (Story 4.6).
     firmware: FirmwareWatch,
+    /// The mismatch whose dialog was requested but is not logged as shown
+    /// yet: `dialog shown` is written in the frame the dialog opens (now, or
+    /// after a dialog it was queued behind).
+    firmware_pending: Option<(Info, u64)>,
     /// Logs every gate change (Story 4.6 AC 9).
     gate_tracker: GateTracker,
     /// The app's own log lines (`dialog`), same handle as the trackers'.
@@ -232,6 +237,7 @@ impl App {
             clock,
             led_tracker: LedTracker::new(log.clone()),
             firmware: FirmwareWatch::default(),
+            firmware_pending: None,
             gate_tracker: GateTracker::new(log.clone()),
             log,
             last_repaint_after: None,
@@ -416,8 +422,13 @@ impl eframe::App for App {
             ctx.set_theme(ThemePreference::Dark);
         }
         // The worker's news since the last frame; never waits (AD-16).
+        // eframe runs `logic` on every pass of a frame; only the first pass
+        // drains, so a new snapshot (and the firmware dialog it may request,
+        // Story 4.6) always lands in a pass that can still be discarded.
         let now = self.clock.now();
-        if let Some(link) = self.link.as_mut() {
+        if ctx.current_pass_index() == 0
+            && let Some(link) = self.link.as_mut()
+        {
             link.drain(now);
         }
     }
@@ -439,12 +450,27 @@ impl eframe::App for App {
                 // `Modals::show` below: drawn in the frame the snapshot was
                 // drained (Story 4.6 AC 2, 3).
                 let snap = self.link.as_ref().and_then(|l| l.snapshot.as_deref());
-                if let Some((info, at)) = self.firmware.take_new(snap) {
-                    self.modals.request(firmware::required_update_dialog());
+                if let Some(new) = self.firmware.take_new(snap) {
+                    let id = firmware::dialog_id();
+                    // Already on screen (a replug while it is open, owner
+                    // decision 4): nothing new to show or log.
+                    if self.modals.open_id() != Some(id) {
+                        self.modals.request(firmware::required_update_dialog());
+                        // Opened now, or queued behind another dialog: logged
+                        // when it opens (below).
+                        self.firmware_pending = Some(new);
+                    }
+                }
+                if let Some((info, at)) = self.firmware_pending
+                    && self.modals.open_id() == Some(firmware::dialog_id())
+                {
+                    self.firmware_pending = None;
                     // egui draws a new area invisibly in its first pass (the
                     // sizing pass): discarding this pass makes egui run the
                     // frame again at once, and that second pass draws the
-                    // dialog visibly, so it shows in this very frame.
+                    // dialog visibly, so it shows in this very frame. The
+                    // snapshot is drained in the first pass only (`logic`),
+                    // so this pass can still be discarded.
                     ui.ctx().request_discard("firmware dialog opens");
                     self.log.log("dialog", gating::dialog_shown_line(&info, at));
                 }
@@ -462,17 +488,28 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         // Dialogs last: over every screen, one at a time. Each outcome stays
         // in `Modals` until the requesting screen reads it with
-        // `take_outcome(id)` (the gallery's samples never read theirs).
+        // `take_outcome(id)`: the main screen reads the firmware dialog's,
+        // the gallery's samples (its update sample is the same dialog) never
+        // read theirs.
         let _ = self.modals.show(&ctx);
         // The firmware dialog's answer: logged only; closing it never lifts
         // the gate (only a new connection with a matching INFO does).
-        if let Some(outcome) = self.modals.take_outcome(firmware::dialog_id()) {
+        if self.mode == Mode::Main
+            && let Some(outcome) = self.modals.take_outcome(firmware::dialog_id())
+        {
             let outcome = match outcome {
-                ModalOutcome::Primary => "primary",
-                ModalOutcome::Secondary => "secondary",
-                ModalOutcome::Dismissed => "dismissed",
+                ModalOutcome::Primary => Some("primary"),
+                ModalOutcome::Dismissed => Some("dismissed"),
+                // The firmware dialog has no secondary button (Epic 4: OK
+                // only); `dialog closed` knows only primary and dismissed.
+                ModalOutcome::Secondary => {
+                    debug_assert!(false, "the firmware dialog has no secondary button");
+                    None
+                }
             };
-            self.log.log("dialog", gating::dialog_closed_line(outcome));
+            if let Some(outcome) = outcome {
+                self.log.log("dialog", gating::dialog_closed_line(outcome));
+            }
         }
         self.smoke_frame(&ctx, frame);
     }

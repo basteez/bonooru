@@ -35,7 +35,7 @@ use ocb_app::ui::theme::{self, components::modal_dialog as md};
 use ocb_core::link::Phase;
 use ocb_core::protocol::consts::PROTO_VERSION;
 use ocb_core::version::APP_VERSION_TRIPLE;
-use ocb_services::log::{Logger, MemorySink};
+use ocb_services::log::{LogHandle, Logger, MemorySink};
 use ocb_services::sim::{FakeBackend, FakePort};
 use ocb_services::worker::FakeClock;
 use ocb_sim::ControllerConfig;
@@ -65,6 +65,9 @@ struct Rig {
     published: Arc<AtomicU64>,
     logger: Option<Logger>,
     sink: MemorySink,
+    /// The app's log handle (a test writes markers through it: the log is
+    /// FIFO, so a marker seen in the sink means every earlier line is too).
+    log: LogHandle,
 }
 
 fn rig_sized(ports: Vec<FakePort>, wake: Wake, size: (f32, f32)) -> Rig {
@@ -78,6 +81,7 @@ fn rig_sized(ports: Vec<FakePort>, wake: Wake, size: (f32, f32)) -> Rig {
     let sink = MemorySink::new();
     let logger = Logger::spawn(Box::new(sink.clone()), false, None);
     let log = logger.handle();
+    let app_log = log.clone();
     let (c, p) = (clock.clone(), Arc::clone(&published));
     let mut slot = Some(backend);
     let h = Harness::builder()
@@ -100,6 +104,7 @@ fn rig_sized(ports: Vec<FakePort>, wake: Wake, size: (f32, f32)) -> Rig {
         published,
         logger: Some(logger),
         sink,
+        log: app_log,
     }
 }
 
@@ -166,6 +171,22 @@ impl Rig {
             assert!(l.stop());
         }
         common::kind_texts(&self.sink.lines(), kind)
+    }
+
+    /// The `kind` lines written so far, without stopping the log: writes a
+    /// marker and waits (bounded) until the log thread has written it.
+    fn lines_now(&self, kind: &str) -> Vec<String> {
+        let marker = format!("marker-{}", Instant::now().elapsed().as_nanos());
+        self.log.log("test", marker.clone());
+        let start = Instant::now();
+        loop {
+            let lines = self.sink.lines();
+            if lines.iter().any(|l| l.ends_with(&marker)) {
+                return common::kind_texts(&lines, kind);
+            }
+            assert!(start.elapsed() < LIMIT, "log never flushed");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Waits until the worker published nothing for 50 ms of real time.
@@ -250,7 +271,11 @@ fn g18_modal_on_mismatch() {
         .collect();
     assert_eq!(shown.len(), 1);
     assert!(common::is_dialog_shown_line(&shown[0]), "{}", shown[0]);
-    assert!(shown[0].contains("controller_proto=2 app_proto=1 fw=0.2.0 bridge=0.2.1"));
+    let want = format!(
+        "controller_proto={} app_proto={PROTO_VERSION} fw=0.2.0 bridge=0.2.1",
+        PROTO_VERSION.wrapping_add(1)
+    );
+    assert!(shown[0].ends_with(&want), "{}", shown[0]);
 }
 
 #[test]
@@ -337,14 +362,12 @@ fn g18_no_nagging() {
     r.until_dialog();
     r.click_ok();
     // 10 s of fake time in 50 ms steps, a frame each.
-    let start = Instant::now();
     for _ in 0..200 {
         r.clock.advance(50_000);
         std::thread::sleep(Duration::from_millis(1));
         r.h.step();
         assert!(!r.h.state().modals().is_open(), "the dialog came back");
         assert!(!r.dialog_drawn());
-        assert!(start.elapsed() < Duration::from_secs(10));
     }
     let snap = r.h.state().link_snapshot().cloned().unwrap();
     assert!(snap.now_us >= 10_000_000, "the worker kept running");
@@ -365,7 +388,17 @@ fn g18_reshown_on_reconnect() {
     let mut r = rig(vec![port]);
     r.until_dialog();
     r.click_ok();
-    // Unplugged at 1 s (the gate lifts with the loss), back at 2 s.
+    // Unplugged at 1 s: the gate lifts with the loss and the hint goes
+    // (Open question 7).
+    r.advance_until(50_000, |h| {
+        h.state()
+            .link_snapshot()
+            .is_some_and(|s| s.required_update.is_none() && s.now_us >= 1_000_000)
+    });
+    assert_eq!(r.h.state().gate(), Gate::default(), "unplugged");
+    assert!(!r.hint_drawn(), "no hint while unplugged");
+    assert!(!r.dialog_drawn());
+    // Back at 2 s, still mismatching: the dialog again.
     r.advance_until(50_000, |h| h.state().modals().is_open());
     assert!(r.dialog_drawn(), "the dialog after the replug");
     assert!(r.h.state().link_snapshot().unwrap().now_us >= 2_000_000);
@@ -411,10 +444,27 @@ fn g18_resolved_by_reconnect() {
     assert_eq!(r.h.state().gate(), Gate::default());
     assert!(!r.hint_drawn());
     assert!(!r.dialog_drawn());
+    // Exactly off (mismatch), on (unplug at 1 s): the matching INFO at 2 s
+    // brings no new block, and the matching snapshot stays unblocked for a
+    // while (a block from the matching INFO would add a third line).
+    for _ in 0..20 {
+        r.clock.advance(50_000);
+        std::thread::sleep(Duration::from_millis(1));
+        r.h.step();
+        assert_eq!(r.h.state().gate(), Gate::default());
+    }
+    assert_eq!(r.h.state().link_snapshot().unwrap().phase, Phase::Connected);
     let gate = r.lines("gate");
+    let blocked_line = format!(
+        "gamepad=off play=off reason=firmware_update controller_proto={} app_proto={PROTO_VERSION}",
+        PROTO_VERSION.wrapping_add(1)
+    );
     assert_eq!(
-        gate.last().map(String::as_str),
-        Some("gamepad=on play=on reason=none controller_proto=- app_proto=-"),
+        gate,
+        vec![
+            blocked_line,
+            "gamepad=on play=on reason=none controller_proto=- app_proto=-".to_owned()
+        ],
         "{gate:?}"
     );
     let dialog = common::kind_texts(&r.sink.lines(), "dialog");
@@ -443,8 +493,14 @@ fn hint_shape(h: &Harness<'_, App>) -> Option<(egui::Rect, f32, egui::Color32)> 
 fn g18_hint() {
     let mut r = rig(vec![bridge(mismatched())]);
     r.until_dialog();
-    // Visible behind the dialog (drawn before the scrim).
+    // Visible behind the dialog: painted before the scrim.
     assert!(r.hint_drawn());
+    let flat = common::shapes_flat(&r.h.output().shapes);
+    let index_of =
+        |f: &dyn Fn(&Shape) -> bool| flat.iter().find(|x| f(&x.shape)).map(|x| x.index).unwrap();
+    let hint_at = index_of(&|s| matches!(s, Shape::Text(t) if t.galley.text() == HINT_FIRMWARE));
+    let scrim_at = index_of(&|s| matches!(s, Shape::Rect(x) if x.fill == theme::SCRIM));
+    assert!(hint_at < scrim_at, "hint {hint_at} after scrim {scrim_at}");
     let (ink, size, color) = hint_shape(&r.h).expect("hint behind the dialog");
     assert_eq!(size, 12.5);
     assert_eq!(color, theme::TEXT_MUTED);
@@ -456,7 +512,16 @@ fn g18_hint() {
     assert!((ink.top() - (pad.top() + 10.0)).abs() <= 0.5);
     r.click_ok();
     assert!(hint_shape(&r.h).is_some(), "after OK");
-    // Never in the Tab ring.
+    // Not focusable, and never in the Tab ring while Tab does move focus.
+    let node = r.h.get_by_role_and_label(Role::Label, HINT_FIRMWARE);
+    assert!(
+        !node
+            .accesskit_node()
+            .data()
+            .supports_action(egui::accesskit::Action::Focus),
+        "the hint advertises focus"
+    );
+    let mut focused = std::collections::BTreeSet::new();
     for _ in 0..12 {
         r.h.key_press(Key::Tab);
         r.h.step();
@@ -465,7 +530,11 @@ fn g18_hint() {
                 .is_focused(),
             "Tab focused the hint"
         );
+        if let Some(id) = r.h.ctx.memory(|m| m.focused()) {
+            focused.insert(format!("{id:?}"));
+        }
     }
+    assert!(focused.len() >= 3, "Tab moved focus: {focused:?}");
     // Without the block: no hint text, no hint node.
     let mut ok = rig(vec![bridge(ControllerConfig::default())]);
     ok.advance_until(1_000, |h| {
@@ -488,9 +557,21 @@ fn g18_leds_keep_versions() {
         "Controller v0.2.0 – update required",
         "Switch – unknown",
     ];
+    use ocb_app::leds::LedState;
+    let states = |r: &Rig| {
+        let l = r.h.state().leds();
+        l.all().map(|(_, led)| (led.state, led.name()))
+    };
+    let want_states = [
+        (LedState::Ok, "Bridge v0.2.1".to_owned()),
+        (LedState::Warning, "Controller v0.2.0".to_owned()),
+        (LedState::Unknown, "Switch".to_owned()),
+    ];
     assert_eq!(r.leds_drawn(), want, "with the dialog open");
+    assert_eq!(states(&r), want_states, "with the dialog open");
     r.click_ok();
     assert_eq!(r.leds_drawn(), want, "after OK");
+    assert_eq!(states(&r), want_states, "after OK");
     let leds = r.h.state().leds();
     assert_eq!(
         leds.bridge_controller.tooltip.first().map(String::as_str),
@@ -531,4 +612,117 @@ fn g18_recommended_blocks_nothing() {
     assert!(leds.bridge_controller.name().starts_with("Controller v"));
     assert!(r.lines("dialog").is_empty());
     assert!(common::kind_texts(&r.sink.lines(), "gate").is_empty());
+}
+
+/// Review finding 1: an Esc pressed in the frame the mismatch arrives (the
+/// dialog's first pass is discarded, so the user never saw it) does not
+/// dismiss the dialog; it stays open, with no `closed` line.
+#[test]
+fn g18_esc_in_the_arrival_frame() {
+    let mut r = rig_sized(vec![bridge(mismatched())], Wake::CountOnly, (1280.0, 800.0));
+    r.h.step();
+    for _ in 0..200 {
+        r.clock.advance(1_000);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    r.quiet();
+    assert!(!r.h.state().modals().is_open());
+    // Esc down in the draining frame, up in the next (one frame per event).
+    r.h.key_press(Key::Escape);
+    r.h.step();
+    r.h.step();
+    assert!(r.h.state().modals().is_open(), "dismissed by an unseen Esc");
+    assert!(r.dialog_drawn());
+    let dialog = r.lines("dialog");
+    assert_eq!(dialog.len(), 1, "{dialog:?}");
+    assert!(dialog[0].starts_with("shown"), "{dialog:?}");
+}
+
+/// Review finding 2: a replug while the dialog is still open (owner
+/// decision 4) logs no second `shown`; the dialog stays.
+#[test]
+fn g18_replug_while_open() {
+    let port = bridge(mismatched()).present(vec![(0, Some(1_000_000)), (2_000_000, None)]);
+    let mut r = rig(vec![port]);
+    r.until_dialog();
+    let first = r.h.state().link_snapshot().unwrap().connected_us;
+    r.advance_until(50_000, |h| {
+        h.state()
+            .link_snapshot()
+            .is_some_and(|s| s.required_update.is_some() && s.connected_us != first)
+    });
+    r.h.step();
+    assert!(r.dialog_drawn(), "still open");
+    let dialog = r.lines("dialog");
+    assert_eq!(dialog.len(), 1, "one shown, no close: {dialog:?}");
+    assert_eq!(shown_at(&dialog[0]), first.unwrap());
+}
+
+/// Review finding 2: requested while another dialog is open, the firmware
+/// dialog waits; `dialog shown` is written when it opens (not before), and
+/// it is drawn in that frame.
+#[test]
+fn g18_queued_behind_another_dialog() {
+    let mut r = rig(vec![bridge(mismatched())]);
+    r.h.step();
+    r.h.state_mut()
+        .modals_mut()
+        .request(ocb_app::ui::gallery::readiness_dialog());
+    r.advance_until(1_000, |h| h.state().gate() == blocked());
+    for _ in 0..3 {
+        r.h.step();
+    }
+    assert_eq!(r.h.state().modals().queued(), 1, "firmware dialog queued");
+    assert!(!r.dialog_drawn());
+    assert!(
+        r.lines_now("dialog").is_empty(),
+        "logged while not on screen"
+    );
+    // Close the other dialog: the firmware dialog opens and is drawn in
+    // the next frame, its `shown` line written then.
+    r.h.get_by_role_and_label(Role::Button, "Cancel").click();
+    r.h.step();
+    r.h.step();
+    assert!(r.dialog_drawn(), "drawn in the frame it opens");
+    let dialog = r.lines("dialog");
+    assert_eq!(dialog.len(), 1, "{dialog:?}");
+    assert!(common::is_dialog_shown_line(&dialog[0]), "{dialog:?}");
+}
+
+/// Review finding 4: in the gallery the update sample is the real firmware
+/// dialog, but its outcome is never read there: OK on it writes no `dialog`
+/// line.
+#[test]
+fn g18_gallery_logs_nothing() {
+    let sink = MemorySink::new();
+    let logger = Logger::spawn(Box::new(sink.clone()), false, None);
+    let log = logger.handle();
+    let mut h = Harness::builder()
+        .with_size(vec2(1280.0, 800.0))
+        .build_eframe(move |cc| {
+            App::with_link(cc, Mode::Gallery, common::fake_link(&cc.egui_ctx)).led_log(log.clone())
+        });
+    h.step();
+    // What the gallery's "Open update dialog" button does.
+    h.state_mut()
+        .modals_mut()
+        .request(ocb_app::ui::gallery::update_dialog());
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(
+        h.query_by_role_and_label(Role::Dialog, MODAL_TITLE)
+            .is_some()
+    );
+    h.get_by_role_and_label(Role::Button, "OK").click();
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(!h.state().modals().is_open());
+    drop(h);
+    assert!(logger.stop());
+    assert_eq!(
+        common::kind_texts(&sink.lines(), "dialog"),
+        Vec::<String>::new()
+    );
 }

@@ -3,6 +3,10 @@
 //! app requests it once per mismatching connection (`gating::FirmwareWatch`)
 //! through the shared `Modals` host. Epic 8 replaces OK with "Not now" +
 //! "Update now" here. The copy lives in `crate::gating`.
+//!
+//! The app opens it by itself, in a pass it discards (so it is painted in
+//! the same frame): an Esc of that frame was pressed before the dialog was
+//! ever painted and does not dismiss it ([`ModalSpec::ignoring_opening_esc`]).
 
 use egui::Id;
 
@@ -24,6 +28,7 @@ pub fn required_update_dialog() -> ModalSpec {
         ModalAction::new(MODAL_OK),
     )
     .with_width(theme::components::modal_dialog::MIN_WIDTH)
+    .ignoring_opening_esc()
 }
 
 /// The dialog's id, for `Modals::take_outcome`.
@@ -43,6 +48,7 @@ mod tests {
         assert_eq!(s.body, ModalBody::Text(MODAL_BODY.to_owned()));
         assert_eq!(s.primary, ModalAction::new("OK"));
         assert_eq!(s.secondary, None);
+        assert!(!s.opening_esc_dismisses, "an unseen dialog ignores Esc");
         assert!((s.outer_width() - 440.0).abs() < f32::EPSILON);
         assert_eq!(s.id, dialog_id());
         assert_eq!(required_update_dialog().id, s.id, "stable across calls");

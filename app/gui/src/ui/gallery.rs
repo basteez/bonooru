@@ -3,9 +3,10 @@
 //! ring on parchment, the `scrim`, a text-score sample and one specimen per
 //! typography token (Story 4.1 AC 11), then one section per painting helper
 //! of Story 4.3: focus ring, glow, text halo, dashed rects, convex fills,
-//! stroke floor, digit cells, the 12 painted symbols, corner brackets and two
-//! sample dialogs (the second is the real firmware dialog of Story 4.6),
-//! then the Story 4.6 inline hint at two widths. Not reachable from normal navigation.
+//! stroke floor, digit cells, the 12 painted symbols, corner brackets, a
+//! readiness-style sample dialog and the real firmware dialog of Story 4.6,
+//! then the Story 4.6 inline hint at two widths. Not reachable from normal
+//! navigation; the gallery never reads a dialog's outcome.
 //!
 //! Only characters the bundled fonts cover (egui_kittest fails on a missing
 //! glyph; Nunito Sans has no arrows, play triangles or music signs: the
@@ -728,7 +729,9 @@ fn bracket_samples(ui: &mut Ui) {
     });
 }
 
-/// Buttons that open the two sample dialogs, and a disabled sample.
+/// Buttons that open the readiness sample and the real firmware dialog (its
+/// outcome is never read here: no `dialog` line from the gallery), and a
+/// disabled sample.
 fn dialog_buttons(ui: &mut Ui, modals: &mut Modals) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = theme::spacing::S4;
