@@ -303,7 +303,7 @@ Behavioural. Visual contrast lives in `DESIGN.md`.
 - Esc as global STOP never needs focus.
 - Minimum window 1024 × 680 logical points. HiDPI through egui `pixels_per_point`.
 - No information conveyed only by sound (countdown numerals are visible; the end card is silent).
-- Screen-reader support: basic (owner, Story 4.2, 2026-11-27). Every shared widget helper emits `widget_info` (closest `egui::Role` + the visible label as the accessible name); custom widgets that do not go through a helper do the same; the Roll and the Staff expose one summary node each. No live regions, no per-note nodes, no screen-reader test on real hardware. eframe's `accesskit` feature stays on (egui builds the tree only when an assistive technology asks for it).
+- Screen-reader support: basic (owner, Story 4.2, 2026-11-27). Every shared widget helper emits `widget_info` (closest `egui::Role` + the visible label as the accessible name, plain words where nothing visible names it); custom widgets that do not go through a helper do the same; the Roll and the Staff expose one summary node each. No live regions, no per-note nodes, no screen-reader test on real hardware. eframe's `accesskit` feature stays on (egui builds the tree only when an assistive technology asks for it).
 
 ## Key Flows
 

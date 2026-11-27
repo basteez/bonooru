@@ -321,7 +321,7 @@ With the bridge firmware flashed, a GUI-free development tool on the PC streams 
 ### Epic 4: App shows the link state and drives the Switch with the virtual gamepad (M5)
 The GUI app starts on Windows, Linux and macOS, finds the bridge by itself, shows the three status LEDs with versions, and its on-screen gamepad (mouse + keyboard) takes the user into ocarina free play; STOP and Esc always release every input.
 **Covers:** FR-08, FR-10 (detection + gating), FR-11, FR-15 (partial), FR-22, FR-23, NFR-01 (CI), NFR-06, NFR-07 (licence gate); AD-7, AD-13, AD-16, AD-18, AD-19, AD-21; UX-DR1–11, UX-DR13 (detection + gating, OK-only dialog), UX-DR35–38, UX-DR41, UX-DR61, UX-DR62, UX-DR65; rotating file log (conventions); OQ-5, OQ-6, OQ-7, OQ-9.
-**Notes:** reuses `ocb-core` from Epic 3. Kept lean: UI foundations (tokens, fonts, painting helpers, layout), status strip and LEDs, gamepad, STOP, file log, and a small decision story for the AccessKit level (OQ-9) before the widget helpers are built. Decided "basic" (Story 4.2): every helper or custom widget that draws an interactive or informative element calls `Response::widget_info` with the closest `egui::Role` and its visible label as the name (plain words, never symbol glyphs); ornaments get none. No forward links to the wizard: the required-update dialog has only "OK" with manual-flash instructions (BOOT + drag the matching `.uf2`); "Set up / Reflash…", LED click → wizard, "Update now" and the recommended-update banner arrive in Epic 8. Settings modal moves to Epic 5; Log view, Copy diagnostics and About move to Epic 8.
+**Notes:** reuses `ocb-core` from Epic 3. Kept lean: UI foundations (tokens, fonts, painting helpers, layout), status strip and LEDs, gamepad, STOP, file log, and a small decision story for the AccessKit level (OQ-9) before the widget helpers are built. Decided "basic" (Story 4.2): every helper or custom widget that draws an interactive or informative element calls `Response::widget_info` with the closest `egui::Role` and the label passed to it as the name (the visible label where there is one, plain words otherwise, never symbol glyphs); ornaments, and symbols painted inside another widget, get none. No forward links to the wizard: the required-update dialog has only "OK" with manual-flash instructions (BOOT + drag the matching `.uf2`); "Set up / Reflash…", LED click → wizard, "Update now" and the recommended-update banner arrive in Epic 8. Settings modal moves to Epic 5; Log view, Copy diagnostics and About move to Epic 8.
 
 ### Epic 5: Load a song and hear it on the PC (M6)
 The user opens a `.mid` or text score (or an example), picks the track, transpose and tempo, sees the fit proposal and the Roll view with fingerings, and listens to it on the PC; nothing is sent to the Switch.
@@ -858,7 +858,7 @@ So that every widget looks consistent and the egui limits are handled once.
 **Given** a modal dialog request
 **When** it is shown
 **Then** it uses the `modal-dialog` component (440–460 px, flourish rule, checklist rows, primary/ghost actions, scrim), only one modal is open at a time, and Esc closes it (UX-DR7)
-**And** every shared helper that draws an interactive or informative element takes an accessible label and calls `Response::widget_info` with the closest `egui::Role` (buttons `Button`, LEDs `Status`, symbols on their own `Image` with a name, decorative ornaments such as corner brackets, glow and halos none); a kittest test checks each one (`docs/test-plan.md` G.10)
+**And** every shared helper that draws an interactive or informative element takes an accessible label and calls `Response::widget_info` with the closest `egui::Role` (buttons `Button`, a symbol shown on its own `Image` named with plain words, never the glyph); the symbol helper also has a variant without `widget_info` for symbols painted inside another widget (button, Roll, Staff); decorative ornaments (focus ring, glow, halo, dashed rect, corner brackets) add no node; a kittest test checks each one (`docs/test-plan.md` G.10)
 
 ### Story 4.4: Serial worker, bridge discovery and file log
 
@@ -952,6 +952,7 @@ So that I can release every input instantly whatever the app is doing.
 **When** the user presses Esc or clicks STOP
 **Then** Esc is read (not consumed) at frame start before any modal consumes it, and the worker sends STOP so the controller releases every input (UX-DR41, UX-DR61)
 **And** with no bridge connected STOP is harmless
+**And** STOP is a `Role::Button` AccessKit node named "Stop" (its visible label "STOP" in plain case, so screen readers do not spell it) with the description "Esc stops at any time." (the safety-note line; names from `DESIGN.md` › Bottom bar and `EXPERIENCE.md` › Microcopy); a kittest test finds it by role + name (Story 4.2: basic)
 
 **Given** keyboard navigation
 **When** the user presses Tab / Shift+Tab outside the gamepad
@@ -985,7 +986,7 @@ So that I can navigate the game to ocarina free play from the PC (FR-11, FR-22).
 **Given** the owner in game
 **When** they use only the on-screen gamepad
 **Then** they can reach ocarina free play (M5 exit)
-**And** each gamepad control is a `Role::Button` AccessKit node named after the control, e.g. "A", "ZL", "D-pad up"; an AccessKit click is a tap (Story 4.2: basic)
+**And** each button control (A, B, X, Y, D-pad up / down / left / right, L, R, ZL, ZR, −, +, Home, Capture) is a `Role::Button` AccessKit node named after the control ("A", "ZL", "D-pad up", "Minus", "Plus", "Home", "Capture"), and an AccessKit click is a tap, checked in kittest with `Node::click_accesskit()` (not `click()`, which simulates the pointer); each stick is one `Role::Slider` node named "Left stick" / "Right stick" (AccessKit 0.25 has no two-axis role), with no click or value requirement (Story 4.2: basic)
 
 ### Story 4.9: Gamepad keyboard focus and compact layout
 
@@ -1010,7 +1011,7 @@ So that navigating the game is quick and the keyboard never presses buttons by a
 **Given** a window between 1024 and 1279 px wide
 **When** the gamepad is drawn
 **Then** it uses the compact variant (200 px, buttons only, key hints in tooltips) (UX-DR6)
-**And** the panel is a `Role::Group` AccessKit node whose name says whether keys are active (Story 4.2: basic)
+**And** the panel is a `Role::Group` AccessKit node whose name says whether keys are active, and the Story 4.8 control nodes are its children: the panel node is created before the controls and their `Ui` is built with `UiBuilder::accessibility_parent(panel_id)` (egui otherwise parents a node to the nearest ancestor that already has one) (Story 4.2: basic)
 
 ## Epic 5: Load a song and hear it on the PC (M6)
 
@@ -1194,7 +1195,7 @@ So that I understand what will be pressed before playing (FR-12, FR-21).
 **Given** about 2,000 notes on screen
 **When** panning and zooming
 **Then** frame time stays near the spike's numbers (p95 ≈ 1.5 ms on the owner's Mac)
-**And** the Roll is one AccessKit node with a summary name (view, note count, range, e.g. "Roll view, 42 notes, B4 to F6"), no node per note (Story 4.2: basic)
+**And** the Roll is one `Role::Canvas` AccessKit node with a summary name (view, note count, range, e.g. "Roll view, 42 notes, B4 to F6"), no node per note (Story 4.2: basic)
 
 ### Story 5.9: Fit proposal and official-song group in the Roll
 
@@ -1770,7 +1771,7 @@ So that I can write melodies inside the app (FR-16).
 **Given** the editor
 **When** the user types
 **Then** plain Enter is a newline, Space types a space (not preview), egui's built-in TextEdit undoer is disabled and text edits go into the app history from Story 9.1
-**And** the editor `TextEdit` is `labelled_by` its visible label (Story 4.2: basic)
+**And** the editor `TextEdit` is named with `Response::accessible_name("Score text")`, since no visible label names it (Story 4.2: basic)
 
 ### Story 9.3: Select notes in the Roll
 
@@ -1852,7 +1853,7 @@ So that I can read the fingering along the melody (FR-21).
 **Given** a switch between views
 **When** it happens
 **Then** scroll, zoom, cursor and selection are kept, and the chosen view persists across launches
-**And** the Staff is one AccessKit node with a summary name (view, note count, range), no node per note (Story 4.2: basic)
+**And** the Staff is one `Role::Canvas` AccessKit node with a summary name (view, note count, range), no node per note; the staff glyphs use the symbol helper's variant without a node (Story 4.3) (Story 4.2: basic)
 
 ## Epic 10: Pick up where I left off
 
