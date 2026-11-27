@@ -8,7 +8,7 @@
 use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use raw_window_handle::RawWindowHandle;
 
@@ -16,6 +16,9 @@ use raw_window_handle::RawWindowHandle;
 pub const FRAMES: u64 = 3;
 /// The watchdog's limit, from start until the event loop has returned.
 pub const TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the smoke run waits for the worker's first snapshot after its
+/// frames (then it reports `worker=0`, a fail line), well inside [`TIMEOUT`].
+pub const WORKER_WAIT: Duration = Duration::from_secs(20);
 /// Grace for `std::process::exit` after a watchdog timeout: if the exit
 /// itself hangs (an `atexit` handler of a stuck driver), abort.
 pub const EXIT_GRACE: Duration = Duration::from_secs(5);
@@ -180,6 +183,7 @@ impl OutcomeCell {
 pub struct Smoke {
     outcome: OutcomeCell,
     report: Option<Report>,
+    started: Instant,
 }
 
 impl Smoke {
@@ -188,6 +192,7 @@ impl Smoke {
         Self {
             outcome,
             report: None,
+            started: Instant::now(),
         }
     }
 
@@ -197,9 +202,25 @@ impl Smoke {
     /// frames have completed and a worker snapshot has arrived: the caller
     /// then measures and calls [`Smoke::finish`]. Extra passes of one frame
     /// (an egui discard) do not count.
+    /// Without a snapshot after [`WORKER_WAIT`] it reports anyway, so a
+    /// worker that never started or never published gives an
+    /// `OCB_SMOKE fail (worker=0 < 1)` line, not a watchdog timeout.
     #[must_use]
     pub fn due(&self, completed_frames: u64, worker_scans: Option<u64>) -> bool {
-        self.report.is_none() && completed_frames >= FRAMES && worker_scans.is_some()
+        self.due_after(completed_frames, worker_scans, self.started.elapsed())
+    }
+
+    /// [`Smoke::due`] with the time since the smoke run started given.
+    #[must_use]
+    pub fn due_after(
+        &self,
+        completed_frames: u64,
+        worker_scans: Option<u64>,
+        waited: Duration,
+    ) -> bool {
+        self.report.is_none()
+            && completed_frames >= FRAMES
+            && (worker_scans.is_some() || waited >= WORKER_WAIT)
     }
 
     /// Judges the report, stores the outcome and returns the line to print.
@@ -411,6 +432,26 @@ mod tests {
             !s.due(3, Some(1)) && !s.due(4, Some(2)),
             "reports only once"
         );
+    }
+
+    #[test]
+    fn no_worker_snapshot_reports_worker_0_after_the_wait() {
+        let mut s = Smoke::new(OutcomeCell::default());
+        let almost = WORKER_WAIT - Duration::from_millis(1);
+        assert!(!s.due_after(3, None, almost));
+        assert!(
+            s.due_after(3, None, WORKER_WAIT),
+            "reports without a snapshot"
+        );
+        assert!(!s.due_after(2, None, WORKER_WAIT), "frames still first");
+        assert!(WORKER_WAIT < TIMEOUT);
+        let report = Report {
+            worker: 0,
+            backend: expected_backends().first().copied().unwrap(),
+            ..good()
+        };
+        let line = s.finish(report);
+        assert!(line.starts_with("OCB_SMOKE fail (worker=0 < 1) "), "{line}");
     }
 
     #[test]

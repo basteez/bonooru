@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
+pub use crossbeam_channel::TryRecvError;
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ocb_core::device::{self, Class, PortInfo, Rules};
 use ocb_core::link::{LinkEvent, Phase, Session, SessionConfig, StatusView};
 use ocb_core::protocol::consts::MSG_HELLO;
@@ -32,6 +33,8 @@ pub const OPEN_RETRY_US: u64 = 250_000;
 pub const PROBE_WINDOW_US: u64 = 2_000_000;
 /// Events waiting for the UI; more are dropped and counted.
 pub const EVENTS_CAP: usize = 1024;
+/// Scans kept in [`LinkSnapshot::recent_scans`].
+pub const RECENT_SCANS: usize = 64;
 /// The thread's sleep per pass while no port is open (no busy loop).
 pub const IDLE_SLEEP: Duration = Duration::from_millis(10);
 
@@ -115,18 +118,11 @@ pub enum WorkerCommand {
     Shutdown,
 }
 
-/// Something the UI (or the probe) should know.
+/// Something the UI (or the probe) should know. Scans are not events (one
+/// per second forever would crowd the bounded queue and the UI history):
+/// their timing is in [`LinkSnapshot::recent_scans`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerEvent {
-    /// A scan ended: it started at `at_us` and took `took_us`.
-    ScanDone {
-        /// When the listing started (worker clock).
-        at_us: u64,
-        /// How long the listing took.
-        took_us: u64,
-        /// Ports listed.
-        ports: usize,
-    },
     /// A port appeared in the listing.
     PortListed {
         /// Its name.
@@ -257,10 +253,14 @@ pub enum LastError {
 /// Counters of the worker.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counters {
-    /// Frames (and lone `00`s) written.
+    /// Frames (and lone `00`s) queued to the port.
     pub frames_written: u64,
-    /// HELLO frames written.
-    pub hello_frames: u64,
+    /// HELLO frames the session handed out (its cadence, whatever the
+    /// port did with them).
+    pub hello_sent: u64,
+    /// Of those, HELLO frames dropped by the write rules (expected while
+    /// the bridge has no controller link and stops reading USB).
+    pub hello_dropped: u64,
     /// Chunks dropped by the write rules.
     pub dropped_chunks: u64,
     /// Go-back-N rewinds (transport NAKs) over every session.
@@ -279,6 +279,9 @@ pub struct LinkSnapshot {
     pub now_us: u64,
     /// Scans done.
     pub scans: u64,
+    /// The last [`RECENT_SCANS`] scans: (start, listing time), µs on the
+    /// worker clock, oldest first.
+    pub recent_scans: Vec<(u64, u64)>,
     /// The last listing.
     pub ports: Vec<SeenPort>,
     /// The port the worker is on or trying.
@@ -325,7 +328,8 @@ struct Conn {
     session: Session,
     opened_us: u64,
     last_rx_us: Option<u64>,
-    connected: bool,
+    /// INFO came (compatible or not): the round robin keeps this port.
+    answered: bool,
     rewinds_seen: u64,
 }
 
@@ -355,6 +359,7 @@ pub struct WorkerCore<B: Backend, C: Clock> {
     last_error: Option<LastError>,
     status: Option<(StatusView, u64)>,
     scans: u64,
+    recent_scans: std::collections::VecDeque<(u64, u64)>,
     shutdown: bool,
     dirty: bool,
     buf: Vec<u8>,
@@ -413,6 +418,7 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             last_error: None,
             status: None,
             scans: 0,
+            recent_scans: std::collections::VecDeque::with_capacity(RECENT_SCANS),
             shutdown: false,
             dirty: true,
             buf: vec![0; 4096],
@@ -525,22 +531,18 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         let listed = self.backend.list();
         let end = self.clock.now_us();
         self.scans += 1;
+        if self.recent_scans.len() == RECENT_SCANS {
+            self.recent_scans.pop_front();
+        }
+        self.recent_scans.push_back((now, end.saturating_sub(now)));
+        self.dirty = true;
         let listed = match listed {
             Ok(l) => l,
             Err(e) => {
                 self.log.log("scan_error", e);
-                self.emit(
-                    now,
-                    WorkerEvent::ScanDone {
-                        at_us: now,
-                        took_us: end.saturating_sub(now),
-                        ports: 0,
-                    },
-                );
                 return;
             }
         };
-        let count = listed.len();
         // Vanished first.
         let gone: Vec<String> = self
             .seen
@@ -618,14 +620,6 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                 busy_reported: false,
             });
         }
-        self.emit(
-            now,
-            WorkerEvent::ScanDone {
-                at_us: now,
-                took_us: end.saturating_sub(now),
-                ports: count,
-            },
-        );
     }
 
     // ------------------------------------------------------------ choice
@@ -640,7 +634,10 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         !ours && unconfirmed > 1
     }
 
-    fn target(&self) -> Option<usize> {
+    /// The candidate to open now: in rank order (in round robin, starting
+    /// after the last one tried), the first whose retry time has come. A
+    /// candidate waiting to retry never blocks the others.
+    fn target(&self, now: u64) -> Option<usize> {
         let pairs: Vec<(PortInfo, Class)> = self
             .seen
             .iter()
@@ -650,23 +647,24 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             .into_iter()
             .map(|p| p.name.clone())
             .collect();
-        let first = order.first()?;
-        let name = match (&self.rotate_after, self.round_robin()) {
+        let start = match (&self.rotate_after, self.round_robin()) {
             (Some(prev), true) => order
                 .iter()
                 .position(|n| n == prev)
-                .and_then(|i| order.get((i + 1) % order.len()))
-                .unwrap_or(first),
-            _ => first,
+                .map_or(0, |i| (i + 1) % order.len().max(1)),
+            _ => 0,
         };
-        self.seen.iter().position(|s| &s.info.name == name)
+        (0..order.len())
+            .filter_map(|k| order.get((start + k) % order.len()))
+            .filter_map(|name| self.seen.iter().position(|s| &s.info.name == name))
+            .find(|&i| self.seen.get(i).is_some_and(|s| now >= s.retry_at_us))
     }
 
     fn window_over(&self) -> bool {
         let Some(c) = &self.conn else {
             return false;
         };
-        !c.connected
+        !c.answered
             && self.round_robin()
             && self.clock.now_us().saturating_sub(c.opened_us) >= PROBE_WINDOW_US
     }
@@ -675,15 +673,12 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
 
     fn try_open(&mut self) {
         let now = self.clock.now_us();
-        let Some(i) = self.target() else {
+        let Some(i) = self.target(now) else {
             return;
         };
         let Some(s) = self.seen.get(i).cloned() else {
             return;
         };
-        if now < s.retry_at_us {
-            return;
-        }
         let serial = s.info.usb.as_ref().and_then(|u| u.serial.clone());
         let name = s.info.name.clone();
         self.chosen = Some(Chosen {
@@ -747,6 +742,11 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                 if let Some(c) = self.chosen.as_mut() {
                     c.open = true;
                 }
+                // A new state for this port: a later hold or denial is news.
+                if let Some(seen) = self.seen.iter_mut().find(|x| x.info.name == name) {
+                    seen.busy_reported = false;
+                    seen.perm_reported = false;
+                }
                 if matches!(self.last_error, Some(LastError::PermissionDenied { ref port, .. } | LastError::Busy { ref port }) if *port == name)
                 {
                     self.last_error = None;
@@ -759,7 +759,7 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                     session,
                     opened_us: now,
                     last_rx_us: None,
-                    connected: false,
+                    answered: false,
                     rewinds_seen: 0,
                 });
             }
@@ -786,7 +786,10 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                     .seen
                     .iter_mut()
                     .find(|s| s.info.name == name)
-                    .is_some_and(|s| !std::mem::replace(&mut s.perm_reported, true));
+                    .is_some_and(|s| {
+                        s.busy_reported = false;
+                        !std::mem::replace(&mut s.perm_reported, true)
+                    });
                 if first {
                     let group = self
                         .backend
@@ -817,7 +820,10 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                     .seen
                     .iter_mut()
                     .find(|s| s.info.name == name)
-                    .is_some_and(|s| !std::mem::replace(&mut s.busy_reported, true));
+                    .is_some_and(|s| {
+                        s.perm_reported = false;
+                        !std::mem::replace(&mut s.busy_reported, true)
+                    });
                 if first {
                     self.log.log("port_busy", format!("port={name}"));
                     self.last_error = Some(LastError::Busy {
@@ -865,7 +871,9 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         if let Some(c) = self.take_conn() {
             self.log
                 .log("port_lost", format!("port={} reason=\"{reason}\"", c.name));
-            self.set_retry(&c.name, now);
+            // Not at once: a node that opens but fails every read would
+            // otherwise loop open → lost about 100 times a second.
+            self.set_retry(&c.name, now + OPEN_RETRY_US);
             self.emit(
                 now,
                 WorkerEvent::PortLost {
@@ -901,28 +909,29 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         }
         let mut lost = None;
         while let Some(bytes) = c.session.poll_transmit(now) {
-            match c.port.write_chunk(&bytes, &self.clock) {
-                Ok(true) => {
-                    // Published, so the frame counters are never stale
-                    // (HELLO every 100 ms at most while opening).
-                    self.dirty = true;
-                    self.counters.frames_written += 1;
-                    if let Some((&0, enc)) = bytes.split_last()
-                        && decode_frame(RxSide::Controller, enc).is_ok_and(|f| f.ty == MSG_HELLO)
-                    {
-                        self.counters.hello_frames += 1;
-                    }
-                    match self.port_writes.iter_mut().find(|p| p.0 == c.name) {
-                        Some(p) => p.1 += 1,
-                        None => self.port_writes.push((c.name.clone(), 1)),
-                    }
-                }
-                Ok(false) => {}
-                Err(PortLost(e)) => {
-                    lost = Some(e);
-                    break;
-                }
+            // Published, so the frame counters are never stale (HELLO every
+            // 100 ms at most while opening).
+            self.dirty = true;
+            let hello = bytes.split_last().is_some_and(|(&z, enc)| {
+                z == 0 && decode_frame(RxSide::Controller, enc).is_ok_and(|f| f.ty == MSG_HELLO)
+            });
+            if hello {
+                self.counters.hello_sent += 1;
             }
+            if c.port.queue(&bytes) {
+                self.counters.frames_written += 1;
+                match self.port_writes.iter_mut().find(|p| p.0 == c.name) {
+                    Some(p) => p.1 += 1,
+                    None => self.port_writes.push((c.name.clone(), 1)),
+                }
+            } else if hello {
+                self.counters.hello_dropped += 1;
+            }
+        }
+        // A few ms at most per pass: a port that does not drain never holds
+        // the worker (scans, shutdown and the log stay on time).
+        if let Err(PortLost(e)) = c.port.flush(&self.clock) {
+            lost = Some(e);
         }
         let mut events = Vec::new();
         while let Some(ev) = c.session.poll_event() {
@@ -956,7 +965,7 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             }
             LinkEvent::Connected(info) => {
                 if let Some(c) = self.conn.as_mut() {
-                    c.connected = true;
+                    c.answered = true;
                     self.last_serial.clone_from(&c.serial);
                     self.last_name = Some(c.name.clone());
                 }
@@ -979,14 +988,21 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                 controller_proto,
                 app_proto,
                 info,
-            } => self.log.log(
+            } => {
+                // It answered: the round robin must not close it (the
+                // required-update screen of Story 4.6 stays put).
+                if let Some(c) = self.conn.as_mut() {
+                    c.answered = true;
+                }
+                self.log.log(
                 "version",
                 format!(
                     "required update port={port} controller_proto={controller_proto} app_proto={app_proto} fw={} bridge={}",
                     hex3(info.fw_ver),
                     hex3(info.bridge_ver)
                 ),
-            ),
+                );
+            }
             LinkEvent::RecommendedUpdate {
                 fw_ver,
                 bridge_ver,
@@ -1044,6 +1060,7 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         LinkSnapshot {
             now_us: self.clock.now_us(),
             scans: self.scans,
+            recent_scans: self.recent_scans.iter().copied().collect(),
             ports: self
                 .seen
                 .iter()

@@ -73,6 +73,18 @@ pub fn lines_of_pid(text: &str, pid: u32) -> Vec<String> {
     })
 }
 
+/// This process's lines across a rotation: `bonooru.1.log` (if any) then
+/// `bonooru.log`, from the last `start` line with this PID on.
+#[must_use]
+pub fn run_lines(older: Option<&str>, current: &str, pid: u32) -> Vec<String> {
+    let mut text = older.unwrap_or("").to_owned();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(current);
+    lines_of_pid(&text, pid)
+}
+
 impl Driver for RealDriver {
     fn next(&mut self, timeout_us: u64) -> Option<TimedEvent> {
         // Short slices, so Ctrl+C is seen within 50 ms.
@@ -112,15 +124,16 @@ impl Driver for RealDriver {
             return f.clone();
         }
         let _ = self.snapshot();
-        let ended = self.handle.shutdown(SHUTDOWN_LIMIT);
+        let _ = self.handle.shutdown(SHUTDOWN_LIMIT);
         let path = self
             .logger
             .as_ref()
             .and_then(|l| l.path().map(std::path::Path::to_path_buf))
             .or_else(|| log_dir().map(|d| d.join(LOG_FILE)));
-        if ended && let Some(l) = self.logger.take() {
-            // Everything queued is written before the file is read.
-            l.stop();
+        if let Some(l) = self.logger.take() {
+            // Everything queued is written before the file is read (bounded
+            // wait, also when the worker did not end in time).
+            let _ = l.stop();
         }
         let shown = path
             .as_ref()
@@ -128,7 +141,14 @@ impl Driver for RealDriver {
         let lines = match &path {
             None => Err("no log directory".to_owned()),
             Some(p) => std::fs::read_to_string(p)
-                .map(|t| lines_of_pid(&t, std::process::id()))
+                .map(|t| {
+                    // The file may have rotated during the run: the start
+                    // line can be in `bonooru.1.log`.
+                    let older = p
+                        .parent()
+                        .and_then(|d| std::fs::read_to_string(d.join("bonooru.1.log")).ok());
+                    run_lines(older.as_deref(), &t, std::process::id())
+                })
                 .map_err(|e| format!("{}: {e}", p.display())),
         };
         let out = (lines, shown);
@@ -157,5 +177,15 @@ t +4ms version x";
         assert_eq!(l.len(), 3);
         assert!(l[1].ends_with("port=c"));
         assert!(lines_of_pid(text, 8).is_empty());
+    }
+
+    #[test]
+    fn lines_across_a_rotation() {
+        let older = "t +0ms start app=1 host=macos arch=aarch64 pid=7\nt +1ms port_opened port=a\n";
+        let current = "t +2ms port_lost port=a\nt +3ms version x";
+        let l = run_lines(Some(older), current, 7);
+        assert_eq!(l.len(), 4, "{l:?}");
+        assert!(l[3].ends_with("version x"));
+        assert_eq!(run_lines(None, current, 7).len(), 0);
     }
 }

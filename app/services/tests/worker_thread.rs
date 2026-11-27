@@ -71,17 +71,44 @@ fn c23_waker_called_and_snapshots_bounded() {
         }),
     )
     .unwrap();
-    // Nobody reads for over a scan period: the channel stays at one.
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_millis(1200) {
-        assert!(h.snapshots.len() <= 1);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // Nobody reads for over a scan period.
+    std::thread::sleep(Duration::from_millis(1200));
     assert!(
         calls.load(Ordering::SeqCst) >= 2,
         "waker after each publish"
     );
+    // The one snapshot waiting is the newest, not the first one published
+    // (scans = 1): the worker drops the stale one before sending.
     let s = h.snapshots.try_recv().unwrap();
-    assert!(s.scans >= 1);
+    assert!(s.scans >= 2, "stale snapshot: scans {}", s.scans);
     assert!(h.shutdown(Duration::from_millis(500)));
+}
+
+#[test]
+fn c23_shutdown_quick_even_when_writes_stall() {
+    // A device that never takes a byte, each write call 1 ms of real
+    // time: the worker still scans and ends within 500 ms.
+    let b = FakeBackend::new(FakeClock::at(0))
+        .with(FakePort::bridge(CU, "S", Some("Bonooru Bridge")).silent());
+    {
+        let mut st = b.state();
+        st.read_sleep = Some(Duration::from_millis(1));
+        st.ports[0].stall_writes = true;
+    }
+    let mut h = spawn_with(
+        b.clone(),
+        RealClock::new(),
+        Rules::MACOS,
+        LogHandle::disabled(),
+        Box::new(|| {}),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(2300));
+    let s = h.snapshots.try_recv().unwrap();
+    assert!(s.scans >= 3, "scans {}", s.scans);
+    assert!(s.counters.hello_sent >= 20, "{:?}", s.counters);
+    let t0 = Instant::now();
+    assert!(h.shutdown(Duration::from_millis(500)), "joined");
+    assert!(t0.elapsed() <= Duration::from_millis(500));
+    assert!(!b.state().dtr_of(CU), "DTR lowered on close");
 }

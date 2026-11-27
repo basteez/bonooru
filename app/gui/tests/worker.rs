@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use egui::vec2;
 use egui_kittest::Harness;
-use ocb_app::app::{App, Mode};
+use ocb_app::app::{App, Mode, WorkerHealth};
 use ocb_services::log::LogHandle;
 use ocb_services::sim::{BlockingBackend, FakeBackend, FakePort};
 use ocb_services::worker::{FakeClock, RealClock, WorkerEvent, host_rules, spawn_with};
@@ -103,6 +103,77 @@ fn g13_on_exit_ends_the_worker_and_closes_the_port() {
     let st = backend.state();
     assert_eq!(st.closes.len(), 1, "port closed");
     assert!(!st.dtr_of(cu), "DTR falls");
+}
+
+/// A backend whose listing panics (a bug in the worker's thread).
+struct PanicBackend;
+
+impl ocb_services::port::Backend for PanicBackend {
+    fn list(&mut self) -> Result<Vec<ocb_services::port::PortInfo>, String> {
+        panic!("worker bug");
+    }
+    fn open(
+        &mut self,
+        _name: &str,
+    ) -> Result<Box<dyn ocb_services::port::Port>, ocb_services::port::OpenError> {
+        Err(ocb_services::port::OpenError::Gone)
+    }
+}
+
+fn app_on(backend: impl ocb_services::port::Backend + 'static) -> Harness<'static, App> {
+    let mut slot = Some(backend);
+    Harness::builder()
+        .with_size(vec2(1280.0, 800.0))
+        .build_eframe(move |cc| {
+            let handle = spawn_with(
+                slot.take().unwrap(),
+                RealClock::new(),
+                host_rules(),
+                LogHandle::disabled(),
+                Box::new(|| {}),
+            )
+            .unwrap();
+            App::with_link(cc, Mode::Main, handle)
+        })
+}
+
+#[test]
+fn g13_dead_worker_is_visible() {
+    let mut h = app_on(PanicBackend);
+    let start = Instant::now();
+    while h.state().worker_health() != WorkerHealth::Ended {
+        assert!(start.elapsed() < Duration::from_secs(5), "never seen ended");
+        std::thread::sleep(Duration::from_millis(5));
+        h.run_steps(1);
+    }
+}
+
+#[test]
+fn g13_stalled_worker_is_visible() {
+    // The listing blocks 5 s: no snapshot for 3 s means stalled.
+    let mut h = app_on(BlockingBackend {
+        delay: Duration::from_secs(5),
+    });
+    h.run_steps(1);
+    assert_eq!(h.state().worker_health(), WorkerHealth::Running);
+    let start = Instant::now();
+    while h.state().worker_health() != WorkerHealth::Stalled {
+        assert!(
+            start.elapsed() < Duration::from_millis(3500),
+            "never stalled"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        h.run_steps(1);
+    }
+    assert!(start.elapsed() >= Duration::from_millis(2900));
+    // A healthy idle worker never looks stalled.
+    let mut h = app_on(FakeBackend::new(FakeClock::at(0)));
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(3500) {
+        h.run_steps(1);
+        assert_eq!(h.state().worker_health(), WorkerHealth::Running);
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]

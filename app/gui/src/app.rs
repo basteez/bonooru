@@ -2,12 +2,12 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::{Context, ThemePreference};
 use ocb_services::log::Logger;
 use ocb_services::port::SerialBackend;
-use ocb_services::worker::{self, LinkSnapshot, TimedEvent, WorkerHandle};
+use ocb_services::worker::{self, LinkSnapshot, TimedEvent, TryRecvError, WorkerHandle};
 use raw_window_handle::HasWindowHandle as _;
 
 use crate::smoke::{self, Report, Smoke};
@@ -37,6 +37,25 @@ pub struct Link {
     logger: Option<Logger>,
     snapshot: Option<Arc<LinkSnapshot>>,
     events: VecDeque<TimedEvent>,
+    last_snapshot_at: Instant,
+    ended: bool,
+}
+
+/// The worker publishes at least once per scan (1 s); no snapshot for
+/// this long means it is stuck.
+pub const WORKER_STALL_AFTER: Duration = Duration::from_secs(3);
+
+/// Whether the serial worker is alive, as the UI can tell without waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkerHealth {
+    /// Snapshots arrive.
+    Running,
+    /// No snapshot for [`WORKER_STALL_AFTER`]: the last one is stale.
+    Stalled,
+    /// The worker thread ended (a panic, or after shutdown).
+    Ended,
+    /// The worker thread could not be started.
+    NotStarted,
 }
 
 impl Link {
@@ -46,6 +65,8 @@ impl Link {
             logger,
             snapshot: None,
             events: VecDeque::with_capacity(EVENTS_KEPT),
+            last_snapshot_at: Instant::now(),
+            ended: false,
         }
     }
 
@@ -57,17 +78,39 @@ impl Link {
             }
             self.events.push_back(e);
         }
-        while let Ok(s) = self.handle.snapshots.try_recv() {
-            self.snapshot = Some(s);
+        loop {
+            match self.handle.snapshots.try_recv() {
+                Ok(s) => {
+                    self.snapshot = Some(s);
+                    self.last_snapshot_at = Instant::now();
+                }
+                // The worker's sender went with its thread (a panic ends
+                // it too): the last snapshot is no longer news.
+                Err(TryRecvError::Disconnected) => {
+                    self.ended = true;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+            }
         }
     }
 
-    /// Ends the worker (bounded wait), then the log thread if the worker
-    /// is gone (its log handle went with it).
+    fn health(&self) -> WorkerHealth {
+        if self.ended || self.handle.is_finished() {
+            WorkerHealth::Ended
+        } else if self.last_snapshot_at.elapsed() >= WORKER_STALL_AFTER {
+            WorkerHealth::Stalled
+        } else {
+            WorkerHealth::Running
+        }
+    }
+
+    /// Ends the worker (bounded wait), then the log thread (bounded too):
+    /// what is queued is written even when the worker did not end in time.
     fn shut_down(&mut self) -> bool {
         let ended = self.handle.shutdown(WORKER_EXIT_LIMIT);
-        if ended && let Some(l) = self.logger.take() {
-            l.stop();
+        if let Some(l) = self.logger.take() {
+            let _ = l.stop();
         }
         ended
     }
@@ -136,6 +179,15 @@ impl App {
     #[must_use]
     pub fn link_snapshot(&self) -> Option<&Arc<LinkSnapshot>> {
         self.link.as_ref().and_then(|l| l.snapshot.as_ref())
+    }
+
+    /// Whether the worker is alive (Story 4.5 shows a dead or stuck worker
+    /// instead of a frozen "connected").
+    #[must_use]
+    pub fn worker_health(&self) -> WorkerHealth {
+        self.link
+            .as_ref()
+            .map_or(WorkerHealth::NotStarted, Link::health)
     }
 
     /// The last [`EVENTS_KEPT`] worker events, oldest first.

@@ -74,7 +74,6 @@ pub trait Driver {
 pub fn event_line(t0_us: u64, e: &TimedEvent) -> Option<String> {
     let ms = e.at_us.saturating_sub(t0_us) / 1000;
     let body = match &e.event {
-        WorkerEvent::ScanDone { .. } => return None,
         WorkerEvent::Link(LinkEvent::Status(_)) => return None,
         WorkerEvent::PortListed {
             port,
@@ -205,28 +204,43 @@ enum Wait {
     Interrupted,
 }
 
+/// Adds the scans of the latest snapshot not seen yet (the worker keeps
+/// the last 64 there; the probe reads it at least every 50 ms).
+fn merge_scans(d: &mut dyn Driver, scans: &mut Vec<(u64, u64)>) {
+    let Some(snap) = d.snapshot() else {
+        return;
+    };
+    let last = scans.last().map(|s| s.0);
+    scans.extend(
+        snap.recent_scans
+            .iter()
+            .filter(|s| last.is_none_or(|l| s.0 > l))
+            .copied(),
+    );
+}
+
 /// Waits for the next event until `deadline_us` (driver clock), printing
-/// its `EVT` line and keeping the scan times.
+/// its `EVT` line and keeping the scan times. An event already waiting is
+/// returned even when the deadline has passed, so a timer that expired
+/// never hides a queued event (and a caller re-checking its timers never
+/// spins without reading).
 fn wait(d: &mut dyn Driver, t0: u64, deadline_us: u64, scans: &mut Vec<(u64, u64)>) -> Wait {
     loop {
         if d.interrupted() {
             return Wait::Interrupted;
         }
         let now = d.now_us();
-        if now >= deadline_us {
-            return Wait::Timeout;
-        }
-        match d.next(deadline_us - now) {
+        let got = d.next(deadline_us.saturating_sub(now));
+        merge_scans(d, scans);
+        match got {
             Some(e) => {
-                if let WorkerEvent::ScanDone { at_us, took_us, .. } = &e.event {
-                    scans.push((*at_us, *took_us));
-                }
                 if let Some(line) = event_line(t0, &e) {
                     d.say(&line);
                 }
                 return Wait::Event(e);
             }
             None if d.interrupted() => return Wait::Interrupted,
+            None if d.now_us() >= deadline_us => return Wait::Timeout,
             None => {}
         }
     }
@@ -246,17 +260,25 @@ fn fail_run(d: &mut dyn Driver, f: &RunFields, reason: &str) -> u8 {
     EXIT_FAIL
 }
 
-/// Counts of the log kinds `run` needs (AC 8, H.29).
-fn log_problems(lines: &[String]) -> Vec<String> {
-    let count = |k: &str| {
+/// What the run's log must hold (AC 8, H.29), counted only on lines about
+/// the ports this run used (` port=<name> `), so lines of another writer of
+/// the same file (another `bonooru` on other ports) never count.
+#[must_use]
+pub fn log_problems(lines: &[String], ports: &[String]) -> Vec<String> {
+    let ours = |l: &str| ports.iter().any(|p| l.contains(&format!(" port={p} ")));
+    let count = |k: &str, extra: &str| {
         lines
             .iter()
-            .filter(|l| l.split(' ').nth(2) == Some(k))
+            .filter(|l| l.split(' ').nth(2) == Some(k) && l.contains(extra) && ours(l))
             .count()
     };
     let mut missing = Vec::new();
-    for (kind, need) in [("version", 1), ("port_opened", 2), ("port_lost", 1)] {
-        let n = count(kind);
+    for (kind, extra, need) in [
+        ("version", " connected port=", 1),
+        ("port_opened", "", 2),
+        ("port_lost", "", 1),
+    ] {
+        let n = count(kind, extra);
         if n < need {
             missing.push(format!("{kind} {n} < {need}"));
         }
@@ -265,11 +287,13 @@ fn log_problems(lines: &[String]) -> Vec<String> {
 }
 
 /// `ocb-probe run` (H.29): connect, unplug, replug, scan period, log.
+#[allow(clippy::too_many_lines)]
 pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
     let step_us = step_timeout_s * 1_000_000;
     let t0 = d.now_us();
     let mut f = RunFields::default();
     let mut scans = Vec::new();
+    let mut run_ports: Vec<String> = Vec::new();
     // ---- connect
     let deadline = t0 + step_us;
     let mut foreign: Vec<String> = Vec::new();
@@ -278,6 +302,8 @@ pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
     let mut busy: Option<(String, u64)> = None;
     let connected_at;
     loop {
+        // Every timer here either fails the run or is cleared when it
+        // expires, so the loop never re-waits on a past deadline.
         let mut until = deadline;
         if let Some((_, t)) = &opened {
             until = until.min(t + INFO_AFTER_OPEN_US);
@@ -298,7 +324,6 @@ pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
                     return fail_run(d, &f, &r);
                 }
                 if let Some((p, t)) = &busy
-                    && opened.is_none()
                     && now >= t + BUSY_LIMIT_US
                 {
                     let r = format!("port busy: {p}");
@@ -323,19 +348,23 @@ pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
                     return fail_run(d, &f, &r);
                 }
                 WorkerEvent::PortBusy { port } => {
-                    if busy.is_none() {
+                    if busy.is_none() && opened.is_none() {
                         busy = Some((port, e.at_us));
                     }
                 }
                 WorkerEvent::PortOpened { port, serial, .. } => {
-                    // The latest open: with several unconfirmed ports the
-                    // worker moves on after 2 s, so only the bridge's open
-                    // can reach the 5 s limit.
+                    // Open now: the busy timer is over. The latest open
+                    // counts: with several unconfirmed ports the worker
+                    // moves on after 2 s, so only the bridge's open can
+                    // reach the 5 s limit.
+                    busy = None;
                     opened = Some((port.clone(), e.at_us));
+                    if !run_ports.contains(&port) {
+                        run_ports.push(port.clone());
+                    }
                     f.port = Some(port);
                     f.serial = serial;
                 }
-                WorkerEvent::PortClosed { .. } | WorkerEvent::PortLost { .. } => {}
                 WorkerEvent::Link(LinkEvent::RequiredUpdate {
                     controller_proto,
                     app_proto,
@@ -364,9 +393,12 @@ pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
         f.serial.as_deref().unwrap_or("-"),
         opt(f.info_after_open_ms)
     ));
-    // ---- unplug
+    // ---- unplug: the port is lost AND leaves the port list (a physical
+    // unplug, not a read glitch on a port that stays there).
     d.say(PROMPT_UNPLUG);
     let deadline = d.now_us() + step_us;
+    let mut lost = false;
+    let mut reopened: Option<(String, Option<String>)> = None;
     loop {
         let w = wait(d, t0, deadline, &mut scans);
         f.scans.clone_from(&scans);
@@ -374,17 +406,22 @@ pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
             Wait::Interrupted => return interrupted(d, "unplug"),
             Wait::Timeout => {
                 d.say(&format!("STEP unplug FAIL timeout_s={step_timeout_s}"));
-                let r = format!("unplug not seen within {step_timeout_s} s");
+                let r = if lost {
+                    format!(
+                        "port lost but still listed after {step_timeout_s} s (no physical unplug)"
+                    )
+                } else {
+                    format!("unplug not seen within {step_timeout_s} s")
+                };
                 return fail_run(d, &f, &r);
             }
-            Wait::Event(e) => {
-                if let WorkerEvent::PortLost {
+            Wait::Event(e) => match &e.event {
+                WorkerEvent::PortLost {
                     port: p,
                     last_rx_us,
                     ..
-                } = &e.event
-                    && *p == port
-                {
+                } if *p == port && !lost => {
+                    lost = true;
                     let last = last_rx_us.unwrap_or(connected_at);
                     let ms = e.at_us.saturating_sub(last) / 1000;
                     f.lost_after_last_rx_ms = Some(ms);
@@ -395,17 +432,40 @@ pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
                         );
                         return fail_run(d, &f, &r);
                     }
-                    d.say(&format!("STEP unplug PASS lost_after_last_rx_ms={ms}"));
+                }
+                WorkerEvent::PortVanished { port: p } if *p == port && lost => {
+                    d.say(&format!(
+                        "STEP unplug PASS lost_after_last_rx_ms={}",
+                        opt(f.lost_after_last_rx_ms)
+                    ));
                     break;
                 }
-            }
+                WorkerEvent::PortOpened {
+                    port: p, serial, ..
+                } => {
+                    reopened = Some((p.clone(), serial.clone()));
+                }
+                WorkerEvent::Link(LinkEvent::Connected(_)) => {
+                    d.say("STEP unplug FAIL reconnected");
+                    let r = match &reopened {
+                        Some((p, serial)) if *serial != f.serial => format!(
+                            "reconnected to another bridge: {p} serial {} (not the one unplugged, listed again)",
+                            serial.as_deref().unwrap_or("-")
+                        ),
+                        _ => "reconnected without leaving the port list (no physical unplug)"
+                            .to_owned(),
+                    };
+                    return fail_run(d, &f, &r);
+                }
+                _ => {}
+            },
         }
     }
-    // ---- replug
+    // ---- replug: the same bridge listed again, then INFO.
     d.say(PROMPT_PLUG);
     let deadline = d.now_us() + step_us;
     let mut listed_at: Option<u64> = None;
-    let mut opened_at: Option<u64> = None;
+    let mut opened_serial: Option<String> = None;
     loop {
         let w = wait(d, t0, deadline, &mut scans);
         f.scans.clone_from(&scans);
@@ -413,18 +473,27 @@ pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
             Wait::Interrupted => return interrupted(d, "replug"),
             Wait::Timeout => {
                 d.say(&format!("STEP replug FAIL timeout_s={step_timeout_s}"));
-                let r = format!("replug not seen within {step_timeout_s} s");
+                let r = if listed_at.is_some() {
+                    format!("listed again but no INFO within {step_timeout_s} s")
+                } else {
+                    format!("replug not seen within {step_timeout_s} s")
+                };
                 return fail_run(d, &f, &r);
             }
             Wait::Event(e) => match e.event {
                 WorkerEvent::PortListed { class, serial, .. }
-                    if class.is_candidate() && (f.serial.is_none() || serial == f.serial) =>
+                    if class.is_candidate() && serial == f.serial =>
                 {
                     listed_at = Some(e.at_us);
                 }
                 WorkerEvent::PortRenamed { .. } => f.renamed = true,
-                WorkerEvent::PortOpened { port: p, .. } => {
-                    opened_at = Some(e.at_us);
+                WorkerEvent::PortOpened {
+                    port: p, serial, ..
+                } => {
+                    if !run_ports.contains(&p) {
+                        run_ports.push(p.clone());
+                    }
+                    opened_serial = serial;
                     f.port = Some(p);
                 }
                 WorkerEvent::Link(LinkEvent::RequiredUpdate {
@@ -439,9 +508,15 @@ pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
                 }
                 WorkerEvent::Link(LinkEvent::Connected(info)) => {
                     f.info = Some(info);
-                    // A replug faster than one scan is never seen as
-                    // vanished and listed: the reopen time stands in.
-                    let base = listed_at.or(opened_at).unwrap_or(e.at_us);
+                    let Some(base) = listed_at.filter(|_| opened_serial == f.serial) else {
+                        d.say("STEP replug FAIL other bridge");
+                        let r = format!(
+                            "reconnected to another bridge: {} serial {} (not the one unplugged, listed again)",
+                            f.port.as_deref().unwrap_or("-"),
+                            opened_serial.as_deref().unwrap_or("-")
+                        );
+                        return fail_run(d, &f, &r);
+                    };
                     let ms = e.at_us.saturating_sub(base) / 1000;
                     f.info_after_listed_ms = Some(ms);
                     if ms > RELISTED_INFO_LIMIT_MS {
@@ -479,7 +554,7 @@ pub fn run(d: &mut dyn Driver, step_timeout_s: u64) -> u8 {
     let (lines, path) = d.finish();
     let host = d.host();
     let problems = match &lines {
-        Ok(l) => log_problems(l),
+        Ok(l) => log_problems(l, &run_ports),
         Err(e) => vec![format!("log unavailable ({e})")],
     };
     if problems.is_empty() {
@@ -553,6 +628,9 @@ pub fn permission(d: &mut dyn Driver, timeout_s: u64) -> u8 {
 }
 
 /// `ocb-probe alone` (H.31): the bridge without a powered controller.
+/// The verdict judges the session's HELLO cadence (frames handed out);
+/// frames the write rules dropped are reported (`hello_dropped=`), expected
+/// while the bridge does not read USB.
 pub fn alone(d: &mut dyn Driver, seconds: u64) -> u8 {
     let t0 = d.now_us();
     let mut scans = Vec::new();
@@ -581,7 +659,7 @@ fn alone_verdict(
     scans: &mut Vec<(u64, u64)>,
 ) -> Result<Option<String>, String> {
     let find_deadline = t0 + ALONE_FIND_US;
-    let (port, class, opened_at) = loop {
+    let (first, class, opened_at) = loop {
         match wait(d, t0, find_deadline, scans) {
             Wait::Interrupted => return Ok(None),
             Wait::Timeout => return Err("no bridge port".to_owned()),
@@ -594,6 +672,9 @@ fn alone_verdict(
             },
         }
     };
+    // With several unconfirmed bridges (Windows, several Pico boards) the
+    // worker probes each in turn (AC 4): every one of them is listed.
+    let mut ports = vec![first];
     let end = opened_at + seconds * 1_000_000;
     loop {
         match wait(d, t0, end, scans) {
@@ -603,9 +684,7 @@ fn alone_verdict(
                 WorkerEvent::Link(LinkEvent::Connected(_)) => {
                     return Err("INFO received: the controller is powered".to_owned());
                 }
-                WorkerEvent::PortOpened { port: p, .. } if p != port => {
-                    return Err(format!("wrote to another port: {p}"));
-                }
+                WorkerEvent::PortOpened { port, .. } if !ports.contains(&port) => ports.push(port),
                 _ => {}
             },
         }
@@ -613,17 +692,29 @@ fn alone_verdict(
     let snap = d
         .snapshot()
         .ok_or_else(|| "no worker snapshot".to_owned())?;
-    if let Some((p, _)) = snap.port_writes.iter().find(|(p, n)| *p != port && *n > 0) {
-        return Err(format!("wrote to another port: {p}"));
+    let not_bridge = |p: &str| {
+        snap.ports
+            .iter()
+            .find(|s| s.info.name == p)
+            .is_some_and(|s| !s.class.is_candidate())
+    };
+    if let Some((p, _)) = snap
+        .port_writes
+        .iter()
+        .find(|(p, n)| *n > 0 && not_bridge(p))
+    {
+        return Err(format!("wrote to a port that is not a bridge: {p}"));
     }
-    let hellos = snap.counters.hello_frames;
-    if hellos < ALONE_HELLO_PER_S * seconds {
+    let sent = snap.counters.hello_sent;
+    let dropped = snap.counters.hello_dropped;
+    if sent < ALONE_HELLO_PER_S * seconds {
         return Err(format!(
-            "only {hellos} HELLO frames in {seconds} s (expected ≥ {ALONE_HELLO_PER_S} per s)"
+            "only {sent} HELLO frames in {seconds} s (expected ≥ {ALONE_HELLO_PER_S} per s)"
         ));
     }
     Ok(Some(format!(
-        "OCB_PROBE PASS alone port={port} class={} hello_frames={hellos} seconds={seconds} other_ports_written=0",
+        "OCB_PROBE PASS alone port={} class={} hello_frames={sent} hello_dropped={dropped} seconds={seconds} other_ports_written=0",
+        ports.join(","),
         class.tag()
     )))
 }

@@ -60,6 +60,11 @@ pub struct FakePort {
     pub corrupt_next_write: bool,
     /// What `bytes_to_write` reports (over 4096: the worker drops chunks).
     pub queued: u32,
+    /// The next read fails once (a glitch; the port stays listed).
+    pub fail_next_read: bool,
+    /// Writes make no progress: each call takes the read sleep of real
+    /// time (if any) and times out, like a device that does not read.
+    pub stall_writes: bool,
     link: Option<Link>,
 }
 
@@ -102,6 +107,8 @@ impl FakePort {
             group: None,
             corrupt_next_write: false,
             queued: 0,
+            fail_next_read: false,
+            stall_writes: false,
             link: None,
         }
     }
@@ -404,6 +411,9 @@ impl Port for FakeOpenPort {
         if p.error_when_gone && !p.listed(now) {
             return Err(gone());
         }
+        if std::mem::replace(&mut p.fail_next_read, false) {
+            return Err(io::Error::other("Input/output error"));
+        }
         if p.link.as_ref().is_none_or(|l| l.generation != generation) {
             return Err(gone());
         }
@@ -437,6 +447,14 @@ impl Port for FakeOpenPort {
         };
         if p.error_when_gone && !p.listed(now) {
             return Err(gone());
+        }
+        if p.stall_writes {
+            let sleep = st.read_sleep;
+            drop(st);
+            if let Some(d) = sleep {
+                std::thread::sleep(d);
+            }
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
         }
         let corrupt = std::mem::replace(&mut p.corrupt_next_write, false);
         let Some(l) = p.link.as_mut().filter(|l| l.generation == generation) else {
@@ -488,8 +506,9 @@ impl Drop for FakeOpenPort {
         let generation = self.generation;
         let mut st = self.state();
         let now = st.clock.now_us();
+        // DTR is recorded only when the worker lowers it (`set_dtr`), so a
+        // test of "DTR falls" can fail.
         st.closes.push((now, name.clone()));
-        st.dtr.push((now, name.clone(), false));
         st.ops.push((now, name.clone(), "close"));
         if let Some(p) = st.port_mut(&name)
             && p.link.as_ref().is_some_and(|l| l.generation == generation)

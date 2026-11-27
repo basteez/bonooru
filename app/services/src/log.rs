@@ -9,12 +9,12 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
 /// The log file's name.
 pub const LOG_FILE: &str = "bonooru.log";
@@ -50,6 +50,12 @@ pub trait LogSink: Send {
     /// # Errors
     /// The I/O error.
     fn write_line(&mut self, line: &str) -> io::Result<()>;
+
+    /// Something the log should record about itself (a failed rotation),
+    /// once.
+    fn take_notice(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// `bonooru.log` with size-based rotation.
@@ -60,6 +66,10 @@ pub struct RotatingFile {
     keep: u32,
     file: File,
     size: u64,
+    /// No rotation attempt before the file reaches this size (after a
+    /// failed rotation).
+    hold_until: u64,
+    notice: Option<String>,
 }
 
 impl RotatingFile {
@@ -78,6 +88,8 @@ impl RotatingFile {
             keep,
             file,
             size,
+            hold_until: 0,
+            notice: None,
         })
     }
 
@@ -91,7 +103,27 @@ impl RotatingFile {
         self.dir.join(format!("bonooru.{n}.log"))
     }
 
+    fn reopen(&mut self) -> io::Result<()> {
+        self.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.path())?;
+        self.size = self.file.metadata().map_or(0, |m| m.len());
+        Ok(())
+    }
+
+    /// Rotates. The current file is first moved aside to `bonooru.0.log`;
+    /// if that fails (Windows: a viewer holds it), nothing else is touched,
+    /// so a failed rotation never eats the old files.
     fn rotate(&mut self) -> io::Result<()> {
+        let cur = self.path();
+        if !cur.exists() {
+            // Deleted while the app runs: start a new file.
+            return self.reopen();
+        }
+        let aside = self.dir.join("bonooru.0.log");
+        let _ = fs::remove_file(&aside);
+        fs::rename(&cur, &aside)?;
         // Oldest first, so no rename lands on an existing file; the target
         // is removed anyway (Windows `rename` fails onto an existing file).
         let _ = fs::remove_file(self.old(self.keep));
@@ -100,22 +132,17 @@ impl RotatingFile {
             if from.exists() {
                 let to = self.old(n + 1);
                 let _ = fs::remove_file(&to);
-                fs::rename(&from, &to)?;
+                let _ = fs::rename(&from, &to);
             }
         }
         if self.keep > 0 {
             let to = self.old(1);
             let _ = fs::remove_file(&to);
-            fs::rename(self.path(), &to)?;
+            let _ = fs::rename(&aside, &to);
         } else {
-            fs::remove_file(self.path())?;
+            let _ = fs::remove_file(&aside);
         }
-        self.file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.path())?;
-        self.size = 0;
-        Ok(())
+        self.reopen()
     }
 }
 
@@ -124,8 +151,18 @@ impl LogSink for RotatingFile {
         let mut bytes = line.as_bytes().to_vec();
         bytes.push(b'\n');
         let len = bytes.len() as u64;
-        if self.size > 0 && self.size + len > self.max_bytes {
-            self.rotate()?;
+        if self.size > 0 && self.size + len > self.max_bytes && self.size >= self.hold_until {
+            if let Err(e) = self.rotate() {
+                // Keep writing to the current file (reopened if need be);
+                // try again only after another 1/16 of the limit, so a
+                // rotation that keeps failing costs neither the old files
+                // nor every later line. Reported once through `notice`.
+                let _ = self.reopen();
+                self.hold_until = self.size + self.max_bytes / 16;
+                self.notice = Some(format!("rotation failed: {e}"));
+            } else {
+                self.hold_until = 0;
+            }
         }
         // One write call per line, then a flush: a line is never split
         // across files, and the log survives a crash.
@@ -133,6 +170,10 @@ impl LogSink for RotatingFile {
         self.file.flush()?;
         self.size += len;
         Ok(())
+    }
+
+    fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
     }
 }
 
@@ -321,7 +362,11 @@ pub struct Logger {
     handle: LogHandle,
     join: Option<JoinHandle<()>>,
     path: Option<PathBuf>,
+    stopping: Arc<AtomicBool>,
 }
+
+/// How long [`Logger::stop`] waits for the log thread.
+pub const STOP_LIMIT: Duration = Duration::from_millis(500);
 
 /// The `start` line (AC 8): app version, OS, arch, PID.
 #[must_use]
@@ -382,7 +427,9 @@ impl Logger {
             kind: "start",
             text: start_text(),
         });
+        let stopping = Arc::new(AtomicBool::new(false));
         let thread = LogThread {
+            stopping: Arc::clone(&stopping),
             sink,
             rx,
             dropped: Arc::clone(&handle.dropped),
@@ -399,6 +446,7 @@ impl Logger {
             handle,
             join,
             path: None,
+            stopping,
         }
     }
 
@@ -414,18 +462,36 @@ impl Logger {
         self.path.as_deref()
     }
 
-    /// Ends the log thread after it has written everything queued. Every
-    /// other handle must be dropped first (the worker's ends with its
-    /// thread), or this waits for them.
-    pub fn stop(mut self) {
+    /// Ends the log thread after it has written everything already
+    /// queued, waiting at most [`STOP_LIMIT`]. Other handles may still
+    /// exist (a worker that did not end in time): their later entries are
+    /// dropped, the queued ones are written. Returns whether the thread
+    /// ended (it is joined then); never hangs on a slow disk.
+    pub fn stop(self) -> bool {
+        self.stop_within(STOP_LIMIT)
+    }
+
+    /// [`Logger::stop`] with a given limit.
+    pub fn stop_within(mut self, limit: Duration) -> bool {
+        self.stopping.store(true, Ordering::SeqCst);
         self.handle.tx = None;
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
+        let Some(j) = self.join.take() else {
+            return true;
+        };
+        let start = Instant::now();
+        while !j.is_finished() {
+            if start.elapsed() >= limit {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
+        let _ = j.join();
+        true
     }
 }
 
 struct LogThread {
+    stopping: Arc<AtomicBool>,
     sink: Box<dyn LogSink>,
     rx: Receiver<Entry>,
     dropped: Arc<AtomicU64>,
@@ -448,6 +514,31 @@ impl LogThread {
         }
     }
 
+    fn meta(&mut self, kind: &str, text: &str) {
+        let line = format_line(
+            SystemTime::now(),
+            u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX),
+            kind,
+            text,
+        );
+        self.write(&line);
+    }
+
+    /// Writes one entry, then what the log has to say about itself: a
+    /// failed rotation, and how many entries were dropped while the queue
+    /// was full (there is room again).
+    fn entry(&mut self, entry: &Entry) {
+        self.write(&entry.line());
+        if let Some(n) = self.sink.take_notice() {
+            self.meta("log_rotate_failed", &n);
+        }
+        let n = self.dropped.swap(0, Ordering::Relaxed);
+        if n > 0 {
+            self.reported.fetch_add(n, Ordering::Relaxed);
+            self.meta("log_dropped", &n.to_string());
+        }
+    }
+
     fn run(mut self, start_entry: Option<Entry>, gate: Option<Receiver<()>>) {
         if let Some(e) = start_entry {
             self.write(&e.line());
@@ -455,20 +546,20 @@ impl LogThread {
         if let Some(g) = gate {
             let _ = g.recv();
         }
-        while let Ok(entry) = self.rx.recv() {
-            self.write(&entry.line());
-            // Room again: write how many entries were dropped meanwhile.
-            let n = self.dropped.swap(0, Ordering::Relaxed);
-            if n > 0 {
-                self.reported.fetch_add(n, Ordering::Relaxed);
-                let line = format_line(
-                    SystemTime::now(),
-                    u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    "log_dropped",
-                    &n.to_string(),
-                );
-                self.write(&line);
+        loop {
+            if self.stopping.load(Ordering::SeqCst) {
+                break;
             }
+            match self.rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(e) => self.entry(&e),
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+        // Stopping with other senders still alive: what is queued is
+        // written, nothing more is waited for.
+        while let Ok(e) = self.rx.try_recv() {
+            self.entry(&e);
         }
     }
 }

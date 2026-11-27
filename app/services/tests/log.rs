@@ -187,3 +187,116 @@ fn c22_log_dir_per_platform() {
         assert!(s.ends_with("/bonooru/logs"), "{s}");
     }
 }
+
+fn line(i: usize) -> String {
+    let head = format!("line {i:08} ");
+    format!("{head}{}", "x".repeat(199 - head.len()))
+}
+
+#[test]
+fn c22_failed_rotation_keeps_old_files_and_later_lines() {
+    let dir = temp_dir("rotfail");
+    let max = 10_000;
+    let mut f = RotatingFile::open(&dir, max, KEEP).unwrap();
+    // Fill the three old files and part of the current one.
+    for i in 0..170 {
+        f.write_line(&line(i)).unwrap();
+    }
+    let olds = ["bonooru.1.log", "bonooru.2.log", "bonooru.3.log"];
+    let before: Vec<String> = olds
+        .iter()
+        .map(|n| fs::read_to_string(dir.join(n)).unwrap())
+        .collect();
+    // The current file cannot be moved aside: `bonooru.0.log` is a
+    // non-empty directory (a viewer holding the file on Windows fails the
+    // same rename).
+    fs::create_dir_all(dir.join("bonooru.0.log").join("x")).unwrap();
+    for i in 170..400 {
+        f.write_line(&line(i)).unwrap();
+    }
+    let after: Vec<String> = olds
+        .iter()
+        .map(|n| fs::read_to_string(dir.join(n)).unwrap())
+        .collect();
+    assert_eq!(before, after, "the old files are untouched");
+    let current = fs::read_to_string(dir.join(LOG_FILE)).unwrap();
+    assert!(
+        current
+            .lines()
+            .last()
+            .unwrap()
+            .starts_with("line 00000399 "),
+        "every later line written"
+    );
+    // The failure is reported (the log thread writes it as a
+    // `log_rotate_failed` line), and taken once.
+    assert!(f.take_notice().unwrap().starts_with("rotation failed: "));
+    assert_eq!(f.take_notice(), None);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn c22_deleted_log_is_recreated() {
+    let dir = temp_dir("deleted");
+    let mut f = RotatingFile::open(&dir, 10_000, KEEP).unwrap();
+    for i in 0..60 {
+        f.write_line(&line(i)).unwrap();
+    }
+    let one = fs::read_to_string(dir.join("bonooru.1.log")).unwrap();
+    fs::remove_file(dir.join(LOG_FILE)).unwrap();
+    for i in 60..120 {
+        f.write_line(&line(i)).unwrap();
+    }
+    assert!(dir.join(LOG_FILE).exists(), "a new bonooru.log");
+    let all: String = ["bonooru.log", "bonooru.1.log", "bonooru.2.log"]
+        .iter()
+        .filter_map(|n| fs::read_to_string(dir.join(n)).ok())
+        .collect();
+    assert!(all.contains("line 00000119 "), "later lines kept");
+    assert!(all.contains(one.lines().next().unwrap()), "old lines kept");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A sink that takes `delay` per line (a slow disk).
+struct SlowSink(MemorySink, std::time::Duration);
+
+impl LogSink for SlowSink {
+    fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        std::thread::sleep(self.1);
+        self.0.write_line(line)
+    }
+}
+
+#[test]
+fn c22_stop_is_bounded_and_keeps_queued_lines() {
+    // Another handle is still alive (a worker that did not end): stop
+    // writes what is queued and returns.
+    let sink = MemorySink::new();
+    let logger = Logger::spawn(Box::new(sink.clone()), false, None);
+    let other = logger.handle();
+    for i in 0..10 {
+        other.log("event", format!("n={i}"));
+    }
+    let t0 = std::time::Instant::now();
+    assert!(logger.stop(), "ended although a handle is alive");
+    assert!(t0.elapsed() < std::time::Duration::from_millis(500));
+    assert_eq!(sink.lines().len(), 10, "queued lines written");
+    // A disk that takes 100 ms per line: stop gives up after its limit.
+    let slow = MemorySink::new();
+    let logger = Logger::spawn(
+        Box::new(SlowSink(
+            slow.clone(),
+            std::time::Duration::from_millis(100),
+        )),
+        false,
+        None,
+    );
+    let h = logger.handle();
+    for i in 0..50 {
+        h.log("event", format!("n={i}"));
+    }
+    let t0 = std::time::Instant::now();
+    let ended = logger.stop_within(std::time::Duration::from_millis(200));
+    assert!(!ended);
+    assert!(t0.elapsed() < std::time::Duration::from_millis(400));
+}

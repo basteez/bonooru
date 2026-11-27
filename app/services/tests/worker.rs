@@ -63,9 +63,10 @@ fn c23_rescan_period() {
     let calls = r.backend.state().list_calls.clone();
     assert_eq!(calls.len(), 6);
     assert!(diffs(&calls).iter().all(|&d| d == 1_000_000), "{calls:?}");
-    let scans = r.find(|e| matches!(e, WorkerEvent::ScanDone { .. }));
-    assert_eq!(scans.len(), 6);
-    assert_eq!(r.snapshot.as_ref().unwrap().scans, 6);
+    let snap = r.snapshot.clone().unwrap();
+    assert_eq!(snap.scans, 6);
+    let starts: Vec<u64> = snap.recent_scans.iter().map(|s| s.0).collect();
+    assert_eq!(starts, calls, "scan timing in the snapshot");
 }
 
 #[test]
@@ -77,24 +78,29 @@ fn c23_open_sequence() {
     );
     r.run_until(1_050_000);
     let st = r.backend.state();
-    let ops: Vec<&str> = st.ops.iter().take(5).map(|o| o.2).collect();
-    assert_eq!(ops, ["open", "dtr_on", "clear", "write", "write"]);
-    let writes: Vec<&(u64, String, Vec<u8>)> = st.writes.iter().collect();
-    assert_eq!(writes[0].2, vec![0], "first write a lone 00");
-    let hellos: Vec<u64> = writes[1..]
-        .iter()
-        .map(|w| {
-            let (&z, enc) = w.2.split_last().unwrap();
-            assert_eq!(z, 0);
-            assert_eq!(decode_frame(RxSide::Controller, enc).unwrap().ty, MSG_HELLO);
-            w.0
-        })
-        .collect();
-    assert_eq!(hellos.len(), 11);
-    assert!(diffs(&hellos).iter().all(|&d| d == 100_000), "{hellos:?}");
+    let ops: Vec<&str> = st.ops.iter().take(4).map(|o| o.2).collect();
+    assert_eq!(ops, ["open", "dtr_on", "clear", "write"]);
+    // The first write is the lone 00 and the first HELLO (one flush), then
+    // one HELLO per write, 100 ms apart.
+    let first = &st.writes[0].2;
+    assert_eq!(first[0], 0, "a lone 00 first");
+    let mut times = vec![st.writes[0].0];
+    let mut frames = vec![first[1..].to_vec()];
+    for w in &st.writes[1..] {
+        times.push(w.0);
+        frames.push(w.2.clone());
+    }
+    for f in &frames {
+        let (&z, enc) = f.split_last().unwrap();
+        assert_eq!(z, 0);
+        assert_eq!(decode_frame(RxSide::Controller, enc).unwrap().ty, MSG_HELLO);
+    }
+    assert_eq!(frames.len(), 11);
+    assert!(diffs(&times).iter().all(|&d| d == 100_000), "{times:?}");
     drop(st);
     let snap = r.snapshot.clone().unwrap();
-    assert_eq!(snap.counters.hello_frames, 11);
+    assert_eq!(snap.counters.hello_sent, 11);
+    assert_eq!(snap.counters.hello_dropped, 0);
     assert_eq!(snap.phase, Phase::Opening);
     assert_eq!(snap.port_writes, vec![(CU.to_owned(), 12)]);
     // With a controller: INFO, connected, the snapshot carries it.
@@ -242,7 +248,8 @@ fn c23_unplug_detected() {
     let last = last_rx_us.unwrap();
     assert!(last < 3_000_000 && 3_000_000 - last < 100_000, "{last}");
     assert!(r.backend.state().closes.iter().any(|c| c.0 == 3_000_000));
-    assert!(!r.backend.state().dtr_of(CU), "handle dropped, DTR low");
+    // The handle is dropped at once (a lost port takes no DTR call).
+    assert_eq!(r.backend.state().closes.len(), 1);
     // Silent port: it only vanishes from the list; lost at the next scan.
     let mut r = rig(
         vec![
@@ -524,4 +531,148 @@ fn c23_log_unavailable_once() {
     assert_eq!(un.len(), 1);
     drop(r);
     logger.stop();
+}
+
+#[test]
+fn c23_no_scan_events() {
+    // One `ScanDone` per second forever would crowd the bounded event
+    // queue and the UI history: scans live in the snapshot only.
+    let mut r = rig(vec![], Rules::LINUX);
+    r.run_until(30_000_000);
+    assert!(r.events.is_empty(), "{:?}", r.events.first());
+    let snap = r.snapshot.clone().unwrap();
+    assert_eq!(snap.scans, 30);
+    assert_eq!(snap.recent_scans.len(), 30);
+}
+
+#[test]
+fn c23_lost_port_retried_after_backoff() {
+    // A read glitch on a port that stays listed: reopened 250 ms later,
+    // not in the next pass.
+    let mut r = rig(
+        vec![FakePort::bridge(CU, S, Some("Bonooru Bridge"))],
+        Rules::MACOS,
+    );
+    r.run_until(1_000_000);
+    r.backend.state().ports[0].fail_next_read = true;
+    r.run_until(2_000_000);
+    let lost = r.find(|e| matches!(e, WorkerEvent::PortLost { .. }));
+    assert_eq!(lost.len(), 1);
+    let opens = r.backend.state().opens_of(CU);
+    assert_eq!(opens.len(), 2, "{opens:?}");
+    assert_eq!(opens[1] - lost[0].at_us, OPEN_RETRY_US);
+}
+
+#[test]
+fn c23_round_robin_keeps_a_bridge_that_answered() {
+    // Windows, two unconfirmed ports; the first answers with another
+    // protocol version (RequiredUpdate): it stays open.
+    let cfg = ControllerConfig {
+        proto_ver: 2,
+        ..ControllerConfig::default()
+    };
+    let mut r = rig(
+        vec![
+            FakePort::bridge("COM3", "A", None).controller(cfg),
+            FakePort::bridge("COM9", "B", None).silent(),
+        ],
+        Rules::WINDOWS,
+    );
+    r.run_until(10_000_000);
+    let st = r.backend.state();
+    assert_eq!(st.opens_of("COM3").len(), 1, "{:?}", st.opens);
+    assert!(st.opens_of("COM9").is_empty());
+    drop(st);
+    let req = r.find(|e| matches!(e, WorkerEvent::Link(LinkEvent::RequiredUpdate { .. })));
+    assert_eq!(req.len(), 1);
+    assert_eq!(r.snapshot.clone().unwrap().phase, Phase::Incompatible);
+}
+
+#[test]
+fn c23_waiting_candidate_does_not_block_others() {
+    // Two bridges; the first in rank is held by another program.
+    let mut r = rig(
+        vec![
+            FakePort::bridge("/dev/ttyACM0", "A", Some("Bonooru Bridge"))
+                .always_fail(OpenError::Busy),
+            FakePort::bridge("/dev/ttyACM1", "B", Some("Bonooru Bridge")),
+        ],
+        Rules::LINUX,
+    );
+    r.run_until(1_000_000);
+    assert_eq!(connected(&r).len(), 1);
+    assert_eq!(
+        r.snapshot.clone().unwrap().chosen.clone().unwrap().name,
+        "/dev/ttyACM1"
+    );
+}
+
+#[test]
+fn c23_flags_reset_on_a_new_state() {
+    // Busy, then opened, then lost by a glitch, then busy again: a second
+    // PortBusy (the port never left the listing).
+    let mut r = rig(
+        vec![FakePort::bridge(CU, S, Some("Bonooru Bridge")).fail_opens(vec![OpenError::Busy])],
+        Rules::MACOS,
+    );
+    r.run_until(1_000_000);
+    assert_eq!(connected(&r).len(), 1);
+    {
+        let mut st = r.backend.state();
+        st.ports[0].fail_next_read = true;
+        st.ports[0].open_failures.push_back(OpenError::Busy);
+    }
+    r.run_until(3_000_000);
+    assert_eq!(
+        r.find(|e| matches!(e, WorkerEvent::PortBusy { .. })).len(),
+        2
+    );
+    // Busy then permission then busy on one listing: each change reported.
+    let mut r = rig(
+        vec![
+            FakePort::bridge(CU, S, Some("Bonooru Bridge")).fail_opens(vec![
+                OpenError::Busy,
+                OpenError::PermissionDenied,
+                OpenError::Busy,
+            ]),
+        ],
+        Rules::MACOS,
+    );
+    r.run_until(3_000_000);
+    assert_eq!(
+        r.find(|e| matches!(e, WorkerEvent::PortBusy { .. })).len(),
+        2
+    );
+    assert_eq!(
+        r.find(|e| matches!(e, WorkerEvent::PermissionDenied { .. }))
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn c23_port_that_never_drains_keeps_the_worker_on_time() {
+    // A bridge whose writes never progress (no controller link, the
+    // device does not read): scans stay exactly 1 s apart, the HELLO
+    // cadence goes on, the own queue fills and drops are counted.
+    let mut p = FakePort::bridge(CU, S, Some("Bonooru Bridge")).silent();
+    p.stall_writes = true;
+    let mut r = rig(vec![p], Rules::MACOS);
+    r.run_until(10_500_000);
+    let calls = r.backend.state().list_calls.clone();
+    assert_eq!(calls.len(), 11);
+    assert!(diffs(&calls).iter().all(|&d| d == 1_000_000), "{calls:?}");
+    let snap = r.snapshot.clone().unwrap();
+    assert_eq!(snap.counters.hello_sent, 105);
+    // About 7 B per HELLO: the own queue never fills in 10 s; what does
+    // not move for 1 s is abandoned, once per second.
+    assert!(snap.counters.dropped_chunks >= 9, "{:?}", snap.counters);
+    // With the OS reporting a full queue, every HELLO is dropped and
+    // counted, and the cadence is still the session's.
+    let mut p = FakePort::bridge(CU, S, Some("Bonooru Bridge")).silent();
+    p.queued = 8192;
+    let mut r = rig(vec![p], Rules::MACOS);
+    r.run_until(10_050_000);
+    let c = r.snapshot.clone().unwrap().counters;
+    assert_eq!((c.hello_sent, c.hello_dropped), (101, 101));
 }

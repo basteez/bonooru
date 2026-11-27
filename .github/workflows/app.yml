@@ -242,7 +242,8 @@ jobs:
       - name: Run check (--help)
         run: target/release/ocb-probe --help
 
-      # Expect only libudev.so.1, libc, libm, libgcc_s (and the loader).
+      # Only libudev.so.1, libc, libm, libgcc_s, the vDSO and the loader;
+      # anything else or a "not found" fails (tools/ocb-probe/ci/check-ldd.sh).
       - name: Linked libraries (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -254,6 +255,7 @@ jobs:
             cat ldd.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ocb-probe/ci/check-ldd.sh ldd.txt
 
       # tar keeps the exec bit, which upload-artifact's zip drops.
       - name: Package

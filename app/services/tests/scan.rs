@@ -155,8 +155,40 @@ fn hits(src: &str) -> Vec<String> {
         {
             out.push("Command::new".to_owned());
         }
+        // No way to name the process API under another name: any
+        // `process::Command` path (`use std::process::Command as C;`,
+        // `type C = std::process::Command;`), and any alias inside a `use`
+        // item that names `process` (`use std::process::{self as p};`).
+        let prev = |k: usize| i.checked_sub(k).and_then(|j| t.get(j)).map(String::as_str);
+        if tok == "Command" && prev(1) == Some("::") && prev(2) == Some("process") {
+            out.push("process::Command".to_owned());
+        } else if tok == "as" && use_item_names_process(&t, i) {
+            out.push("process alias".to_owned());
+        }
     }
     out
+}
+
+/// Whether token `i` sits in a `use … ;` item that names `process`.
+fn use_item_names_process(t: &[String], i: usize) -> bool {
+    let mut start = None;
+    for j in (0..i).rev() {
+        match t.get(j).map(String::as_str) {
+            Some(";") => return false,
+            Some("use") => {
+                start = Some(j);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let Some(start) = start else {
+        return false;
+    };
+    t.iter()
+        .skip(start)
+        .take_while(|x| x.as_str() != ";")
+        .any(|x| x == "process")
 }
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -169,7 +201,6 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
-
 fn app_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
@@ -197,8 +228,37 @@ fn c25_scanner_self_test() {
         ("let c = '\\''; doas()", "doas"),
     ];
     for (src, want) in bad {
-        assert_eq!(hits(src), vec![(*want).to_owned()], "{src}");
+        assert!(
+            hits(src).contains(&(*want).to_owned()),
+            "{src}: {:?}",
+            hits(src)
+        );
     }
+    // Aliases of the process API.
+    for (src, want) in [
+        (
+            "use std::process::Command as C;\nfn f() { C::new(\"x\"); }",
+            "process::Command",
+        ),
+        ("type C = std::process::Command;", "process::Command"),
+        ("use std::process::{Command as C, Stdio};", "process alias"),
+        (
+            "use std::process::{self as p};\nfn f() { p::Command::new(x); }",
+            "process alias",
+        ),
+        ("use std::{process as p};", "process alias"),
+    ] {
+        assert!(
+            hits(src).contains(&want.to_owned()),
+            "{src}: {:?}",
+            hits(src)
+        );
+    }
+    // Another `Command` (the CLI enums) and other aliases are not hits.
+    assert_eq!(
+        hits("use ocb_app::cli::{self, Command};\nuse std::io::Write as _;\nstruct Command;"),
+        Vec::<String>::new()
+    );
 }
 
 #[test]

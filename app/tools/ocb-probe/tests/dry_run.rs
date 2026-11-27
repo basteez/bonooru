@@ -35,6 +35,8 @@ const ACM: &str = "/dev/ttyACM0";
 
 /// A change to the fake world at a time after a prompt.
 type Action = Box<dyn FnOnce(&mut FakeState, u64)>;
+/// A change to every snapshot the runner reads.
+type Doctor = Box<dyn Fn(&mut LinkSnapshot)>;
 /// The owner: what to do (and when, µs after the prompt) on a prompt line.
 type OnPrompt = Box<dyn FnMut(&str) -> Vec<(u64, Action)>>;
 
@@ -53,6 +55,11 @@ struct SimDriver {
     host: &'static str,
     lines: Vec<String>,
     finished: Option<(Result<Vec<String>, String>, String)>,
+    /// Changes every snapshot the runner reads (a dry run of a verdict the
+    /// real worker cannot produce).
+    doctor: Option<Doctor>,
+    /// Lines another writer of the same log file adds.
+    other_writer: Vec<String>,
 }
 
 impl SimDriver {
@@ -95,6 +102,8 @@ impl SimDriver {
             host,
             lines: Vec::new(),
             finished: None,
+            doctor: None,
+            other_writer: Vec::new(),
         }
     }
 
@@ -153,7 +162,15 @@ impl Driver for SimDriver {
     }
 
     fn snapshot(&mut self) -> Option<Arc<LinkSnapshot>> {
-        self.snapshot.clone()
+        let s = self.snapshot.clone()?;
+        Some(match &self.doctor {
+            Some(f) => {
+                let mut x = (*s).clone();
+                f(&mut x);
+                Arc::new(x)
+            }
+            None => s,
+        })
     }
 
     fn interrupted(&self) -> bool {
@@ -184,13 +201,15 @@ impl Driver for SimDriver {
             core.step();
         }
         if let Some(l) = self.logger.take() {
-            l.stop();
+            let _ = l.stop();
         }
-        let lines = Ok(self
+        let mut l = self
             .sink
             .as_ref()
             .map(MemorySink::lines)
-            .unwrap_or_default());
+            .unwrap_or_default();
+        l.extend(self.other_writer.iter().cloned());
+        let lines = Ok(l);
         let path = format!("<sim>/{LOG_FILE}");
         self.finished = Some((lines, path));
         self.finished.clone().unwrap()
@@ -496,9 +515,10 @@ fn run_fail_replug_not_seen() {
             }
         }));
     assert_eq!(runner::run(&mut d, 5), EXIT_FAIL);
-    // Unplugged 1 s after the prompt, then 5 s for the replug.
+    // Unplugged 1 s after the prompt, vanished at the next scan (≤ 1 s),
+    // then 5 s for the replug.
     assert!(
-        d.clock.now_us() <= 6_200_000,
+        d.clock.now_us() <= 7_200_000,
         "gave up at {}",
         d.clock.now_us()
     );
@@ -610,6 +630,207 @@ fn run_interrupted() {
     assert_eq!(d.backend.state().closes.len(), 1, "the port is closed");
 }
 
+#[test]
+fn run_pass_after_busy() {
+    // A monitor still closing the bridge: busy from 0 s, the open succeeds
+    // at 4.75 s, and the controller answers at about 5.55 s, after the
+    // busy limit (5 s) has passed with the port open. The busy timer ends
+    // with the open: PASS, not a spin or a false FAIL.
+    let mut ports = mac_ports();
+    ports[0] = FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+        .silent()
+        .fail_opens(vec![OpenError::Busy; 19]);
+    let mut d = SimDriver::new(backend(ports), Rules::MACOS, "macos").owner(mac_owner());
+    d.pending.push((
+        5_500_000,
+        Box::new(|st: &mut FakeState, _| {
+            st.ports[0].device = Device::Controller(Box::new(ocb_sim::FakeController::new(
+                ControllerConfig::default(),
+            )));
+        }),
+    ));
+    assert_eq!(
+        runner::run(&mut d, 120),
+        EXIT_PASS,
+        "{}",
+        d.lines.join("\n")
+    );
+    assert!(d.lines.iter().any(|l| l.starts_with("EVT +0 busy port=")));
+    assert!(
+        d.lines
+            .iter()
+            .any(|l| l.starts_with("EVT +4750 opened port=/dev/cu.usbmodem101")),
+        "{}",
+        d.lines.join("\n")
+    );
+    let connect = d
+        .lines
+        .iter()
+        .find(|l| l.starts_with("STEP connect PASS"))
+        .unwrap();
+    assert!(connect.ends_with("info_after_open_ms=802"), "{connect}");
+    assert!(d.probe_line().starts_with("OCB_PROBE PASS host=macos "));
+}
+
+#[test]
+fn run_fail_glitch_reconnected() {
+    // A read error at the prompt, the port never leaves the list: the
+    // worker reopens it 250 ms later. Not a physical unplug.
+    let mut d =
+        SimDriver::new(backend(mac_ports()), Rules::MACOS, "macos").owner(Box::new(|line| {
+            if line == PROMPT_UNPLUG {
+                vec![(
+                    500_000,
+                    Box::new(|st: &mut FakeState, _| st.ports[0].fail_next_read = true) as Action,
+                )]
+            } else {
+                Vec::new()
+            }
+        }));
+    assert_eq!(runner::run(&mut d, 120), EXIT_FAIL);
+    assert!(d.lines.iter().any(|l| l == "STEP unplug FAIL reconnected"));
+    assert!(
+        d.probe_line().starts_with(
+            "OCB_PROBE FAIL (reconnected without leaving the port list (no physical unplug)) host=macos "
+        ),
+        "{}",
+        d.probe_line()
+    );
+}
+
+#[test]
+fn run_fail_lost_still_listed() {
+    // A read error, then every reopen fails, and the port stays listed.
+    let mut d =
+        SimDriver::new(backend(mac_ports()), Rules::MACOS, "macos").owner(Box::new(|line| {
+            if line == PROMPT_UNPLUG {
+                vec![(
+                    500_000,
+                    Box::new(|st: &mut FakeState, _| {
+                        st.ports[0].fail_next_read = true;
+                        st.ports[0].always_fails = Some(OpenError::Other("EIO".to_owned()));
+                    }) as Action,
+                )]
+            } else {
+                Vec::new()
+            }
+        }));
+    assert_eq!(runner::run(&mut d, 3), EXIT_FAIL);
+    assert!(
+        d.probe_line().starts_with(
+            "OCB_PROBE FAIL (port lost but still listed after 3 s (no physical unplug)) host=macos "
+        ),
+        "{}",
+        d.probe_line()
+    );
+}
+
+#[test]
+fn run_fail_listed_without_info() {
+    // Back in the list, but nothing answers (controller unpowered).
+    let mut d =
+        SimDriver::new(backend(mac_ports()), Rules::MACOS, "macos").owner(Box::new(|line| {
+            if line == PROMPT_UNPLUG {
+                vec![(1_000_000, ends_at(CU))]
+            } else if line == PROMPT_PLUG {
+                vec![
+                    (
+                        0,
+                        Box::new(|st: &mut FakeState, _| st.ports[1].device = Device::Silent)
+                            as Action,
+                    ),
+                    (1_000_000, appears(CU2)),
+                ]
+            } else {
+                Vec::new()
+            }
+        }));
+    assert_eq!(runner::run(&mut d, 5), EXIT_FAIL);
+    assert!(
+        d.probe_line()
+            .starts_with("OCB_PROBE FAIL (listed again but no INFO within 5 s) host=macos "),
+        "{}",
+        d.probe_line()
+    );
+}
+
+#[test]
+fn run_fail_other_bridge() {
+    // A second bridge (another serial) is plugged too: after the unplug the
+    // worker connects to it. That is not the replug of the bridge.
+    let mut ports = mac_ports();
+    ports.push(FakePort::bridge(
+        "/dev/cu.usbmodem301",
+        "OTHER",
+        Some("Bonooru Bridge"),
+    ));
+    let mut d = SimDriver::new(backend(ports), Rules::MACOS, "macos").owner(Box::new(|line| {
+        if line == PROMPT_UNPLUG {
+            vec![(1_000_000, ends_at(CU))]
+        } else {
+            Vec::new()
+        }
+    }));
+    assert_eq!(runner::run(&mut d, 120), EXIT_FAIL);
+    assert!(d.lines.iter().any(|l| l == "STEP unplug FAIL reconnected"));
+    assert!(
+        d.probe_line().starts_with(
+            "OCB_PROBE FAIL (reconnected to another bridge: /dev/cu.usbmodem301 serial OTHER (not the one unplugged, listed again)) host=macos "
+        ),
+        "{}",
+        d.probe_line()
+    );
+}
+
+#[test]
+fn run_fail_other_bridge_at_replug() {
+    // At the plug prompt the owner plugs another bridge (another serial).
+    let mut ports = mac_ports();
+    ports.push(
+        FakePort::bridge("/dev/cu.usbmodem301", "OTHER", Some("Bonooru Bridge")).present(vec![]),
+    );
+    let mut d = SimDriver::new(backend(ports), Rules::MACOS, "macos").owner(Box::new(|line| {
+        if line == PROMPT_UNPLUG {
+            vec![(1_000_000, ends_at(CU))]
+        } else if line == PROMPT_PLUG {
+            vec![(1_000_000, appears("/dev/cu.usbmodem301"))]
+        } else {
+            Vec::new()
+        }
+    }));
+    assert_eq!(runner::run(&mut d, 120), EXIT_FAIL);
+    assert!(d.lines.iter().any(|l| l == "STEP replug FAIL other bridge"));
+    assert!(
+        d.probe_line().starts_with(
+            "OCB_PROBE FAIL (reconnected to another bridge: /dev/cu.usbmodem301 serial OTHER (not the one unplugged, listed again)) host=macos "
+        ),
+        "{}",
+        d.probe_line()
+    );
+}
+
+#[test]
+fn run_fail_log_check_other_writer() {
+    // No log of our own; another writer of the same file logged opens,
+    // losses and an INFO on its own port: none of them count.
+    let mut d =
+        SimDriver::with_log(backend(mac_ports()), Rules::MACOS, "macos", None).owner(mac_owner());
+    d.other_writer = vec![
+        "2026-11-27T10:00:00.000Z +1ms version connected port=/dev/cu.other proto=1".to_owned(),
+        "2026-11-27T10:00:00.000Z +2ms port_opened port=/dev/cu.other class=ours".to_owned(),
+        "2026-11-27T10:00:00.000Z +3ms port_opened port=/dev/cu.other class=ours".to_owned(),
+        "2026-11-27T10:00:00.000Z +4ms port_lost port=/dev/cu.other reason=\"x\"".to_owned(),
+    ];
+    assert_eq!(runner::run(&mut d, 120), EXIT_FAIL);
+    assert!(
+        d.probe_line().starts_with(
+            "OCB_PROBE FAIL (log check: version 0 < 1, port_opened 0 < 2, port_lost 0 < 1) host=macos "
+        ),
+        "{}",
+        d.probe_line()
+    );
+}
+
 // ------------------------------------------------------------ permission
 
 #[test]
@@ -696,7 +917,7 @@ fn alone_pass() {
     assert_eq!(runner::alone(&mut d, 10), EXIT_PASS);
     assert_eq!(
         d.probe_line(),
-        "OCB_PROBE PASS alone port=/dev/cu.usbmodem101 class=ours hello_frames=100 seconds=10 other_ports_written=0"
+        "OCB_PROBE PASS alone port=/dev/cu.usbmodem101 class=ours hello_frames=100 hello_dropped=0 seconds=10 other_ports_written=0"
     );
 }
 
@@ -727,9 +948,9 @@ fn alone_fail_no_bridge() {
 }
 
 #[test]
-fn alone_fail_other_port() {
-    // Windows, two unconfirmed ports and no answer: after 2 s the worker
-    // tries the other one.
+fn alone_pass_two_unconfirmed() {
+    // Windows, two Pico boards, no answer: the worker probes each in turn
+    // (AC 4). Both are bridges by VID:PID: PASS, both named.
     let mut d = SimDriver::new(
         backend(vec![
             FakePort::bridge("COM3", S, None).silent(),
@@ -738,23 +959,65 @@ fn alone_fail_other_port() {
         Rules::WINDOWS,
         "windows",
     );
+    assert_eq!(runner::alone(&mut d, 10), EXIT_PASS);
+    assert_eq!(
+        d.probe_line(),
+        "OCB_PROBE PASS alone port=COM3,COM9 class=unconfirmed hello_frames=100 hello_dropped=0 seconds=10 other_ports_written=0"
+    );
+}
+
+#[test]
+fn alone_fail_not_a_bridge() {
+    // The real worker never writes to a non-candidate; the verdict is
+    // dry-run on a snapshot that says it did.
+    let mut d = SimDriver::new(
+        backend(vec![
+            FakePort::bridge(CU, S, Some("Bonooru Bridge")).silent(),
+            FakePort::plain("/dev/cu.Bluetooth-Incoming-Port"),
+        ]),
+        Rules::MACOS,
+        "macos",
+    );
+    d.doctor = Some(Box::new(|s: &mut LinkSnapshot| {
+        s.port_writes
+            .push(("/dev/cu.Bluetooth-Incoming-Port".to_owned(), 3));
+    }));
     assert_eq!(runner::alone(&mut d, 10), EXIT_FAIL);
     assert_eq!(
         d.probe_line(),
-        "OCB_PROBE FAIL (wrote to another port: COM9)"
+        "OCB_PROBE FAIL (wrote to a port that is not a bridge: /dev/cu.Bluetooth-Incoming-Port)"
+    );
+}
+
+#[test]
+fn alone_pass_with_drops() {
+    // The OS queue stays full (the bridge does not read USB): every HELLO
+    // is dropped by the write rules, the cadence is the session's.
+    let mut p = FakePort::bridge(CU, S, Some("Bonooru Bridge")).silent();
+    p.queued = 8192;
+    let mut d = SimDriver::new(backend(vec![p]), Rules::MACOS, "macos");
+    assert_eq!(runner::alone(&mut d, 10), EXIT_PASS);
+    assert_eq!(
+        d.probe_line(),
+        "OCB_PROBE PASS alone port=/dev/cu.usbmodem101 class=ours hello_frames=100 hello_dropped=100 seconds=10 other_ports_written=0"
     );
 }
 
 #[test]
 fn alone_fail_few_hellos() {
-    // The OS queue stays full: every chunk is dropped, no HELLO goes out.
-    let mut p = FakePort::bridge(CU, S, Some("Bonooru Bridge")).silent();
-    p.queued = 8192;
-    let mut d = SimDriver::new(backend(vec![p]), Rules::MACOS, "macos");
+    // A worker that spends 0.9 s of every second listing ports: the
+    // session's HELLO cadence collapses.
+    let b = backend(vec![
+        FakePort::bridge(CU, S, Some("Bonooru Bridge")).silent(),
+    ]);
+    b.state().list_delay_us = 900_000;
+    let mut d = SimDriver::new(b, Rules::MACOS, "macos");
     assert_eq!(runner::alone(&mut d, 10), EXIT_FAIL);
-    assert_eq!(
-        d.probe_line(),
-        "OCB_PROBE FAIL (only 0 HELLO frames in 10 s (expected ≥ 9 per s))"
+    let line = d.probe_line().to_owned();
+    assert!(
+        line.starts_with("OCB_PROBE FAIL (only ")
+            && line.ends_with(" HELLO frames in 10 s (expected ≥ 9 per s))"),
+        "{line}"
     );
 }
 
