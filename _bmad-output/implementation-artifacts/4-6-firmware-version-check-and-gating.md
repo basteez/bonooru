@@ -4,7 +4,7 @@ baseline_commit: 4b2842bdac3033d409b33bc51e0f15ce51f21f22
 
 # Story 4.6: Firmware version check and gating
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

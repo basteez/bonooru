@@ -8,12 +8,16 @@ use egui::{Context, ThemePreference};
 use ocb_core::protocol::Info;
 use ocb_services::log::{LogHandle, Logger};
 use ocb_services::port::SerialBackend;
-use ocb_services::worker::{self, LinkSnapshot, TimedEvent, TryRecvError, WorkerHandle};
+use ocb_services::worker::{
+    self, LinkSnapshot, TimedEvent, TryRecvError, TrySendError, WorkerCommand, WorkerHandle,
+};
 use raw_window_handle::HasWindowHandle as _;
 
 use crate::gating::{self, FirmwareWatch, Gate, GateTracker};
 use crate::leds::{self, LedTracker, Leds};
 use crate::smoke::{self, Report, Smoke};
+use crate::stop::{self, CommandResult, StopSource};
+use crate::ui::keys::{self, FrameKeys};
 use crate::ui::modal::{ModalOutcome, Modals};
 use crate::ui::{firmware, gallery, main_screen, theme};
 
@@ -221,6 +225,20 @@ impl App {
         Self::build(cc, mode, Some(link), clock, LogHandle::disabled())
     }
 
+    /// Builds the app with no serial worker: the state of a worker thread
+    /// that could not be started (`WorkerHealth::NotStarted`). Tests only
+    /// need it (G.20: STOP without a worker is harmless).
+    #[must_use]
+    pub fn without_link(cc: &eframe::CreationContext<'_>, mode: Mode) -> Self {
+        Self::build(
+            cc,
+            mode,
+            None,
+            Clock(real_ui_clock()),
+            LogHandle::disabled(),
+        )
+    }
+
     fn build(
         cc: &eframe::CreationContext<'_>,
         mode: Mode,
@@ -360,6 +378,27 @@ impl App {
         self.link.as_mut().is_none_or(Link::shut_down)
     }
 
+    /// Requests STOP (Story 4.7, AD-16): `WorkerCommand::Stop` with
+    /// `try_send`, never waiting, and one `stop requested` line saying what
+    /// became of it. Harmless without a worker. Epic 6's countdown and Play
+    /// reuse it.
+    pub fn request_stop(&mut self, source: StopSource) {
+        let now = self.clock.now();
+        let result = match self.link.as_ref() {
+            None => CommandResult::NoWorker,
+            Some(l) if l.health(now) == WorkerHealth::Ended => CommandResult::WorkerGone,
+            Some(l) => match l.handle.commands.try_send(WorkerCommand::Stop) {
+                Ok(()) => CommandResult::Queued,
+                Err(TrySendError::Full(_)) => CommandResult::QueueFull,
+                Err(TrySendError::Disconnected(_)) => CommandResult::WorkerGone,
+            },
+        };
+        self.log.log(
+            "stop",
+            stop::requested_line(source, self.modals.is_open(), result),
+        );
+    }
+
     /// The dialog host, for screens and tests to request dialogs.
     pub fn modals_mut(&mut self) -> &mut Modals {
         &mut self.modals
@@ -434,12 +473,19 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        // Story 4.7 reads Esc for STOP here, at the top of the frame, without
-        // consuming it (Esc = STOP always, UX-DR61/62); nothing consumes Esc
-        // before this point. The open dialog, if any, then consumes the same
-        // Esc and closes as `Dismissed`: one press does both (contract on
-        // `ui::modal::Modals`; `modals.is_open()` says whether a dialog will
-        // take it).
+        // Esc = STOP, always (Story 4.7, UX-DR41/61): read here, first thing,
+        // in every mode, without consuming it; the open dialog, if any, then
+        // consumes the same Esc in `Modals::show` and closes as `Dismissed`
+        // (contract on `ui::modal::Modals`). Space is consumed here so it
+        // never clicks a focused button. Input reaches the first pass only.
+        let first_pass = ui.ctx().current_pass_index() == 0;
+        let keys = if first_pass {
+            keys::frame_start(ui.ctx())
+        } else {
+            FrameKeys::default()
+        };
+        // At most one STOP per frame; the first source wins in the log.
+        let mut stop = keys.stop.then_some(StopSource::Esc);
         match self.mode {
             Mode::Main => {
                 let leds = self.leds();
@@ -474,7 +520,10 @@ impl eframe::App for App {
                     ui.ctx().request_discard("firmware dialog opens");
                     self.log.log("dialog", gating::dialog_shown_line(&info, at));
                 }
-                main_screen::show(ui, &leds, &gate);
+                let out = main_screen::show(ui, &leds, &gate);
+                if out.stop_clicked && stop.is_none() {
+                    stop = Some(StopSource::Button);
+                }
                 // A staleness or grace boundary, or a silent worker turning
                 // stalled, changes an LED with no new snapshot: draw that
                 // frame on time (AC 6, 7, 8).
@@ -484,6 +533,16 @@ impl eframe::App for App {
                 }
             }
             Mode::Gallery => gallery::show(ui, &mut self.modals),
+        }
+        // Before `Modals::show`: `dialog=open` means a dialog was open or
+        // requested in this frame. It usually takes the same Esc and closes,
+        // but not always: the firmware dialog ignores the Esc of its opening
+        // frame (Story 4.6) and `Modals` ignores Esc with Cmd/Ctrl. STOP is
+        // requested in every case.
+        if let Some(source) = stop
+            && first_pass
+        {
+            self.request_stop(source);
         }
         let ctx = ui.ctx().clone();
         // Dialogs last: over every screen, one at a time. Each outcome stays

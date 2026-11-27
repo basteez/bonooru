@@ -7,6 +7,7 @@ pub mod cli;
 pub mod gating;
 pub mod leds;
 pub mod smoke;
+pub mod stop;
 pub mod ui;
 
 use egui::{Theme, ThemePreference};

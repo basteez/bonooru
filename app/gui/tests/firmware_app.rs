@@ -235,12 +235,14 @@ fn g18_modal_on_mismatch() {
     assert!(r.dialog_drawn());
     assert_eq!(r.h.state().modals().open_id(), Some(firmware::dialog_id()));
     let _ = r.h.get_by_role_and_label(Role::Label, MODAL_BODY);
-    // Exactly one button in the window (the LEDs are Status nodes), "OK".
+    // Exactly one dialog button, "OK" (the LEDs are Status nodes); the
+    // bottom bar's STOP (Story 4.7) is the only other button, under the
+    // scrim, and comes first in the tree.
     let buttons: Vec<String> =
         r.h.query_all_by_role(Role::Button)
             .map(|n| n.accesskit_node().label().unwrap_or_default())
             .collect();
-    assert_eq!(buttons, vec!["OK".to_owned()]);
+    assert_eq!(buttons, vec!["Stop".to_owned(), "OK".to_owned()]);
     let spec = firmware::required_update_dialog();
     assert_eq!(spec.secondary, None);
     assert!((spec.outer_width() - 440.0).abs() < f32::EPSILON);
@@ -368,6 +370,21 @@ fn g18_no_nagging() {
         r.h.step();
         assert!(!r.h.state().modals().is_open(), "the dialog came back");
         assert!(!r.dialog_drawn());
+    }
+    // The worker thread follows the fake clock at its own pace: on a slow
+    // CI runner its last snapshot can lag the 200 frames. Let it catch up
+    // (real-time bound), still checking that the dialog never comes back.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while r
+        .h
+        .state()
+        .link_snapshot()
+        .is_none_or(|s| s.now_us < 10_000_000)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(5));
+        r.h.step();
+        assert!(!r.h.state().modals().is_open(), "the dialog came back");
     }
     let snap = r.h.state().link_snapshot().cloned().unwrap();
     assert!(snap.now_us >= 10_000_000, "the worker kept running");

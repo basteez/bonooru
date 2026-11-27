@@ -354,6 +354,8 @@ fn helper_sections(ui: &mut Ui, modals: &mut Modals) {
     bracket_samples(ui);
     section(ui, "Dialogs");
     dialog_buttons(ui, modals);
+    section(ui, "Button states: idle, hover, pressed");
+    button_states(ui);
     section(ui, "inline-hint in a panel at 300 and 200 pt");
     inline_hint_samples(ui);
 }
@@ -727,6 +729,49 @@ fn bracket_samples(ui: &mut Ui) {
             theme::TEXT_MUTED,
         );
     });
+}
+
+/// Static samples of every button look in its three pointer states
+/// (Story 4.7 owner eye check, `components.state-layer`): primary, ghost,
+/// disabled (no change) and STOP idle. Painted only: no node, not
+/// focusable; the live buttons above react to the pointer the same way.
+fn button_states(ui: &mut Ui) {
+    use paint::ButtonState::{Hovered, Idle, Pressed};
+    let states = [(Idle, "idle"), (Hovered, "hover"), (Pressed, "pressed")];
+    egui::Grid::new("gallery-button-states")
+        .num_columns(4)
+        .spacing(vec2(theme::spacing::S4, theme::spacing::S3))
+        .show(ui, |ui| {
+            ui.label("");
+            for (_, name) in states {
+                ui.label(theme::rich(&theme::SMALL, name).color(theme::TEXT_MUTED));
+            }
+            ui.end_row();
+            for (row, kind, enabled) in [
+                ("Primary", ButtonKind::Primary, true),
+                ("Ghost", ButtonKind::Ghost, true),
+                ("Disabled", ButtonKind::Primary, false),
+            ] {
+                ui.label(theme::rich(&theme::BODY_STRONG, row));
+                for (state, _) in states {
+                    widgets::button_preview(ui, kind, "Sample", enabled, state);
+                }
+                ui.end_row();
+            }
+            ui.label(theme::rich(&theme::BODY_STRONG, "STOP"));
+            for (state, _) in states {
+                let (rect, _) = ui.allocate_exact_size(
+                    vec2(
+                        theme::spacing::BIG_BUTTON_MIN_WIDTH,
+                        theme::spacing::BIG_BUTTON_HEIGHT,
+                    ),
+                    Sense::hover(),
+                );
+                widgets::stop_button_preview(ui, rect, state);
+            }
+            ui.end_row();
+        });
+    ui.add_space(theme::spacing::S5);
 }
 
 /// Buttons that open the readiness sample and the real firmware dialog (its

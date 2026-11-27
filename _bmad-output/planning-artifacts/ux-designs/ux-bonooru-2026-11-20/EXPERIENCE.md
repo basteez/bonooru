@@ -152,6 +152,7 @@ Behavioural rules. Visual specs live in `DESIGN.md` › Components.
 
 | Component | Behavioural rules |
 |---|---|
+| Button (every button: dialog actions, STOP, later Play/Listen) | Enabled: hover lightens and pressed darkens the fill and border (`DESIGN.md` › Button states), so a click always gives visual feedback; the label does not move. Disabled: no hover or pressed change, not focusable. Activated by click, Enter with focus or an AccessKit click; never by Space (owner eye check, Story 4.7). |
 | Status LED | Three LEDs, always visible. State from the coupling table below. Tooltip = detail + fix, shown on hover **and** on keyboard focus [ASSUMPTION]. Never says "linked to game" or "in free play". Click: [ASSUMPTION] opens the wizard at the relevant step when not ok. |
 | Set up / Reflash… | Opens the wizard with the step list; no step forced. |
 | Update banner | Recommended update only. Update → wizard at the right flash step. Later → hidden until next launch. |
@@ -177,7 +178,7 @@ Behavioural rules. Visual specs live in `DESIGN.md` › Components.
 | Play from cursor | Label "Play from cursor"; the sub-line shows the cursor position ("0:42"), everywhere the action appears (bottom bar, tooltips, docs). Compiles from that offset. Goes through readiness confirm + countdown. |
 | Play from start | Always t = 0. Same confirm + countdown. |
 | Play gating | Both Play actions are disabled unless **all three LEDs are ok**, and also while a required firmware update is pending, when no song is loaded, notes are too short, the text score is invalid [ASSUMPTION], or during Play. The disabled button's tooltip names only the **first** blocking reason and its fix, checked in the order Bridge › Controller › Switch › firmware update [ASSUMPTION position] › song issues (no song › too-short notes › invalid score). Preview is always available. The `console_ready` 100 ms rule was verified on hardware (Story 3.5 H.3, 2026-11-26; kept by the owner: worst console polling gap 24 ms in normal use, the flag falls 144 ms after the last poll on Wired Communication OFF). |
-| STOP | Always enabled. Esc anywhere. Sends STOP (release every input). `{components.button-stop-idle}` when idle, `{components.button-stop-live}` during countdown and Play. |
+| STOP | Always enabled. Esc anywhere. Sends STOP (release every input). `{components.button-stop-idle}` when idle, `{components.button-stop-live}` during countdown and Play. Epic 4 (Story 4.7): idle look only; with a dialog open the scrim takes the click and Esc is the way to STOP; Space never activates it; hover and pressed states like every button (owner eye check). |
 | Readiness confirm | Shown on every Play unless "Don't ask again" is ticked; reset from Settings. Play has initial focus: Enter = Play, Esc = Cancel (and STOP, harmless when idle). → [mockups/key-dialogs.html](mockups/key-dialogs.html) |
 | Firmware update needed | Blocking modal on protocol mismatch (INFO `proto_ver` ≠ app). Update now (initial focus, Enter) opens the wizard at the right flash step. Not now (or Esc) closes it: both Play buttons and the gamepad stay disabled (gamepad inline hint, Play tooltip "Play needs a firmware update."), while Listen/preview, editing, loading and saving keep working. The update stays reachable from "Set up / Reflash…"; the dialog shows again on the next launch or reconnect while the mismatch persists (decided, Story 4.6: once per connection, never again on the same connection). Epic 4 (Story 4.6): OK only, body = "The boards' firmware doesn't match this app. Reflash both with the .uf2 files of this app version: hold BOOT, plug the board in and drag its .uf2 onto the RPI-RP2 drive."; OK and Esc behave like the later Not now. → [mockups/key-dialogs.html](mockups/key-dialogs.html) |
 | Countdown | 3·2·1 by default (Settings 0–5 s), large numerals (`{components.countdown-numeral}`) over the note view, audible tick per number: an original soft wood-block sound. STOP already live; Esc cancels. If a link or console signal drops during the countdown, it is cancelled, no START is sent, and the interruption banner explains why. Separate from the technical `start_lead` (500 ms). |
@@ -253,7 +254,7 @@ Behavioural rules. Visual specs live in `DESIGN.md` › Components.
 
 | Key | Action |
 |---|---|
-| Esc | STOP, always (emergency brake). Also closes the topmost dialog or the Settings modal. Read (not consumed) at frame start, before any egui `Modal` consumes it. |
+| Esc | STOP, always (emergency brake). Also closes the topmost dialog or the Settings modal. Read (not consumed) at frame start, before any egui `Modal` consumes it: read at the top of every frame in every mode, key repeats ignored, one STOP per frame (Story 4.7). |
 | Cmd/Ctrl+Enter | Play from cursor |
 | Cmd/Ctrl+Shift+Enter | Play from start |
 | Cmd/Ctrl+O | Open song |
@@ -264,8 +265,8 @@ Behavioural rules. Visual specs live in `DESIGN.md` › Components.
 
 | Key | When | Action |
 |---|---|---|
-| Space | everywhere except the text editor (including while the gamepad has focus; Space is not a gamepad key) | Preview play / stop (same as Listen and the header ▶). Space is consumed at frame start, so it never activates a focused button. |
-| Enter | a button has focus | Activates it (buttons activate with Enter, never Space) |
+| Space | everywhere except the text editor (including while the gamepad has focus; Space is not a gamepad key) | Preview play / stop (same as Listen and the header ▶). Space is consumed at frame start (since Story 4.7; no preview yet), with any modifiers while a widget other than a text edit has focus, so it never activates a focused button. |
+| Enter | a button has focus | Activates it (buttons activate with Enter, never Space); once per fresh press: key repeats of a held Enter are dropped at frame start outside a text edit (Story 4.7) |
 | Delete / Backspace | the note view has focus and a selection exists | Delete selected notes |
 | Double-click | empty spot in the note view | Add a note with the last-used duration |
 | Tab / Shift+Tab | anywhere outside the editor and the gamepad | Move focus between controls and regions in the order status → song → note view → gamepad → bottom bar (regions laid out manually to keep this order) |
@@ -304,6 +305,7 @@ Behavioural. Visual contrast lives in `DESIGN.md`.
 - Focus is always visible: every focusable control paints `{components.focus-ring}` (`{components.focus-ring-on-parchment}` on parchment) through one shared helper, because egui draws no ring by default and has no focus-visible (the ring therefore also shows after mouse use). The gamepad panel's focus (`{components.gamepad-panel-focused}` + `{components.chip-keys-active}`) is mandatory because it changes what the keyboard does.
 - Every function is reachable by keyboard except the sticks, Home and Capture (mouse only, by decision) and note drawing/moving/resizing (mouse); keyboard deletion and the context menu work on a selection [ASSUMPTION for Shift+F10].
 - Esc as global STOP never needs focus.
+- STOP's AccessKit node is one `Button` named "Stop" (plain case, so screen readers do not spell it) with the description "Esc stops at any time."; the painted ■ adds no node (Story 4.7).
 - Minimum window 1024 × 680 logical points. HiDPI through egui `pixels_per_point`.
 - No information conveyed only by sound (countdown numerals are visible; the end card is silent).
 - Screen-reader support: basic (owner, Story 4.2, 2026-11-27). Every shared widget helper emits `widget_info` (closest `egui::Role` + the visible label as the accessible name, plain words where nothing visible names it); custom widgets that do not go through a helper do the same; the Roll and the Staff expose one summary node each. No live regions, no per-note nodes, no screen-reader test on real hardware. eframe's `accesskit` feature stays on (egui builds the tree only when an assistive technology asks for it).

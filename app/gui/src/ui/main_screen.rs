@@ -1,20 +1,24 @@
 //! The main screen (UX-DR5): five regions filled in reading order, each a
 //! scoped `Ui` over its rect (never egui panels). The status strip shows
 //! the brand and the three LEDs (Story 4.5); the gamepad region shows the
-//! gate's inline hint while the gamepad is blocked (Story 4.6); the other
-//! regions are empty placeholders until later stories.
+//! gate's inline hint while the gamepad is blocked (Story 4.6); the bottom
+//! bar shows STOP and the safety note, its Play/Listen slots reserved and
+//! empty (Story 4.7); the other regions are empty placeholders until later
+//! stories.
 
 use egui::{Rect, Stroke, Ui, UiBuilder, pos2};
 
 use super::layout::{RegionId, regions};
-use super::{paint, status_strip, theme, widgets};
+use super::{bottom_bar, paint, status_strip, theme, widgets};
 use crate::gating::Gate;
 use crate::leds::Leds;
 
 /// Draws the main screen over `ui.max_rect()`, the status strip showing
 /// `leds` and the gamepad region the hint of `gate.gamepad`, if blocked.
-/// The status region comes first, so its LEDs are first in the tab order.
-pub fn show(ui: &mut Ui, leds: &Leds, gate: &Gate) {
+/// The status region comes first, so its LEDs are first in the tab order;
+/// the bottom bar comes last, so STOP is last.
+pub fn show(ui: &mut Ui, leds: &Leds, gate: &Gate) -> MainOutput {
+    let mut out = MainOutput::default();
     let content = ui.max_rect();
     ui.painter()
         .rect_filled(content, theme::corner(0.0), theme::FRAME);
@@ -31,8 +35,19 @@ pub fn show(ui: &mut Ui, leds: &Leds, gate: &Gate) {
             {
                 widgets::inline_hint(ui, hint_rect(rect), block.gamepad_hint());
             }
+            if id == RegionId::Bottom {
+                out.stop_clicked = bottom_bar::show(ui, rect).stop_clicked;
+            }
         });
     }
+    out
+}
+
+/// What the main screen reports for the frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MainOutput {
+    /// STOP was activated (click, Enter with focus, AccessKit click).
+    pub stop_clicked: bool,
 }
 
 /// Where the gamepad hint goes in the gamepad region `rect`: inset by

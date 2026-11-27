@@ -989,6 +989,8 @@ So that I can navigate the game to ocarina free play from the PC (FR-11, FR-22).
 **Then** they can reach ocarina free play (M5 exit)
 **And** each button control (A, B, X, Y, D-pad up / down / left / right, L, R, ZL, ZR, −, +, Home, Capture) is a `Role::Button` AccessKit node named after the control ("A", "ZL", "D-pad up", "Minus", "Plus", "Home", "Capture"), and an AccessKit click is a tap, checked in kittest with `Node::click_accesskit()` (not `click()`, which simulates the pointer); each stick is one `Role::Slider` node named "Left stick" / "Right stick" (AccessKit 0.25 has no two-axis role), with no click or value requirement (Story 4.2: basic)
 
+Bench (from Story 4.7): an input held on the on-screen pad is released on the Switch by Esc and by STOP; `stop after … mode=idle` in the log.
+
 ### Story 4.9: Gamepad keyboard focus and compact layout
 
 As the owner,

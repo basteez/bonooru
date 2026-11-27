@@ -150,16 +150,19 @@ fn g13_dead_worker_is_visible() {
 
 #[test]
 fn g13_stalled_worker_is_visible() {
-    // The listing blocks 5 s: no snapshot for 3 s means stalled.
+    // The listing blocks 5 s: no snapshot for 3 s means stalled. `start`
+    // is taken before the app (and its worker) exists, so the lower bound
+    // holds however slow the first frame is on a CI runner: the stall
+    // clock starts at the worker's last snapshot, never before this.
+    let start = Instant::now();
     let mut h = app_on(BlockingBackend {
         delay: Duration::from_secs(5),
     });
     h.run_steps(1);
     assert_eq!(h.state().worker_health(), WorkerHealth::Running);
-    let start = Instant::now();
     while h.state().worker_health() != WorkerHealth::Stalled {
         assert!(
-            start.elapsed() < Duration::from_millis(3500),
+            start.elapsed() < Duration::from_millis(4500),
             "never stalled"
         );
         std::thread::sleep(Duration::from_millis(20));
@@ -295,7 +298,8 @@ fn seq(t: &[String], i: usize, want: &[&str]) -> bool {
 }
 
 /// AC 1 in `app/gui/src`: no `serialport`, no log file opened, no blocking
-/// receive or join (`recv()`, `recv_timeout`, `recv_deadline`, `.join()`).
+/// receive, send or join (`recv()`, `recv_timeout`, `recv_deadline`,
+/// `.send(`, `.join()`). Story 4.7: commands go with `try_send` only.
 fn ui_hits(src: &str) -> Vec<String> {
     let t = tokens(src);
     let mut out = Vec::new();
@@ -312,6 +316,9 @@ fn ui_hits(src: &str) -> Vec<String> {
         }
         if seq(&t, i, &[".", "join", "(", ")"]) {
             out.push(".join()".to_owned());
+        }
+        if seq(&t, i, &[".", "send", "("]) {
+            out.push(".send(".to_owned());
         }
     }
     out
@@ -373,12 +380,16 @@ fn g13_scanners_self_test() {
         let s = "recv() File::open fs";
         while let Ok(e) = rx.try_recv() {}
         let j = names.join(", "); fn join_reach() {}
+        let _ = tx.try_send(WorkerCommand::Stop); ctx.send_viewport_cmd(c);
+        // tx.send(WorkerCommand::Stop) in a comment
     "#;
     assert_eq!(ui_hits(good_ui), Vec::<String>::new());
     for (bad, want) in [
         ("let e = self.rx.recv();", ".recv()"),
         ("rx.recv_timeout(d)", "recv_timeout"),
         ("let _ = handle.join();", ".join()"),
+        ("tx.send(WorkerCommand::Stop).unwrap();", ".send("),
+        ("self.link.handle.commands . send (c)", ".send("),
         ("serialport::available_ports()", "serialport"),
         ("std::fs::OpenOptions::new()", "fs"),
         ("File::create(p)", "File"),

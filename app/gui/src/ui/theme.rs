@@ -239,6 +239,60 @@ pub mod components {
         pub const INSET: f32 = 10.0;
     }
 
+    /// `components.bottom-bar` layout (Story 4.7, lifted from
+    /// `mockups/key-empty-state.html`: `.bottom{gap:14px;padding:0 16px}`).
+    pub mod bottom_bar {
+        /// Left and right inner padding.
+        pub const PADDING_X: f32 = 16.0;
+        /// Between two elements (slots, the safety note, STOP).
+        pub const GAP: f32 = 14.0;
+    }
+
+    /// `components.big-button` content (Story 4.7, lifted from
+    /// `mockups/key-empty-state.html`: `.big{padding:0 22px;gap:12px}`, the
+    /// 16 × 16 symbol svg, `.big small{opacity:.85}`).
+    pub mod big_button {
+        /// Left (and right) padding of the content.
+        pub const PADDING_X: f32 = 22.0;
+        /// The painted symbol's box side.
+        pub const ICON_SIZE: f32 = 16.0;
+        /// Symbol right edge to the text block's left edge.
+        pub const ICON_GAP: f32 = 12.0;
+        /// The sub-line's opacity relative to the label.
+        pub const SUB_OPACITY: f32 = 0.85;
+    }
+
+    /// `components.safety-note` (Story 4.7, lifted from
+    /// `mockups/key-empty-state.html`: `.safety{padding-right:6px}`,
+    /// `.safety span{opacity:.7}`).
+    pub mod safety_note {
+        /// Space between the note's right edge and its area's right edge.
+        pub const PADDING_RIGHT: f32 = 6.0;
+        /// The second line's opacity.
+        pub const SECOND_LINE_OPACITY: f32 = 0.7;
+    }
+
+    /// `components.button-stop-idle.opacity`: the whole idle STOP is drawn
+    /// at this opacity (the focus ring is not).
+    pub const STOP_IDLE_OPACITY: f32 = 0.75;
+
+    /// `components.state-layer` (Story 4.7 owner eye check): how an enabled
+    /// button's fill and border change under the pointer. Hover mixes them
+    /// toward `colors.text` by [`state_layer::HOVER_AMOUNT`], pressed toward
+    /// black by [`state_layer::PRESSED_AMOUNT`] (gamma-space mix,
+    /// `Color32::lerp_to_gamma`); the label, glow and focus ring do not
+    /// change; a disabled button shows neither.
+    pub mod state_layer {
+        /// The hover mix target (`colors.text`).
+        pub const HOVER_TOWARD: egui::Color32 = super::super::TEXT;
+        /// The hover mix amount.
+        pub const HOVER_AMOUNT: f32 = 0.10;
+        /// The pressed mix target (black).
+        pub const PRESSED_TOWARD: egui::Color32 = egui::Color32::BLACK;
+        /// The pressed mix amount.
+        pub const PRESSED_AMOUNT: f32 = 0.20;
+    }
+
     /// `components.tooltip.border` width, in points.
     pub const TOOLTIP_BORDER_WIDTH: f32 = 1.0;
     /// Tooltip padding (`mockups/key-empty-state.html` `.tip{padding:8px
@@ -467,6 +521,9 @@ pub const RULER: TypeStyle = TypeStyle::new(Body, 10.5, 400.0);
 pub const NOTE_LABEL: TypeStyle = TypeStyle::new(Body, 11.5, 700.0);
 pub const GLYPH: TypeStyle = TypeStyle::new(Body, 10.5, 700.0);
 pub const KEY_CHIP: TypeStyle = TypeStyle::new(Body, 10.0, 600.0);
+/// The bottom bar's safety note (Story 4.7, lifted from
+/// `mockups/key-empty-state.html`: `.safety{font-size:13px;line-height:1.35}`).
+pub const SAFETY_NOTE: TypeStyle = TypeStyle::new(Body, 13.0, 400.0).lh(1.35);
 /// `typography.code` is a note in `DESIGN.md` ("Hack, size 13px",
 /// confirmed by the owner 2026-11-27, UX Open Question 7). Hack is static: the
 /// weight is its only weight, Regular.
@@ -499,6 +556,7 @@ pub fn typography_tokens() -> &'static [(&'static str, TypeStyle)] {
         ("note-label", NOTE_LABEL),
         ("glyph", GLYPH),
         ("key-chip", KEY_CHIP),
+        ("safety-note", SAFETY_NOTE),
         ("code", CODE),
     ]
 }

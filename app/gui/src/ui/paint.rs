@@ -30,6 +30,47 @@ pub fn stroke(width: f32, color: Color32, ppp: f32) -> Stroke {
     Stroke::new(width.max(floor), color)
 }
 
+/// The pointer state an enabled button is drawn in (Story 4.7 owner eye
+/// check, `components.state-layer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonState {
+    /// Neither hovered nor pressed (also: every disabled button).
+    Idle,
+    /// The pointer is over it.
+    Hovered,
+    /// The primary button is held down on it.
+    Pressed,
+}
+
+impl ButtonState {
+    /// The state of a button from its response; always `Idle` when the
+    /// button is disabled.
+    #[must_use]
+    pub fn of(resp: &egui::Response, enabled: bool) -> Self {
+        if !enabled {
+            Self::Idle
+        } else if resp.is_pointer_button_down_on() {
+            Self::Pressed
+        } else if resp.hovered() {
+            Self::Hovered
+        } else {
+            Self::Idle
+        }
+    }
+
+    /// `color` (a fill or border of the idle look) in this state: mixed
+    /// toward `colors.text` when hovered, toward black when pressed.
+    #[must_use]
+    pub fn tint(self, color: Color32) -> Color32 {
+        use theme::components::state_layer as sl;
+        match self {
+            Self::Idle => color,
+            Self::Hovered => color.lerp_to_gamma(sl::HOVER_TOWARD, sl::HOVER_AMOUNT),
+            Self::Pressed => color.lerp_to_gamma(sl::PRESSED_TOWARD, sl::PRESSED_AMOUNT),
+        }
+    }
+}
+
 /// [`stroke`] with the painter's `pixels_per_point`.
 fn floored(painter: &Painter, s: Stroke) -> Stroke {
     stroke(s.width, s.color, painter.pixels_per_point())
