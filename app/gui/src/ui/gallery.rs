@@ -4,7 +4,8 @@
 //! typography token (Story 4.1 AC 11), then one section per painting helper
 //! of Story 4.3: focus ring, glow, text halo, dashed rects, convex fills,
 //! stroke floor, digit cells, the 12 painted symbols, corner brackets and two
-//! sample dialogs. Not reachable from normal navigation.
+//! sample dialogs (the second is the real firmware dialog of Story 4.6),
+//! then the Story 4.6 inline hint at two widths. Not reachable from normal navigation.
 //!
 //! Only characters the bundled fonts cover (egui_kittest fails on a missing
 //! glyph; Nunito Sans has no arrows, play triangles or music signs: the
@@ -33,6 +34,8 @@ const SHEET_SAMPLE: egui::Vec2 = egui::Vec2::new(240.0, 120.0);
 const RULE_SAMPLE: f32 = 220.0;
 const CONVEX_CELL: f32 = 56.0;
 const PARCHMENT_CONTROL_HEIGHT: f32 = 28.0;
+const HINT_SAMPLE: egui::Vec2 = egui::Vec2::new(300.0, 120.0);
+const HINT_SAMPLE_COMPACT: egui::Vec2 = egui::Vec2::new(200.0, 120.0);
 /// The symbol sizes the gallery shows.
 pub const SYMBOL_SIZES: [f32; 4] = [10.0, 12.0, 14.0, 18.0];
 
@@ -53,19 +56,11 @@ pub fn readiness_dialog() -> ModalSpec {
     .with_secondary(ModalAction::new("Cancel"))
 }
 
-/// The gallery's required-update-style sample dialog (OK only, as in
-/// Story 4.6; body from `EXPERIENCE.md` Microcopy, draft).
+/// The real "Firmware update needed" dialog of Story 4.6 (OK only, 440 pt),
+/// so the gallery shows it for the owner's eye check.
 #[must_use]
 pub fn update_dialog() -> ModalSpec {
-    ModalSpec::new(
-        "gallery-update",
-        "Firmware update needed",
-        ModalBody::Text(
-            "This firmware is too old for this app. Update both boards to continue.".to_owned(),
-        ),
-        ModalAction::new("OK"),
-    )
-    .with_width(theme::components::modal_dialog::MIN_WIDTH)
+    super::firmware::required_update_dialog()
 }
 
 /// Draws the gallery over `ui.max_rect()`; its dialog buttons request the
@@ -358,6 +353,30 @@ fn helper_sections(ui: &mut Ui, modals: &mut Modals) {
     bracket_samples(ui);
     section(ui, "Dialogs");
     dialog_buttons(ui, modals);
+    section(ui, "inline-hint in a panel at 300 and 200 pt");
+    inline_hint_samples(ui);
+}
+
+/// The Story 4.6 gamepad hint in a `panel` box at the regular and at the
+/// compact (Story 4.9) width, inset as in the gamepad region.
+fn inline_hint_samples(ui: &mut Ui) {
+    use theme::components::inline_hint::INSET;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::spacing::S4;
+        for size in [HINT_SAMPLE, HINT_SAMPLE_COMPACT] {
+            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+            ui.painter()
+                .rect_filled(rect, theme::corner(0.0), theme::PANEL);
+            let inner = Rect::from_min_max(
+                pos2(rect.left() + INSET, rect.top() + INSET),
+                pos2(rect.right() - INSET, rect.bottom()),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                widgets::inline_hint(ui, inner, crate::gating::HINT_FIRMWARE);
+            });
+        }
+    });
+    ui.add_space(theme::spacing::S5);
 }
 
 /// A themed button on dark (with and without an icon), and a focusable

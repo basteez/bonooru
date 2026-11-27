@@ -515,6 +515,7 @@ components:
   inline-hint:
     foreground: '{colors.text-muted}'
     typography: '{typography.small}'
+    inset: 10px
   collapsible-header:
     foreground: '{colors.text-muted}'
     typography: '{typography.label}'
@@ -672,7 +673,7 @@ An `unknown` LED shows its label only ("Switch"), with no detail text. → Refer
 
 **Interruption banner** (dialogue-style). → Reference: direction 3 (dialogue banner) and [mockups/key-dialogs.html](mockups/key-dialogs.html) (USB-suspend banner). Used for playback interruptions and import failures, over the bottom of the note view. `banner-dialogue`: translucent dark fill, 1 px cream-40 % border, `{rounded.md}`, 16/20 px padding, centred `{typography.banner-text}`. A **name tab** (`banner-name-tab`) overlaps the top edge at the left, e.g. "Playback stopped". Actions centred: primary = parchment fill with ink text, secondary = ghost (cream-50 % outline). A small ▾ chevron (painted) sits centred on the bottom edge. A "Details" text link sits at the right end of the action row. The **Update banner** is the slim variant: full width under the status strip (8 px side margins), 38 px high, single line, same fill and border, no name tab; "Update" in the parchment primary style, "Later" ghost, both right-aligned. → Reference: [mockups/key-dialogs.html](mockups/key-dialogs.html) (recommended-update banner).
 
-**Inline hint.** `inline-hint`: one line of `{typography.small}` in `{colors.text-muted}` with an optional small button, placed in the region it concerns (e.g. "Plug the bridge into your PC." in the gamepad panel; "Gamepad clicks are ignored until the Switch is ready." or "The gamepad is off until both boards are updated." under the pad).
+**Inline hint.** `inline-hint`: one line of `{typography.small}` in `{colors.text-muted}` with an optional small button, placed in the region it concerns (e.g. "Plug the bridge into your PC." in the gamepad panel; "Gamepad clicks are ignored until the Switch is ready." or "The gamepad is off until both boards are updated." under the pad). Until the pad exists (Story 4.8) the hint sits at the top of the gamepad panel, `components.inline-hint.inset` (10 px, the mock's panel padding) inside its left, right and top edges, wrapped to the panel width (Story 4.6).
 
 **Countdown.** → Reference: direction 3 (countdown). `countdown-veil` (80 %) over the note-view card only; centred numeral in `{typography.countdown}`, **cream (`{colors.text}`) with a 2 px `{colors.frame}` outline** (8 offset draws) and a soft amber rounded-rect halo behind it (text cannot glow in egui). Sub-line 14 px semibold cream: "Starting from 0:12 · hands off the controller". Cream on the composited veil (~#413a2d) is 8.85:1 for both numeral and sub-line.
 
@@ -681,7 +682,7 @@ An `unknown` LED shows its label only ("Switch"), with no detail text. → Refer
 **Modal dialog** (readiness confirm, Settings modal, unsaved changes, restore draft, required update). → Reference: [mockups/key-dialogs.html](mockups/key-dialogs.html) (readiness confirm, "Firmware update needed"). `modal-dialog`, about 440–460 px wide, centred over the whole window; title in `{typography.dialog-title}` centred over a short original flourish rule (two rim hairlines meeting at a small diamond between two leaf curves, stroked path + one convex diamond); checklist rows (14.5 px) with a small amber diamond bullet (convex), separated by 1 px `{colors.rule}`; body text centred; actions right-aligned, primary amber with glow and focus, secondary ghost (Well fill, rim border) to its left; the "Don't ask again" checkbox sits left on the action row. Backdrop `{colors.scrim}`. The outer width is 460 px by default and never below 440 px (`components.modal-dialog.width` / `min-width`), and the dialog has no drop shadow (see Elevation: no drop shadows as hierarchy).
 
 - **Readiness confirm:** title "Ready to play?", three checklist rows, checkbox, Cancel (ghost) + Play (primary, focused).
-- **Firmware update needed** (required update): title "Firmware update needed", one centred body line, Not now (ghost) + Update now (primary, focused). Behind it the status LEDs keep showing the boards' current versions.
+- **Firmware update needed** (required update): title "Firmware update needed", one centred body line, Not now (ghost) + Update now (primary, focused). Behind it the status LEDs keep showing the boards' current versions. Epic 4 (Story 4.6): one primary OK, no ghost, 440 pt wide; Not now + Update now arrive with the wizard (Epic 8).
 
 **Checkbox.** `checkbox`: 14 px Well box, 1 px rim, `{rounded.xs}`, amber check drawn as a two-segment stroke; label in `{colors.text-muted}`; focus ring on the box. Used for "Don't ask again".
 

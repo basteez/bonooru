@@ -10,10 +10,11 @@ use ocb_services::port::SerialBackend;
 use ocb_services::worker::{self, LinkSnapshot, TimedEvent, TryRecvError, WorkerHandle};
 use raw_window_handle::HasWindowHandle as _;
 
+use crate::gating::{self, FirmwareWatch, Gate, GateTracker};
 use crate::leds::{self, LedTracker, Leds};
 use crate::smoke::{self, Report, Smoke};
-use crate::ui::modal::Modals;
-use crate::ui::{gallery, main_screen, theme};
+use crate::ui::modal::{ModalOutcome, Modals};
+use crate::ui::{firmware, gallery, main_screen, theme};
 
 /// Which screen the window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +174,13 @@ pub struct App {
     clock: Clock,
     /// Logs every LED change to `bonooru.log` (Story 4.5 AC 12).
     led_tracker: LedTracker,
+    /// Requests the firmware dialog once per mismatching connection
+    /// (Story 4.6).
+    firmware: FirmwareWatch,
+    /// Logs every gate change (Story 4.6 AC 9).
+    gate_tracker: GateTracker,
+    /// The app's own log lines (`dialog`), same handle as the trackers'.
+    log: LogHandle,
     /// The delay last passed to `request_repaint_after` for the LEDs'
     /// next timed change (test hook, [`App::last_repaint_after`]).
     last_repaint_after: Option<Duration>,
@@ -185,9 +193,9 @@ impl App {
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>, mode: Mode) -> Self {
         let logger = Logger::start();
-        // Taken before the logger moves into the link: the LED lines share
-        // the worker's log and its `+ms` stamps (AC 12).
-        let led_log = logger.handle();
+        // Taken before the logger moves into the link: the LED, gate and
+        // dialog lines share the worker's log and its `+ms` stamps.
+        let app_log = logger.handle();
         let clock = Clock(real_ui_clock());
         let link = worker::spawn(
             SerialBackend::new(),
@@ -196,7 +204,7 @@ impl App {
         )
         .ok()
         .map(|h| Link::new(h, Some(logger), clock.now()));
-        Self::build(cc, mode, link, clock, led_log)
+        Self::build(cc, mode, link, clock, app_log)
     }
 
     /// Builds the app on a worker the caller started (tests: a fake
@@ -213,7 +221,7 @@ impl App {
         mode: Mode,
         link: Option<Link>,
         clock: Clock,
-        led_log: LogHandle,
+        log: LogHandle,
     ) -> Self {
         crate::setup(&cc.egui_ctx);
         Self {
@@ -222,7 +230,10 @@ impl App {
             modals: Modals::default(),
             link,
             clock,
-            led_tracker: LedTracker::new(led_log),
+            led_tracker: LedTracker::new(log.clone()),
+            firmware: FirmwareWatch::default(),
+            gate_tracker: GateTracker::new(log.clone()),
+            log,
             last_repaint_after: None,
         }
     }
@@ -239,11 +250,22 @@ impl App {
         self
     }
 
-    /// This app logging its LED changes to `log` (tests: a memory sink).
+    /// This app writing its own log lines to `log` (tests: a memory sink):
+    /// the `led` lines (Story 4.5), the `gate` and `dialog` lines (Story
+    /// 4.6). The name is Story 4.5's; it now covers all three.
     #[must_use]
     pub fn led_log(mut self, log: LogHandle) -> Self {
-        self.led_tracker = LedTracker::new(log);
+        self.led_tracker = LedTracker::new(log.clone());
+        self.gate_tracker = GateTracker::new(log.clone());
+        self.log = log;
         self
+    }
+
+    /// What the latest snapshot blocks (Story 4.6): the gamepad and Play
+    /// are off while the controller needs a firmware update.
+    #[must_use]
+    pub fn gate(&self) -> Gate {
+        gating::evaluate(self.link_snapshot().map(AsRef::as_ref))
     }
 
     /// The three LEDs now (Story 4.5): the latest snapshot, the UI clock's
@@ -411,7 +433,22 @@ impl eframe::App for App {
             Mode::Main => {
                 let leds = self.leds();
                 self.led_tracker.observe(&leds);
-                main_screen::show(ui, &leds);
+                let gate = self.gate();
+                self.gate_tracker.observe(&gate);
+                // Once per mismatching connection, requested before
+                // `Modals::show` below: drawn in the frame the snapshot was
+                // drained (Story 4.6 AC 2, 3).
+                let snap = self.link.as_ref().and_then(|l| l.snapshot.as_deref());
+                if let Some((info, at)) = self.firmware.take_new(snap) {
+                    self.modals.request(firmware::required_update_dialog());
+                    // egui draws a new area invisibly in its first pass (the
+                    // sizing pass): discarding this pass makes egui run the
+                    // frame again at once, and that second pass draws the
+                    // dialog visibly, so it shows in this very frame.
+                    ui.ctx().request_discard("firmware dialog opens");
+                    self.log.log("dialog", gating::dialog_shown_line(&info, at));
+                }
+                main_screen::show(ui, &leds, &gate);
                 // A staleness or grace boundary, or a silent worker turning
                 // stalled, changes an LED with no new snapshot: draw that
                 // frame on time (AC 6, 7, 8).
@@ -427,6 +464,16 @@ impl eframe::App for App {
         // in `Modals` until the requesting screen reads it with
         // `take_outcome(id)` (the gallery's samples never read theirs).
         let _ = self.modals.show(&ctx);
+        // The firmware dialog's answer: logged only; closing it never lifts
+        // the gate (only a new connection with a matching INFO does).
+        if let Some(outcome) = self.modals.take_outcome(firmware::dialog_id()) {
+            let outcome = match outcome {
+                ModalOutcome::Primary => "primary",
+                ModalOutcome::Secondary => "secondary",
+                ModalOutcome::Dismissed => "dismissed",
+            };
+            self.log.log("dialog", gating::dialog_closed_line(outcome));
+        }
         self.smoke_frame(&ctx, frame);
     }
 

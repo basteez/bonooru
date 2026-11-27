@@ -362,8 +362,10 @@ fn g3_component_sizes() {
         theme::components::STATUS_LED_SIZE,
     );
     // Story 4.5: the strip and LED spacing lifted from the mock.
-    use theme::components::{status_led, status_strip};
+    use theme::components::{inline_hint, status_led, status_strip};
     for (group, key, ours) in [
+        // Story 4.6: the hint's inset in its region.
+        ("inline-hint", "inset", inline_hint::INSET),
         ("status-led", "gap", status_led::GAP),
         ("status-led", "symbol-gap", status_led::SYMBOL_GAP),
         ("status-led", "detail-gap", status_led::DETAIL_GAP),

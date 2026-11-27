@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::{Flat, inside, shapes_flat};
+use common::{Flat, dialog_frame_rect as frame_rect, inside, shapes_flat};
 use egui::epaint::Shape;
 use egui::{Color32, Event, Id, Key, Modifiers, PointerButton, Pos2, Rect, Role, Ui, vec2};
 use egui_kittest::Harness;
@@ -55,26 +55,6 @@ fn open(h: &mut Harness<'_, State>, spec: ModalSpec) {
 
 fn flat(h: &Harness<'_, State>) -> Vec<Flat> {
     shapes_flat(&h.output().shapes)
-}
-
-/// The dialog frame: filled `panel-raised`, 1 pt `rim` stroke.
-fn frame_rect(flat: &[Flat]) -> Rect {
-    let frames: Vec<_> = flat
-        .iter()
-        .filter_map(|f| match &f.shape {
-            Shape::Rect(r)
-                if r.fill == theme::PANEL_RAISED
-                    && r.stroke.color == theme::RIM
-                    && r.stroke.width == 1.0 =>
-            {
-                Some(r.clone())
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(frames.len(), 1, "one dialog frame: {frames:?}");
-    assert_eq!(frames[0].corner_radius, theme::corner(theme::rounded::LG));
-    frames[0].rect
 }
 
 fn scrims(flat: &[Flat]) -> usize {
