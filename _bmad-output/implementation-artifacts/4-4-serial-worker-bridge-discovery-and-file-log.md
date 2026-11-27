@@ -4,7 +4,7 @@ baseline_commit: 9f5a167
 
 # Story 4.4: Serial worker, bridge discovery and file log
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
