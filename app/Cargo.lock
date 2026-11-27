@@ -2236,6 +2236,7 @@ dependencies = [
  "egui_kittest",
  "ocb-core",
  "ocb-services",
+ "ocb-sim",
  "raw-window-handle",
  "winit",
 ]

@@ -46,6 +46,9 @@ winit = { version = "=0.30.13", default-features = false, features = ["x11"] }
 egui_kittest = { version = "=0.37.0", features = ["eframe"] }
 # Tests never start the real backend or write the real log (Story 4.4).
 ocb-services = { path = "../services", features = ["sim"] }
+# The fake controller's configuration (Story 4.6: a controller reporting
+# another `proto_ver`). Dev-only: never in the shipped graph.
+ocb-sim = { path = "../sim" }
 
 [lints]
 workspace = true

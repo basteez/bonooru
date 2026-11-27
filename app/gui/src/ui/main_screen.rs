@@ -1,18 +1,20 @@
 //! The main screen (UX-DR5): five regions filled in reading order, each a
 //! scoped `Ui` over its rect (never egui panels). The status strip shows
-//! the brand and the three LEDs (Story 4.5); the other regions are empty
-//! placeholders until later stories.
+//! the brand and the three LEDs (Story 4.5); the gamepad region shows the
+//! gate's inline hint while the gamepad is blocked (Story 4.6); the other
+//! regions are empty placeholders until later stories.
 
 use egui::{Rect, Stroke, Ui, UiBuilder, pos2};
 
 use super::layout::{RegionId, regions};
-use super::{paint, status_strip, theme};
+use super::{paint, status_strip, theme, widgets};
+use crate::gating::Gate;
 use crate::leds::Leds;
 
 /// Draws the main screen over `ui.max_rect()`, the status strip showing
-/// `leds`. The status region comes first, so its LEDs are first in the tab
-/// order.
-pub fn show(ui: &mut Ui, leds: &Leds) {
+/// `leds` and the gamepad region the hint of `gate.gamepad`, if blocked.
+/// The status region comes first, so its LEDs are first in the tab order.
+pub fn show(ui: &mut Ui, leds: &Leds, gate: &Gate) {
     let content = ui.max_rect();
     ui.painter()
         .rect_filled(content, theme::corner(0.0), theme::FRAME);
@@ -24,8 +26,26 @@ pub fn show(ui: &mut Ui, leds: &Leds) {
             if id == RegionId::Status {
                 status_strip::show(ui, rect, leds);
             }
+            if id == RegionId::Gamepad
+                && let Some(block) = gate.gamepad
+            {
+                widgets::inline_hint(ui, hint_rect(rect), block.gamepad_hint());
+            }
         });
     }
+}
+
+/// Where the gamepad hint goes in the gamepad region `rect`: inset by
+/// `components.inline-hint.inset` (10 pt, the mock's panel padding) from
+/// the left, right and top edges, down to the region's bottom. Story 4.8
+/// moves the hint under the pad.
+#[must_use]
+pub fn hint_rect(rect: Rect) -> Rect {
+    use theme::components::inline_hint::INSET;
+    Rect::from_min_max(
+        pos2(rect.left() + INSET, rect.top() + INSET),
+        pos2(rect.right() - INSET, rect.bottom()),
+    )
 }
 
 /// A 1 pt bottom hairline snapped to physical pixels: returns the line's

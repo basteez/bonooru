@@ -230,6 +230,15 @@ pub mod components {
         pub const BRAND_GAP: f32 = 28.0;
     }
 
+    /// `components.inline-hint` placement (Story 4.6): the hint sits this
+    /// far inside its region's left, right and top edges until the gamepad
+    /// exists (the mock's panel padding, `mockups/key-dialogs.html`
+    /// `.right{padding:10px}`); Story 4.8 moves it under the pad.
+    pub mod inline_hint {
+        /// Inset from the region's left, right and top edges.
+        pub const INSET: f32 = 10.0;
+    }
+
     /// `components.tooltip.border` width, in points.
     pub const TOOLTIP_BORDER_WIDTH: f32 = 1.0;
     /// Tooltip padding (`mockups/key-empty-state.html` `.tip{padding:8px

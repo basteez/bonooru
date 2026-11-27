@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::{Flat, inside, shapes_flat};
+use common::{Flat, dialog_frame_rect as frame_rect, inside, shapes_flat};
 use egui::epaint::Shape;
 use egui::{Color32, Event, Id, Key, Modifiers, PointerButton, Pos2, Rect, Role, Ui, vec2};
 use egui_kittest::Harness;
@@ -27,6 +27,8 @@ struct State {
     modals: Modals,
     outcomes: Vec<(Id, ModalOutcome)>,
     behind_clicks: usize,
+    /// Frames whose Esc press was still unconsumed after `Modals::show`.
+    esc_left: usize,
 }
 
 fn app(ui: &mut Ui, s: &mut State) {
@@ -35,6 +37,9 @@ fn app(ui: &mut Ui, s: &mut State) {
     }
     if let Some(o) = s.modals.show(ui.ctx()) {
         s.outcomes.push(o);
+    }
+    if ui.input(|i| i.key_pressed(Key::Escape)) {
+        s.esc_left += 1;
     }
 }
 
@@ -55,26 +60,6 @@ fn open(h: &mut Harness<'_, State>, spec: ModalSpec) {
 
 fn flat(h: &Harness<'_, State>) -> Vec<Flat> {
     shapes_flat(&h.output().shapes)
-}
-
-/// The dialog frame: filled `panel-raised`, 1 pt `rim` stroke.
-fn frame_rect(flat: &[Flat]) -> Rect {
-    let frames: Vec<_> = flat
-        .iter()
-        .filter_map(|f| match &f.shape {
-            Shape::Rect(r)
-                if r.fill == theme::PANEL_RAISED
-                    && r.stroke.color == theme::RIM
-                    && r.stroke.width == 1.0 =>
-            {
-                Some(r.clone())
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(frames.len(), 1, "one dialog frame: {frames:?}");
-    assert_eq!(frames[0].corner_radius, theme::corner(theme::rounded::LG));
-    frames[0].rect
 }
 
 fn scrims(flat: &[Flat]) -> usize {
@@ -692,12 +677,36 @@ fn g12_held_enter_does_not_answer_the_queued_dialog() {
 #[test]
 fn g12_esc_on_the_opening_frame() {
     let mut h = harness(1280.0, 800.0, 1.0);
-    let spec = update_dialog();
+    let spec = readiness_dialog();
+    assert!(spec.opening_esc_dismisses, "the default");
     h.state_mut().modals.request(spec.clone());
     h.key_press(Key::Escape);
     h.step();
     h.run();
     assert!(!h.state().modals.is_open(), "dialog still open");
+    assert_eq!(h.state().outcomes, vec![(spec.id, ModalOutcome::Dismissed)]);
+    assert_eq!(h.state().esc_left, 0, "the dialog consumed the Esc");
+}
+
+/// Story 4.6: a dialog that opts out (`ignoring_opening_esc`, the firmware
+/// dialog) stays open on an Esc of its opening frame and leaves that Esc
+/// unconsumed (STOP still reads it); a later Esc closes it.
+#[test]
+fn g12_opening_esc_ignored_when_opted_out() {
+    let mut h = harness(1280.0, 800.0, 1.0);
+    let spec = readiness_dialog().ignoring_opening_esc();
+    h.state_mut().modals.request(spec.clone());
+    h.key_press(Key::Escape);
+    h.step();
+    h.run();
+    assert!(h.state().modals.is_open(), "dismissed by an unseen Esc");
+    assert!(h.state().outcomes.is_empty());
+    assert_eq!(h.state().esc_left, 1, "the Esc stays readable");
+    assert!(!update_dialog().opening_esc_dismisses);
+    h.key_press(Key::Escape);
+    h.step();
+    h.run();
+    assert!(!h.state().modals.is_open(), "a later Esc closes it");
     assert_eq!(h.state().outcomes, vec![(spec.id, ModalOutcome::Dismissed)]);
 }
 

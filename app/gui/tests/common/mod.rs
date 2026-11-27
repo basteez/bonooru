@@ -460,3 +460,135 @@ impl Scheduler {
         }
     }
 }
+
+/// One field pattern of a log line matcher (Story 4.6).
+#[derive(Clone, Copy, Debug)]
+pub enum Pat {
+    /// One of these words.
+    OneOf(&'static [&'static str]),
+    /// `[a-z_]+`.
+    Word,
+    /// `\d+`.
+    Digits,
+    /// `\d+` or `-`.
+    DigitsOrDash,
+    /// `\d+\.\d+\.\d+`.
+    Triple,
+}
+
+fn digits(v: &str) -> bool {
+    !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())
+}
+
+impl Pat {
+    fn matches(self, v: &str) -> bool {
+        match self {
+            Self::OneOf(words) => words.contains(&v),
+            Self::Word => !v.is_empty() && v.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+            Self::Digits => digits(v),
+            Self::DigitsOrDash => v == "-" || digits(v),
+            Self::Triple => {
+                let parts: Vec<&str> = v.split('.').collect();
+                parts.len() == 3 && parts.iter().all(|p| digits(p))
+            }
+        }
+    }
+}
+
+/// Whether `line` is exactly `head` followed by ` key=value` fields in this
+/// order, each value matching its pattern (a small stand-in for an anchored
+/// regex; no regex crate in the workspace).
+pub fn line_matches(line: &str, head: &str, fields: &[(&str, Pat)]) -> bool {
+    let mut words = line.split(' ');
+    if !head.is_empty() && words.next() != Some(head) {
+        return false;
+    }
+    for (key, pat) in fields {
+        let Some((k, v)) = words.next().and_then(|w| w.split_once('=')) else {
+            return false;
+        };
+        if k != *key || !pat.matches(v) {
+            return false;
+        }
+    }
+    words.next().is_none()
+}
+
+const ON_OFF: Pat = Pat::OneOf(&["on", "off"]);
+
+/// Story 4.6 `gate` line: `^gamepad=(on|off) play=(on|off) reason=[a-z_]+
+/// controller_proto=(\d+|-) app_proto=(\d+|-)$`.
+pub fn is_gate_line(line: &str) -> bool {
+    line_matches(
+        line,
+        "",
+        &[
+            ("gamepad", ON_OFF),
+            ("play", ON_OFF),
+            ("reason", Pat::Word),
+            ("controller_proto", Pat::DigitsOrDash),
+            ("app_proto", Pat::DigitsOrDash),
+        ],
+    )
+}
+
+/// Story 4.6 `dialog shown` line: `^shown id=firmware_update_needed
+/// connected_us=\d+ controller_proto=\d+ app_proto=\d+ fw=\d+\.\d+\.\d+
+/// bridge=\d+\.\d+\.\d+$`.
+pub fn is_dialog_shown_line(line: &str) -> bool {
+    line_matches(
+        line,
+        "shown",
+        &[
+            ("id", Pat::OneOf(&["firmware_update_needed"])),
+            ("connected_us", Pat::Digits),
+            ("controller_proto", Pat::Digits),
+            ("app_proto", Pat::Digits),
+            ("fw", Pat::Triple),
+            ("bridge", Pat::Triple),
+        ],
+    )
+}
+
+/// Story 4.6 `dialog closed` line: `^closed id=firmware_update_needed
+/// outcome=(primary|dismissed)$`.
+pub fn is_dialog_closed_line(line: &str) -> bool {
+    line_matches(
+        line,
+        "closed",
+        &[
+            ("id", Pat::OneOf(&["firmware_update_needed"])),
+            ("outcome", Pat::OneOf(&["primary", "dismissed"])),
+        ],
+    )
+}
+
+/// The texts of the log lines of `kind` (the part after ` <kind> `).
+pub fn kind_texts(lines: &[String], kind: &str) -> Vec<String> {
+    let tag = format!(" {kind} ");
+    lines
+        .iter()
+        .filter_map(|l| l.split_once(tag.as_str()).map(|(_, t)| t.to_owned()))
+        .collect()
+}
+
+/// The one dialog frame of a frame's shapes (Story 4.3 G.12, reused by
+/// G.18): filled `panel-raised`, 1 pt `rim` stroke, `rounded.lg`.
+pub fn dialog_frame_rect(flat: &[Flat]) -> Rect {
+    let frames: Vec<_> = flat
+        .iter()
+        .filter_map(|f| match &f.shape {
+            Shape::Rect(r)
+                if r.fill == theme::PANEL_RAISED
+                    && r.stroke.color == theme::RIM
+                    && r.stroke.width == 1.0 =>
+            {
+                Some(r.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(frames.len(), 1, "one dialog frame: {frames:?}");
+    assert_eq!(frames[0].corner_radius, theme::corner(theme::rounded::LG));
+    frames[0].rect
+}

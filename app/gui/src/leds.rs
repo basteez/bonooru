@@ -365,7 +365,7 @@ const UNCONFIRMED_FIX: &str = "Wire the controller to the bridge and plug it int
 const FOREIGN_FIX: &str = "Flash it with the bridge firmware: hold BOOT, plug it in and drag the bridge .uf2 onto the RPI-RP2 drive.";
 const NOT_FOUND_TIP: &str = "No bridge found.";
 const NOT_FOUND_FIX: &str = "Plug the bridge into your PC.";
-const REQUIRED_TIP: &str = "This firmware is too old for this app.";
+const REQUIRED_TIP: &str = "This firmware doesn't match this app.";
 const REQUIRED_FIX: &str =
     "Update both boards: hold BOOT, plug in, drag the matching .uf2 onto the RPI-RP2 drive.";
 const WAITING_BRIDGE: &str = "Waiting for the bridge.";

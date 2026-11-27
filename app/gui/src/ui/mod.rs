@@ -1,6 +1,7 @@
 //! Screens and the look: theme tokens, fonts, layout, the painting helpers
 //! (`paint`, `symbols`), the themed widgets and the modal dialog host.
 
+pub mod firmware;
 pub mod fonts;
 pub mod gallery;
 pub mod layout;

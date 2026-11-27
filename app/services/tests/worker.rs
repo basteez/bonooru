@@ -930,3 +930,58 @@ fn c26_unmute_twice_panics() {
         .unmute_at(2_000)
         .unmute_at(3_000);
 }
+
+/// C.27 (Story 4.6 AC 7): after a protocol mismatch the worker writes no
+/// further byte to that port while the session stays `Incompatible`, a
+/// command attempted on the session is refused and writes nothing, and the
+/// port is still read (the fake controller's STATUS keeps arriving).
+#[test]
+fn c27_nothing_written_when_incompatible() {
+    use ocb_core::link::CommandError;
+    let cfg = ControllerConfig {
+        proto_ver: 2,
+        ..ControllerConfig::default()
+    };
+    let b = FakeBackend::new(FakeClock::at(0))
+        .with(FakePort::bridge(CU, S, Some("Bonooru Bridge")).controller(cfg));
+    let mut r = SimRig::new(b, Rules::MACOS, LogHandle::disabled());
+    let (t, _) = step_to(&mut r, 1_500_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::RequiredUpdate { .. }))
+    });
+    // One more pass: whatever the INFO pass flushed is counted.
+    r.step();
+    let writes = |r: &SimRig| {
+        let snap = r.snapshot.clone().unwrap();
+        snap.port_writes
+            .iter()
+            .find(|(n, _)| n == CU)
+            .map(|(_, w)| *w)
+            .unwrap()
+    };
+    let at_info = writes(&r);
+    assert!(at_info > 0, "the HELLO was written");
+    let raw_at_info = r.backend.state().writes_of(CU).len();
+    let first_status = r.snapshot.clone().unwrap().status.map(|(_, rx)| rx);
+    r.run_until(t + 10_000_000);
+    let snap = r.snapshot.clone().unwrap();
+    assert_eq!(snap.phase, Phase::Incompatible);
+    assert_eq!(writes(&r), at_info, "no byte written in Incompatible");
+    assert_eq!(
+        r.backend.state().writes_of(CU).len(),
+        raw_at_info,
+        "the fake port saw no write either"
+    );
+    // The port is still read: STATUS keeps arriving every 50 ms.
+    let (_, rx) = snap.status.unwrap();
+    assert!(rx > t + 9_000_000, "STATUS still read: last at {rx}");
+    assert_ne!(Some(rx), first_status);
+    // A command on the incompatible session is refused and writes nothing.
+    assert_eq!(
+        r.core.session_mut().unwrap().set_state(NEUTRAL),
+        Err(CommandError::NotConnected)
+    );
+    let now = r.clock.now_us();
+    r.run_until(now + 1_000_000);
+    assert_eq!(writes(&r), at_info, "the refused command wrote nothing");
+    assert_eq!(r.backend.state().writes_of(CU).len(), raw_at_info);
+}

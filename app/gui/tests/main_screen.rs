@@ -128,3 +128,106 @@ fn g1_note_card_has_corner_brackets() {
         }
     }
 }
+
+/// Story 4.6 AC 5: with a firmware block the gamepad region shows the
+/// inline hint in `typography.small` (12.5 pt) `text-muted`, 10 pt inside
+/// its left, right and top edges, as one `Role::Label`; without the block
+/// no hint is drawn.
+#[test]
+fn g1_gamepad_hint_geometry() {
+    use egui::Role;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use ocb_app::app::WorkerHealth;
+    use ocb_app::gating::{Block, Gate, HINT_FIRMWARE};
+    use ocb_app::leds;
+    use ocb_app::ui::main_screen;
+
+    /// The main screen alone; the state is the rect it was drawn over.
+    fn screen(w: f32, hgt: f32, ppp: f32, gate: Gate) -> Harness<'static, Rect> {
+        let mut h = Harness::builder()
+            .with_size(vec2(w, hgt))
+            .with_pixels_per_point(ppp)
+            .with_context_setup(ocb_app::setup)
+            .build_ui_state(
+                move |ui, drawn: &mut Rect| {
+                    *drawn = ui.max_rect();
+                    let l = leds::evaluate(None, 0, WorkerHealth::Running);
+                    main_screen::show(ui, &l, &gate);
+                },
+                Rect::NOTHING,
+            );
+        h.run();
+        h
+    }
+    use ocb_core::protocol::consts::PROTO_VERSION;
+    let block = Some(Block::FirmwareUpdate {
+        controller_proto: PROTO_VERSION.wrapping_add(1),
+        app_proto: PROTO_VERSION,
+    });
+    let blocked = Gate {
+        gamepad: block,
+        play: block,
+    };
+    for (w, hgt) in [(1024.0, 680.0), (1280.0, 800.0)] {
+        for ppp in [1.0, 2.0] {
+            let ctx = format!("{w}x{hgt} ppp {ppp}");
+            let h = screen(w, hgt, ppp, blocked);
+            let pad = regions(*h.state()).gamepad;
+            let hints: Vec<_> = common::shapes_flat(&h.output().shapes)
+                .into_iter()
+                .filter_map(|f| match f.shape {
+                    Shape::Text(t) if t.galley.text() == HINT_FIRMWARE => Some(t),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(hints.len(), 1, "{ctx}: one hint");
+            let t = &hints[0];
+            let ink = t.galley.rect.translate(t.pos.to_vec2());
+            let format = &t.galley.job.sections[0].format;
+            assert_eq!(format.font_id.size, 12.5, "{ctx}");
+            assert_eq!(format.color, theme::TEXT_MUTED, "{ctx}");
+            assert!(
+                common::inside(ink, pad.shrink(10.0), 0.5),
+                "{ctx}: {ink:?} not inside {pad:?} shrunk by 10"
+            );
+            // The drawn text, not only the helper: left at region + 10,
+            // wrapped to the region width − 20.
+            assert!(
+                (ink.left() - (pad.left() + 10.0)).abs() <= 0.5,
+                "{ctx}: left {} vs {}",
+                ink.left(),
+                pad.left() + 10.0
+            );
+            assert!(
+                (t.galley.job.wrap.max_width - (pad.width() - 20.0)).abs() <= 0.5,
+                "{ctx}: wrap width {} vs {}",
+                t.galley.job.wrap.max_width,
+                pad.width() - 20.0
+            );
+            assert!(
+                (ink.top() - (pad.top() + 10.0)).abs() <= 0.5,
+                "{ctx}: top {} vs {}",
+                ink.top(),
+                pad.top() + 10.0
+            );
+            // One label node, not focusable (no Focus action).
+            let node = h.get_by_role_and_label(Role::Label, HINT_FIRMWARE);
+            assert!(
+                !node
+                    .accesskit_node()
+                    .data()
+                    .supports_action(egui::accesskit::Action::Focus),
+                "{ctx}: the hint advertises focus"
+            );
+
+            let free = screen(w, hgt, ppp, Gate::default());
+            assert!(
+                !common::shapes_flat(&free.output().shapes).iter().any(
+                    |f| matches!(&f.shape, Shape::Text(t) if t.galley.text() == HINT_FIRMWARE)
+                ),
+                "{ctx}: hint without a block"
+            );
+            assert!(free.query_by_label(HINT_FIRMWARE).is_none(), "{ctx}");
+        }
+    }
+}

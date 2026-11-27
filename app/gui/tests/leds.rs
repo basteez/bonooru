@@ -455,6 +455,18 @@ fn g14_tooltips_name_the_fix() {
     assert_eq!(suspended.name(), "Switch – not ready");
     assert_eq!(suspended.tooltip.last().unwrap(), "Undock the Switch.");
     assert_eq!(suspended.tooltip.len(), 3);
+    // C2 (Story 4.6 D6): neutral, a board can be newer than the app.
+    let mut req = opening(100_000);
+    req.phase = Phase::Incompatible;
+    req.required_update = Some(info([0, 2, 0], [0, 2, 1], 2));
+    assert_eq!(
+        run(&req).bridge_controller.tooltip,
+        vec![
+            "This firmware doesn't match this app.".to_owned(),
+            "Update both boards: hold BOOT, plug in, drag the matching .uf2 onto the RPI-RP2 drive."
+                .to_owned()
+        ]
+    );
     // Versions in the tooltip with the port (D4).
     let ok = run(&connected(20_000, ready()));
     assert_eq!(

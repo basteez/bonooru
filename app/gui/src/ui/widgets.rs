@@ -3,7 +3,7 @@
 //! widget calls `Response::widget_info` with the closest `egui::Role`; the
 //! painting itself comes from `ui::paint` and `ui::symbols`.
 
-use egui::{Align2, Color32, Rect, Response, Role, Sense, StrokeKind, Ui, WidgetInfo, vec2};
+use egui::{Align, Align2, Color32, Rect, Response, Role, Sense, StrokeKind, Ui, WidgetInfo, vec2};
 
 use super::paint;
 use super::symbols::{self, Symbol};
@@ -191,4 +191,21 @@ pub fn text_node_colored(
     ui.painter().galley(pos, galley, color);
     resp.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
     resp
+}
+
+/// An `inline-hint` (Story 4.6, UX-DR38): `text` in `typography.small`,
+/// `text-muted`, left-aligned at `rect.min` and wrapped to `rect`'s width.
+/// One `Role::Label` node named with the text, not focusable. Story 4.8
+/// reuses it for the gamepad's other hints.
+pub fn inline_hint(ui: &mut Ui, rect: Rect, text: &str) -> Response {
+    let galley = paint::layout(
+        ui.ctx(),
+        &theme::SMALL,
+        text,
+        theme::TEXT_MUTED,
+        rect.width(),
+        Align::Min,
+    );
+    let box_rect = Rect::from_min_size(rect.min, vec2(rect.width(), galley.rect.height()));
+    text_node_colored(ui, box_rect, galley, Align2::LEFT_TOP, theme::TEXT_MUTED)
 }
