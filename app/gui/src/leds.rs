@@ -269,13 +269,28 @@ impl Led {
         self
     }
 
-    /// The visible text and the AccessKit name: label + " " + detail (the
-    /// label alone when there is no detail).
+    /// The visible text (and the `name=` of the `led` line): label + " " +
+    /// detail (the label alone when there is no detail).
     #[must_use]
     pub fn name(&self) -> String {
         match &self.detail {
             Some(d) => format!("{} {d}", self.label),
             None => self.label.to_owned(),
+        }
+    }
+
+    /// The AccessKit name (AC 11): the visible text, with the state said in
+    /// words where the text alone does not say it: an unknown LED is
+    /// "<label> – unknown", a required update "<label> v<x> – update
+    /// required" (the warning is otherwise only the triangle).
+    #[must_use]
+    pub fn accessible_name(&self) -> String {
+        if self.state == LedState::Unknown {
+            format!("{} {UNKNOWN_SUFFIX}", self.label)
+        } else if self.reason == Reason::RequiredUpdate {
+            format!("{} {UPDATE_SUFFIX}", self.name())
+        } else {
+            self.name()
         }
     }
 
@@ -329,6 +344,8 @@ impl Leds {
 // Voice rules of EXPERIENCE.md and wait for the OQ-13 microcopy pass.
 
 const CHECKING: &str = "Checking…";
+const UNKNOWN_SUFFIX: &str = "– unknown";
+const UPDATE_SUFFIX: &str = "– update required";
 const STALLED_TIP: &str = "Bonooru's USB check is not responding.";
 const STALLED_FIX: &str = "Wait a moment. If it stays like this, restart Bonooru.";
 const ENDED_TIP: &str = "Bonooru stopped checking the USB ports.";
@@ -599,9 +616,14 @@ fn bridge_controller(snap: &LinkSnapshot, since_received_us: u64) -> (Led, Optio
             if snap.status.is_some_and(|(v, _)| !v.link_ok) {
                 return (no_link(Reason::LinkDown), next);
             }
-            // C9.
+            // C9. A connected session always has INFO; should it not, the
+            // port is open and the controller unconfirmed: "opening", not
+            // "no port".
             let Some(info) = &snap.info else {
-                return (no_port(), None);
+                let led = Led::new(LedState::Unknown, link, None, Reason::Opening)
+                    .tip([s(ASKING)])
+                    .status_age(age);
+                return (led, None);
             };
             let v = version(info.fw_ver);
             let led = Led::new(LedState::Ok, link, Some(v.clone()), Reason::Info)
@@ -684,27 +706,31 @@ pub fn evaluate(snap: Option<&LinkSnapshot>, since_received_us: u64, health: Wor
 
 /// The text of one `led` log line (Story 4.5 AC 12; the bench reads
 /// exactly this): `<link>=<state> name="<name>" reason=<reason>
-/// status_age_ms=<n|-> session_age_ms=<n|->`, ages rounded down.
+/// status_age_us=<n|-> session_age_us=<n|->`. Ages in whole µs, as the
+/// rules judge them (`> 150000`, `> 500000`): rounded to ms, a correct
+/// change at the boundary would read 150 / 500 (instrument review).
 #[must_use]
 pub fn led_line(link: Link3, led: &Led) -> String {
-    let ms = |us: Option<u64>| us.map_or_else(|| "-".to_owned(), |u| (u / 1000).to_string());
+    let us = |v: Option<u64>| v.map_or_else(|| "-".to_owned(), |u| u.to_string());
     format!(
-        "{}={} name=\"{}\" reason={} status_age_ms={} session_age_ms={}",
+        "{}={} name=\"{}\" reason={} status_age_us={} session_age_us={}",
         link.tag(),
         led.state.as_str(),
         led.name(),
         led.reason.as_str(),
-        ms(led.status_age_us),
-        ms(led.session_age_us)
+        us(led.status_age_us),
+        us(led.session_age_us)
     )
 }
 
-/// Writes one `led` line per LED whose state or name changed since the
-/// last [`LedTracker::observe`], nothing otherwise (AC 12). Logging never
-/// blocks (`LogHandle::log` is a `try_send`, AD-16).
+/// Writes one `led` line per LED whose state, name or reason changed
+/// since the last [`LedTracker::observe`], nothing otherwise (AC 12): a
+/// worker death while an LED is already unknown, Stale ↔ NoAnswer and the
+/// NAK latches are all logged. Logging never blocks (`LogHandle::log` is a
+/// `try_send`, AD-16).
 #[derive(Debug)]
 pub struct LedTracker {
-    last: Option<[(LedState, String); 3]>,
+    last: Option<[(LedState, String, Reason); 3]>,
     log: LogHandle,
 }
 
@@ -718,7 +744,9 @@ impl LedTracker {
 
     /// Logs the LEDs that changed.
     pub fn observe(&mut self, leds: &Leds) {
-        let now = leds.all().map(|(_, led)| (led.state, led.name()));
+        let now = leds
+            .all()
+            .map(|(_, led)| (led.state, led.name(), led.reason));
         for (k, (link, led)) in leds.all().into_iter().enumerate() {
             let same = self
                 .last

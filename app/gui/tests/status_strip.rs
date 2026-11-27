@@ -116,7 +116,7 @@ fn host(w: f32, hgt: f32, ppp: f32, leds: Leds) -> Harness<'static, Leds> {
 }
 
 fn names(leds: &Leds) -> [String; 3] {
-    leds.all().map(|(_, l)| l.name())
+    leds.all().map(|(_, l)| l.accessible_name())
 }
 
 fn led_rects(h: &Harness<'_, Leds>) -> [Rect; 3] {
@@ -449,7 +449,7 @@ fn g15_accesskit() {
         let h = host(1280.0, 800.0, 1.0, leds.clone());
         assert_eq!(h.query_all_by_role(Role::Status).count(), 3);
         for (_, l) in leds.all() {
-            let name = l.name();
+            let name = l.accessible_name();
             let node = h.get_by_role_and_label(Role::Status, &name);
             assert_eq!(
                 node.accesskit_node().description(),
@@ -460,9 +460,31 @@ fn g15_accesskit() {
         }
         let _ = h.get_by_role_and_label(Role::Label, "Bonooru");
     }
-    // Unknown names are the labels alone.
+    // Every Status node's name says its state: unknown LEDs (label only on
+    // screen) and a required update (a warning shown only by the triangle).
     let h = host(1280.0, 800.0, 1.0, all_in(LedState::Unknown));
-    for name in ["Bridge", "Controller", "Switch"] {
+    for name in [
+        "Bridge – unknown",
+        "Controller – unknown",
+        "Switch – unknown",
+    ] {
         let _ = h.get_by_role_and_label(Role::Status, name);
     }
+    assert!(
+        h.query_by_label("Bridge").is_none(),
+        "no bare label as a name"
+    );
+    let mut req = all_ok();
+    req.bridge_controller = Led {
+        state: LedState::Warning,
+        reason: Reason::RequiredUpdate,
+        ..led(
+            LedState::Warning,
+            "Controller",
+            Some("v0.2.0"),
+            &["This firmware is too old for this app."],
+        )
+    };
+    let h = host(1280.0, 800.0, 1.0, req);
+    let _ = h.get_by_role_and_label(Role::Status, "Controller v0.2.0 – update required");
 }

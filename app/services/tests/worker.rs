@@ -846,3 +846,87 @@ fn c26_mute_cuts_the_controller_off() {
     let (_, rx) = r.snapshot.clone().unwrap().status.unwrap();
     assert!(rx >= 1_500_000, "STATUS again after the unmute: {rx}");
 }
+
+/// C.26 (review): the STATUS-path reboot. A STATUS of a freshly booted
+/// controller after a non-fresh one: the core pushes `Status` then
+/// `ControllerRebooted`, and the worker must end with no STATUS kept and
+/// the grace restarted.
+#[test]
+fn c26_status_path_reboot_clears_the_status() {
+    let b = FakeBackend::new(FakeClock::at(0)).with(
+        FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+            // A non-fresh STATUS: an abort with USB_SUSPENDED.
+            .hook(
+                300_000,
+                Box::new(|c| c.force_abort(Some(ocb_core::protocol::EventCode::UsbSuspended))),
+            )
+            // Power cycle: the next STATUS is a fresh one (abort 0, NONE).
+            .hook(1_010_000, Box::new(|c| c.reboot())),
+    );
+    let mut r = SimRig::new(b, Rules::MACOS, LogHandle::disabled());
+    r.run_until(1_000_000);
+    let (_, rx) = r.snapshot.clone().unwrap().status.unwrap();
+    assert!(rx > 300_000, "a non-fresh STATUS seen");
+    let (t, snap) = step_to(&mut r, 1_200_000, |e| {
+        matches!(e, WorkerEvent::Link(LinkEvent::ControllerRebooted))
+    });
+    // The rebooted controller's STATUS came in the same pass, just before
+    // the reboot event (it is what revealed the reboot): it must not
+    // survive as "fresh" data.
+    assert_eq!(snap.status, None, "the reboot clears the STATUS");
+    assert_eq!(snap.session_since_us, Some(t));
+    assert_eq!(snap.phase, Phase::Opening);
+    assert_eq!((snap.connected_us, snap.last_nak), (None, None));
+}
+
+/// Review patch: an unavailable log never hides "port in use" (or
+/// permission): Busy stays the problem worth showing.
+#[test]
+fn c26_log_unavailable_keeps_busy() {
+    let logger = Logger::spawn(Box::new(ocb_services::log::FailingSink), false, None);
+    let b = FakeBackend::new(FakeClock::at(0))
+        .with(FakePort::bridge(CU, S, Some("Bonooru Bridge")).always_fail(OpenError::Busy));
+    let mut r = SimRig::new(b, Rules::MACOS, logger.handle());
+    r.run_until(10_000);
+    assert!(matches!(
+        r.snapshot.clone().unwrap().last_error,
+        Some(ocb_services::worker::LastError::Busy { .. })
+    ));
+    logger.handle().log("event", "first write fails");
+    let start = std::time::Instant::now();
+    while r
+        .find(|e| matches!(e, WorkerEvent::LogUnavailable { .. }))
+        .is_empty()
+    {
+        assert!(start.elapsed().as_secs() < 5, "log never failed");
+        r.step();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    r.step();
+    assert!(
+        matches!(
+            r.snapshot.clone().unwrap().last_error,
+            Some(ocb_services::worker::LastError::Busy { .. })
+        ),
+        "{:?}",
+        r.snapshot.clone().unwrap().last_error
+    );
+    drop(r);
+    logger.stop();
+}
+
+/// Review patch: `unmute_at` without an open `mute_at` is a script error.
+#[test]
+#[should_panic(expected = "without an open mute_at")]
+fn c26_unmute_without_mute_panics() {
+    let _ = FakePort::bridge(CU, S, Some("Bonooru Bridge")).unmute_at(1_000);
+}
+
+#[test]
+#[should_panic(expected = "without an open mute_at")]
+fn c26_unmute_twice_panics() {
+    let _ = FakePort::bridge(CU, S, Some("Bonooru Bridge"))
+        .mute_at(1_000)
+        .unmute_at(2_000)
+        .unmute_at(3_000);
+}

@@ -201,8 +201,15 @@ impl FakePort {
     /// Ends the open mute window at `t_us` (the controller is back; pair it
     /// with a hook at the same time to model a reboot).
     #[must_use]
+    ///
+    /// # Panics
+    /// Without an open mute window (a misordered script would otherwise
+    /// run with no mute at all and still pass).
     pub fn unmute_at(mut self, t_us: u64) -> Self {
-        if let Some(w) = self.mutes.iter_mut().rev().find(|w| w.1.is_none()) {
+        let open = self.mutes.iter_mut().rev().find(|w| w.1.is_none());
+        assert!(open.is_some(), "unmute_at({t_us}) without an open mute_at");
+        if let Some(w) = open {
+            assert!(w.0 <= t_us, "unmute_at({t_us}) before its mute_at({})", w.0);
             w.1 = Some(t_us);
         }
         self

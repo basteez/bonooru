@@ -665,7 +665,10 @@ fn g14_no_online_wording() {
     }
     let mut n = 0;
     for led in &all {
-        for text in std::iter::once(led.name()).chain(led.tooltip.iter().cloned()) {
+        for text in [led.name(), led.accessible_name()]
+            .into_iter()
+            .chain(led.tooltip.iter().cloned())
+        {
             assert_eq!(banned_word(&text), None, "{text}");
             n += 1;
         }
@@ -677,7 +680,7 @@ fn g14_no_online_wording() {
 
 /// The G.14 regex of the `led` line, by hand (no regex crate):
 /// `^(pc_bridge|bridge_controller|switch)=(ok|warning|error|unknown)
-/// name="[^"]+" reason=[a-z_]+ status_age_ms=(\d+|-) session_age_ms=(\d+|-)$`.
+/// name="[^"]+" reason=[a-z_]+ status_age_us=(\d+|-) session_age_us=(\d+|-)$`.
 fn is_led_line(t: &str) -> bool {
     let num_or_dash =
         |v: &str| v == "-" || (!v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
@@ -699,13 +702,13 @@ fn is_led_line(t: &str) -> bool {
     if name.is_empty() || name.contains('"') {
         return false;
     }
-    let Some((reason, rest)) = rest.split_once(" status_age_ms=") else {
+    let Some((reason, rest)) = rest.split_once(" status_age_us=") else {
         return false;
     };
     if reason.is_empty() || !reason.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
         return false;
     }
-    let Some((status, session)) = rest.split_once(" session_age_ms=") else {
+    let Some((status, session)) = rest.split_once(" session_age_us=") else {
         return false;
     };
     num_or_dash(status) && num_or_dash(session)
@@ -723,29 +726,41 @@ fn led_texts(lines: &[String]) -> Vec<String> {
 fn g14_led_log_lines() {
     // The matcher itself.
     assert!(is_led_line(
-        "bridge_controller=error name=\"Controller – not answering\" reason=stale status_age_ms=163 session_age_ms=-"
+        "bridge_controller=error name=\"Controller – not answering\" reason=stale status_age_us=163400 session_age_us=-"
     ));
     for bad in [
-        "bridge=error name=\"x\" reason=stale status_age_ms=1 session_age_ms=-",
-        "switch=bad name=\"x\" reason=stale status_age_ms=1 session_age_ms=-",
-        "switch=ok name=\"\" reason=stale status_age_ms=1 session_age_ms=-",
-        "switch=ok name=\"x\" reason=Stale status_age_ms=1 session_age_ms=-",
-        "switch=ok name=\"x\" reason=stale status_age_ms=1.5 session_age_ms=-",
-        "switch=ok name=\"x\" reason=stale status_age_ms=1",
-        "switch=ok name=\"x\" reason=stale status_age_ms=1 session_age_ms=",
+        "bridge=error name=\"x\" reason=stale status_age_us=1 session_age_us=-",
+        "switch=bad name=\"x\" reason=stale status_age_us=1 session_age_us=-",
+        "switch=ok name=\"\" reason=stale status_age_us=1 session_age_us=-",
+        "switch=ok name=\"x\" reason=Stale status_age_us=1 session_age_us=-",
+        "switch=ok name=\"x\" reason=stale status_age_us=1.5 session_age_us=-",
+        "switch=ok name=\"x\" reason=stale status_age_us=1",
+        "switch=ok name=\"x\" reason=stale status_age_us=1 session_age_us=",
     ] {
         assert!(!is_led_line(bad), "{bad}");
     }
+    // At the boundary the µs say it: rounded down to ms, a correct change
+    // 1 µs past 150 ms would read 150 (the old format's flaw).
+    let edge = run(&connected(150_001, ready()));
+    assert_eq!(
+        led_line(Link3::BridgeController, &edge.bridge_controller),
+        "bridge_controller=error name=\"Controller – not answering\" reason=stale status_age_us=150001 session_age_us=-"
+    );
+    let edge = run(&opening(500_001));
+    assert!(
+        led_line(Link3::BridgeController, &edge.bridge_controller)
+            .ends_with("session_age_us=500001")
+    );
     // The exact text of one line.
     let stale = run(&connected(163_400, ready()));
     assert_eq!(
         led_line(Link3::BridgeController, &stale.bridge_controller),
-        "bridge_controller=error name=\"Controller – not answering\" reason=stale status_age_ms=163 session_age_ms=-"
+        "bridge_controller=error name=\"Controller – not answering\" reason=stale status_age_us=163400 session_age_us=-"
     );
     let grace = run(&opening(501_999));
     assert_eq!(
         led_line(Link3::BridgeController, &grace.bridge_controller),
-        "bridge_controller=error name=\"Controller – not answering\" reason=no_answer status_age_ms=- session_age_ms=501"
+        "bridge_controller=error name=\"Controller – not answering\" reason=no_answer status_age_us=- session_age_us=501999"
     );
     // One line per change, none while nothing changes.
     let sink = MemorySink::new();
@@ -770,13 +785,15 @@ fn g14_led_log_lines() {
     assert_eq!(
         texts,
         vec![
-            "pc_bridge=unknown name=\"Bridge\" reason=start status_age_ms=- session_age_ms=-",
-            "bridge_controller=unknown name=\"Controller\" reason=start status_age_ms=- session_age_ms=-",
-            "switch=unknown name=\"Switch\" reason=start status_age_ms=- session_age_ms=-",
-            // Controller and Switch stay unknown with their labels (a new
-            // reason alone is no change), the Bridge is found.
-            "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_ms=- session_age_ms=-",
-            "bridge_controller=error name=\"Controller – not answering\" reason=no_answer status_age_ms=- session_age_ms=600",
+            "pc_bridge=unknown name=\"Bridge\" reason=start status_age_us=- session_age_us=-",
+            "bridge_controller=unknown name=\"Controller\" reason=start status_age_us=- session_age_us=-",
+            "switch=unknown name=\"Switch\" reason=start status_age_us=- session_age_us=-",
+            // A new reason is a change too (Controller and Switch keep
+            // state and name), the ages alone are not.
+            "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_us=- session_age_us=-",
+            "bridge_controller=unknown name=\"Controller\" reason=opening status_age_us=- session_age_us=100000",
+            "switch=unknown name=\"Switch\" reason=waiting status_age_us=- session_age_us=-",
+            "bridge_controller=error name=\"Controller – not answering\" reason=no_answer status_age_us=- session_age_us=600000",
         ]
     );
 }
@@ -914,8 +931,7 @@ fn g14_on_sim_rig() {
     r.until(2_200_000, |l| l.switch.reason == Reason::ConsoleReady);
     // link_ok 0 → Controller error, Switch unknown.
     let t = r.until(3_200_000, |l| {
-        l.bridge_controller.state == Error
-            && matches!(l.bridge_controller.reason, Reason::LinkDown | Reason::Stale)
+        l.bridge_controller.state == Error && l.bridge_controller.reason == Reason::LinkDown
     });
     assert!(t >= 3_000_000);
     assert_eq!(r.leds.switch.state, Unknown);
@@ -1010,41 +1026,136 @@ fn g14_h33_dry_run() {
 
 /// H.33 steps 1–5: the expected `led` lines (also the bench's reading list).
 const H33_RUN1: &[&str] = &[
-    "pc_bridge=unknown name=\"Bridge\" reason=start status_age_ms=- session_age_ms=-",
-    "bridge_controller=unknown name=\"Controller\" reason=start status_age_ms=- session_age_ms=-",
-    "switch=unknown name=\"Switch\" reason=start status_age_ms=- session_age_ms=-",
+    // Start.
+    "pc_bridge=unknown name=\"Bridge\" reason=start status_age_us=- session_age_us=-",
+    "bridge_controller=unknown name=\"Controller\" reason=start status_age_us=- session_age_us=-",
+    "switch=unknown name=\"Switch\" reason=start status_age_us=- session_age_us=-",
     // Step 1: open, INFO, STATUS.
-    "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_ms=- session_age_ms=-",
-    "pc_bridge=ok name=\"Bridge v0.0.0\" reason=info status_age_ms=- session_age_ms=-",
-    "bridge_controller=ok name=\"Controller v0.0.0\" reason=info status_age_ms=1 session_age_ms=-",
-    "switch=ok name=\"Switch – ready\" reason=console_ready status_age_ms=- session_age_ms=-",
+    "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_us=- session_age_us=-",
+    "bridge_controller=unknown name=\"Controller\" reason=opening status_age_us=- session_age_us=0",
+    "switch=unknown name=\"Switch\" reason=waiting status_age_us=- session_age_us=-",
+    "pc_bridge=ok name=\"Bridge v0.0.0\" reason=info status_age_us=- session_age_us=-",
+    "bridge_controller=ok name=\"Controller v0.0.0\" reason=info status_age_us=1000 session_age_us=-",
+    "switch=ok name=\"Switch – ready\" reason=console_ready status_age_us=- session_age_us=-",
     // Step 2: Wired Communication off, on.
-    "switch=warning name=\"Switch – not ready\" reason=console_not_ready status_age_ms=- session_age_ms=-",
-    "switch=ok name=\"Switch – ready\" reason=console_ready status_age_ms=- session_age_ms=-",
-    // Step 3: controller out of the Switch: stale at 151 ms.
-    "bridge_controller=error name=\"Controller – not answering\" reason=stale status_age_ms=151 session_age_ms=-",
-    "switch=unknown name=\"Switch\" reason=waiting status_age_ms=- session_age_ms=-",
+    "switch=warning name=\"Switch – not ready\" reason=console_not_ready status_age_us=- session_age_us=-",
+    "switch=ok name=\"Switch – ready\" reason=console_ready status_age_us=- session_age_us=-",
+    // Step 3: controller out of the Switch: stale at 151 000 µs (the dry run evaluates once per 1 ms worker pass).
+    "bridge_controller=error name=\"Controller – not answering\" reason=stale status_age_us=151000 session_age_us=-",
+    "switch=unknown name=\"Switch\" reason=waiting status_age_us=- session_age_us=-",
     // Step 4: back, rebooted (NAK VERSION): the session HELLOs again.
-    "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_ms=- session_age_ms=-",
-    "bridge_controller=unknown name=\"Controller\" reason=opening status_age_ms=- session_age_ms=0",
-    "pc_bridge=ok name=\"Bridge v0.0.0\" reason=info status_age_ms=- session_age_ms=-",
-    "bridge_controller=ok name=\"Controller v0.0.0\" reason=info status_age_ms=2 session_age_ms=-",
-    "switch=ok name=\"Switch – ready\" reason=console_ready status_age_ms=- session_age_ms=-",
-    // Step 5: bridge out (lost at once, gone at the next scan), back.
-    "pc_bridge=unknown name=\"Bridge\" reason=waiting status_age_ms=- session_age_ms=-",
-    "bridge_controller=unknown name=\"Controller\" reason=no_port status_age_ms=- session_age_ms=-",
-    "switch=unknown name=\"Switch\" reason=waiting status_age_ms=- session_age_ms=-",
-    "pc_bridge=error name=\"Bridge – not found\" reason=not_found status_age_ms=- session_age_ms=-",
-    "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_ms=- session_age_ms=-",
-    "pc_bridge=ok name=\"Bridge v0.0.0\" reason=info status_age_ms=- session_age_ms=-",
-    "bridge_controller=ok name=\"Controller v0.0.0\" reason=info status_age_ms=1 session_age_ms=-",
-    "switch=ok name=\"Switch – ready\" reason=console_ready status_age_ms=- session_age_ms=-",
+    "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_us=- session_age_us=-",
+    "bridge_controller=unknown name=\"Controller\" reason=opening status_age_us=- session_age_us=0",
+    "pc_bridge=ok name=\"Bridge v0.0.0\" reason=info status_age_us=- session_age_us=-",
+    "bridge_controller=ok name=\"Controller v0.0.0\" reason=info status_age_us=2000 session_age_us=-",
+    "switch=ok name=\"Switch – ready\" reason=console_ready status_age_us=- session_age_us=-",
+    // Step 5: bridge out: the unknown lines at `port_lost`, not found at `port_vanished` (next scan); then back.
+    "pc_bridge=unknown name=\"Bridge\" reason=waiting status_age_us=- session_age_us=-",
+    "bridge_controller=unknown name=\"Controller\" reason=no_port status_age_us=- session_age_us=-",
+    "switch=unknown name=\"Switch\" reason=waiting status_age_us=- session_age_us=-",
+    "pc_bridge=error name=\"Bridge – not found\" reason=not_found status_age_us=- session_age_us=-",
+    "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_us=- session_age_us=-",
+    "bridge_controller=unknown name=\"Controller\" reason=opening status_age_us=- session_age_us=0",
+    "pc_bridge=ok name=\"Bridge v0.0.0\" reason=info status_age_us=- session_age_us=-",
+    "bridge_controller=ok name=\"Controller v0.0.0\" reason=info status_age_us=1000 session_age_us=-",
+    "switch=ok name=\"Switch – ready\" reason=console_ready status_age_us=- session_age_us=-",
 ];
 /// H.33 step 6 (bridge alone, OQ-6 on macOS).
 const H33_RUN2: &[&str] = &[
-    "pc_bridge=unknown name=\"Bridge\" reason=start status_age_ms=- session_age_ms=-",
-    "bridge_controller=unknown name=\"Controller\" reason=start status_age_ms=- session_age_ms=-",
-    "switch=unknown name=\"Switch\" reason=start status_age_ms=- session_age_ms=-",
-    "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_ms=- session_age_ms=-",
-    "bridge_controller=error name=\"Controller – not answering\" reason=no_answer status_age_ms=- session_age_ms=501",
+    "pc_bridge=unknown name=\"Bridge\" reason=start status_age_us=- session_age_us=-",
+    "bridge_controller=unknown name=\"Controller\" reason=start status_age_us=- session_age_us=-",
+    "switch=unknown name=\"Switch\" reason=start status_age_us=- session_age_us=-",
+    // The bridge found; the grace runs, then no answer after 500 000 µs.
+    "pc_bridge=ok name=\"Bridge – found\" reason=ours_open status_age_us=- session_age_us=-",
+    "bridge_controller=unknown name=\"Controller\" reason=opening status_age_us=- session_age_us=0",
+    "switch=unknown name=\"Switch\" reason=waiting status_age_us=- session_age_us=-",
+    "bridge_controller=error name=\"Controller – not answering\" reason=no_answer status_age_us=- session_age_us=501000",
 ];
+
+/// AC 11 (review decision 2026-11-27): the screen-reader name says the
+/// state where the visible text does not.
+#[test]
+fn g14_accessible_names_say_the_state() {
+    let unknown = run(&opening(100_000));
+    assert_eq!(unknown.bridge_controller.name(), "Controller");
+    assert_eq!(
+        unknown.bridge_controller.accessible_name(),
+        "Controller – unknown"
+    );
+    assert_eq!(unknown.switch.accessible_name(), "Switch – unknown");
+    let mut req = opening(100_000);
+    req.phase = Phase::Incompatible;
+    req.required_update = Some(info([0, 2, 0], [0, 2, 1], 2));
+    let l = run(&req);
+    assert_eq!(
+        l.pc_bridge.accessible_name(),
+        "Bridge v0.2.1 – update required"
+    );
+    assert_eq!(
+        l.bridge_controller.accessible_name(),
+        "Controller v0.2.0 – update required"
+    );
+    // Elsewhere the name is the visible text.
+    let ok = run(&connected(20_000, ready()));
+    for (_, led) in ok.all() {
+        assert_eq!(led.accessible_name(), led.name());
+    }
+    let nf = run(&empty());
+    assert_eq!(nf.pc_bridge.accessible_name(), "Bridge – not found");
+}
+
+/// Review patch: a connected session without INFO (never produced by the
+/// worker) is "opening" on an open port, never "no port".
+#[test]
+fn g14_connected_without_info_is_not_no_port() {
+    let mut s = connected(20_000, ready());
+    s.info = None;
+    let l = run(&s);
+    assert_eq!(
+        sig(&l.bridge_controller),
+        want(LedState::Unknown, "Controller", Reason::Opening)
+    );
+    assert_eq!(
+        l.bridge_controller.tooltip,
+        vec!["Asking the controller…".to_owned()]
+    );
+}
+
+/// AC 12 (review decision 2026-11-27): a reason change alone writes a line:
+/// the worker dying while the LEDs are already unknown, Stale ↔ NoAnswer,
+/// the NAK latch pairs.
+#[test]
+fn g14_reason_changes_are_logged() {
+    let sink = MemorySink::new();
+    let logger = Logger::spawn(Box::new(sink.clone()), false, None);
+    let mut t = LedTracker::new(logger.handle());
+    let unc = run(&opening(100_000));
+    t.observe(&unc);
+    t.observe(&leds::evaluate(
+        Some(&opening(100_000)),
+        0,
+        WorkerHealth::Ended,
+    ));
+    let mut nak = connected(20_000, status(false, true, EventCode::None));
+    t.observe(&run(&nak));
+    nak.last_nak = Some((NakReason::NoLink, NOW));
+    t.observe(&run(&nak));
+    assert!(logger.stop());
+    let texts = led_texts(&sink.lines());
+    let reasons: Vec<&str> = texts
+        .iter()
+        .map(|t| {
+            t.split(" reason=")
+                .nth(1)
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap()
+        })
+        .collect();
+    // 3 (first) + 3 (worker_ended, all three unknown already) + 3 (to the
+    // connected link-down state) + 1 (NakNoLink, same state and name).
+    assert_eq!(texts.len(), 10, "{texts:#?}");
+    assert_eq!(&reasons[3..6], ["worker_ended"; 3]);
+    assert_eq!(reasons[9], "nak_no_link");
+}

@@ -57,6 +57,15 @@ impl std::fmt::Debug for Clock {
     }
 }
 
+/// The worker's waker: every published snapshot (and the worker's end)
+/// asks egui for a repaint, so even an idle window drains a new snapshot
+/// within one frame (Story 4.5 D2: the time a snapshot waits in the
+/// channel is not in the LED ages, so it must stay that short).
+pub fn repaint_waker(ctx: &Context) -> Box<dyn Fn() + Send> {
+    let ctx = ctx.clone();
+    Box::new(move || ctx.request_repaint())
+}
+
 fn micros(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
@@ -179,12 +188,11 @@ impl App {
         // Taken before the logger moves into the link: the LED lines share
         // the worker's log and its `+ms` stamps (AC 12).
         let led_log = logger.handle();
-        let ctx = cc.egui_ctx.clone();
         let clock = Clock(real_ui_clock());
         let link = worker::spawn(
             SerialBackend::new(),
             logger.handle(),
-            Box::new(move || ctx.request_repaint()),
+            repaint_waker(&cc.egui_ctx),
         )
         .ok()
         .map(|h| Link::new(h, Some(logger), clock.now()));
@@ -252,9 +260,32 @@ impl App {
         leds::evaluate(snapshot, since, self.worker_health())
     }
 
+    /// When the next frame must run with no news from the worker: the LEDs'
+    /// next timed change, or the moment a silent worker counts as stalled
+    /// ([`WORKER_STALL_AFTER`] after the last snapshot, while it runs), the
+    /// earlier of the two (Story 4.5 AC 6, 8).
+    fn repaint_after(&self, leds: &Leds) -> Option<Duration> {
+        let led = leds.next_change_in_us.map(Duration::from_micros);
+        let stall = self
+            .link
+            .as_ref()
+            .filter(|_| self.worker_health() == WorkerHealth::Running)
+            .map(|l| {
+                let since = self.clock.now().saturating_sub(l.last_snapshot_at);
+                // Stalled is `>=`: the frame at the deadline sees it.
+                WORKER_STALL_AFTER
+                    .saturating_sub(since)
+                    .max(Duration::from_micros(1))
+            });
+        match (led, stall) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     /// The delay the last main-screen frame passed to
-    /// `Context::request_repaint_after` for the LEDs' next timed change
-    /// (`None`: no timed rule was active).
+    /// `Context::request_repaint_after`: the LEDs' next timed change or the
+    /// worker's stall deadline, whichever is first (`None`: neither).
     #[must_use]
     pub fn last_repaint_after(&self) -> Option<Duration> {
         self.last_repaint_after
@@ -381,9 +412,10 @@ impl eframe::App for App {
                 let leds = self.leds();
                 self.led_tracker.observe(&leds);
                 main_screen::show(ui, &leds);
-                // A staleness or grace boundary changes an LED with no new
-                // snapshot: draw that frame on time (AC 6, 7).
-                self.last_repaint_after = leds.next_change_in_us.map(Duration::from_micros);
+                // A staleness or grace boundary, or a silent worker turning
+                // stalled, changes an LED with no new snapshot: draw that
+                // frame on time (AC 6, 7, 8).
+                self.last_repaint_after = self.repaint_after(&leds);
                 if let Some(d) = self.last_repaint_after {
                     ui.ctx().request_repaint_after(d);
                 }

@@ -107,7 +107,7 @@ fn led_widget(ui: &mut Ui, left_center: Pos2, led: &Led, salt: &str) -> Response
         }
     }
     paint::paint_focus_ring(ui, &resp, theme::rounded::SM, false);
-    let name = led.name();
+    let name = led.accessible_name();
     resp.widget_info(|| WidgetInfo::labeled(Role::Status, true, &name));
     let description = led.tooltip_text();
     let _ = ctx.accesskit_node_builder(resp.id, |n| n.set_description(description));
@@ -269,16 +269,29 @@ mod tests {
             })
             .collect();
         assert_eq!(segs, vec![2.2, 2.2]);
-        // unknown: one circle stroke, no fill; floored at 1 px at ppp 2.
-        for ppp in [1.0, 2.0] {
-            let s = shapes(LedState::Unknown, ppp);
-            match s.as_slice() {
-                [Shape::Circle(c)] => {
-                    assert_eq!(c.fill, egui::Color32::TRANSPARENT);
-                    assert_eq!((c.radius, c.stroke.width), (4.4, 1.6));
-                }
-                other => panic!("{other:?}"),
+        // unknown: one circle stroke, no fill.
+        let s = shapes(LedState::Unknown, 1.0);
+        match s.as_slice() {
+            [Shape::Circle(c)] => {
+                assert_eq!(c.fill, egui::Color32::TRANSPARENT);
+                assert_eq!((c.radius, c.stroke.width), (4.4, 1.6));
             }
+            other => panic!("{other:?}"),
         }
+        // The stroke floor (1 physical px) applies where it bites: at ppp
+        // 0.5 one pixel is 2 pt > the ring's 1.6; at ppp 0.4 it is 2.5 pt >
+        // the cross's 2.2.
+        match shapes(LedState::Unknown, 0.5).as_slice() {
+            [Shape::Circle(c)] => assert_eq!(c.stroke.width, 2.0),
+            other => panic!("{other:?}"),
+        }
+        let cross: Vec<f32> = shapes(LedState::Error, 0.4)
+            .iter()
+            .filter_map(|x| match x {
+                Shape::LineSegment { stroke, .. } => Some(stroke.width),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cross, vec![2.5, 2.5]);
     }
 }

@@ -390,6 +390,18 @@ pub struct WorkerCore<B: Backend, C: Clock> {
     buf: Vec<u8>,
 }
 
+/// When the worker ends (shutdown, or a panic unwinding its thread) its
+/// snapshot sender goes first, then the waker runs: the UI wakes and sees
+/// the disconnect at once, not at its next input (Story 4.5 review: a dead
+/// worker must never leave a frozen strip).
+impl<B: Backend, C: Clock> Drop for WorkerCore<B, C> {
+    fn drop(&mut self) {
+        let (gone, _) = bounded(1);
+        drop(std::mem::replace(&mut self.snap_tx, gone));
+        (self.waker)();
+    }
+}
+
 impl<B: Backend, C: Clock> fmt::Debug for WorkerCore<B, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WorkerCore")
@@ -515,9 +527,16 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         }
         if let Some(reason) = self.log.take_unavailable() {
             let now = self.clock.now_us();
-            self.last_error = Some(LastError::LogUnavailable {
-                reason: reason.clone(),
-            });
+            // Busy and permission are reported once and stay the problem
+            // worth showing: the log never hides them (Story 4.5 review).
+            if !matches!(
+                self.last_error,
+                Some(LastError::Busy { .. } | LastError::PermissionDenied { .. })
+            ) {
+                self.last_error = Some(LastError::LogUnavailable {
+                    reason: reason.clone(),
+                });
+            }
             self.emit(now, WorkerEvent::LogUnavailable { reason });
         }
         let now = self.clock.now_us();
