@@ -909,6 +909,7 @@ So that I can see at a glance what is ready while my eyes are on the console (FR
 **Given** UX Open Questions 5 (Windows, bridge alone) and 6 (bridge label without INFO)
 **When** the owner checks the behaviour on Windows and with the bridge alone
 **Then** both are decided and written into `EXPERIENCE.md`
+**Note (Story 4.4 bench, macOS, 2026-11-27):** the bridge is listed as `ours` (product `Bonooru Bridge` reported) and, alone (controller unplugged), accepts HELLO every 100 ms with none dropped (H.31: `hello_frames=100 hello_dropped=0`): it keeps reading USB with no controller. Windows (`unconfirmed`, no product string) and Linux data follow with issue #43.
 
 **Given** the app opens no network connections
 **When** it runs
