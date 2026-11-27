@@ -69,7 +69,7 @@ development_status:
   4-3-shared-painting-helpers-and-modal-dialog: done
   4-4-serial-worker-bridge-discovery-and-file-log: done
   4-5-status-strip-with-three-live-leds: done
-  4-6-firmware-version-check-and-gating: review
+  4-6-firmware-version-check-and-gating: done
   4-7-stop-esc-and-the-bottom-bar: backlog
   4-8-virtual-gamepad-with-mouse: backlog
   4-9-gamepad-keyboard-focus-and-compact-layout: backlog
