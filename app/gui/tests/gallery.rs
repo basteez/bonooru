@@ -74,6 +74,10 @@ fn tall_gallery(ppp: f32) -> Harness<'static, App> {
     let mut h = Harness::builder()
         .with_size(vec2(1024.0, 7000.0))
         .with_pixels_per_point(ppp)
+        // The fake worker's thread asks for a repaint at its own pace; on a
+        // slow runner that can land after kittest's default 4 steps (G.3
+        // failed on windows-latest at 7164e29 "would have settled after 6").
+        .with_max_steps(32)
         .build_eframe(|cc| App::with_link(cc, Mode::Gallery, common::fake_link(&cc.egui_ctx)));
     h.run();
     h
