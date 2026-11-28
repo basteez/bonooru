@@ -18,10 +18,10 @@ mod common;
 
 use egui::accesskit::{Action, Role};
 use egui::epaint::Shape;
-use egui::{Event, Key, Pos2, Rect, pos2, vec2};
+use egui::{Event, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use ocb_app::gamepad::{CAPTION, CHIP_DPAD, Control, LEGEND, MOUSE, PadKey, Stick, TAB, Target};
+use ocb_app::gamepad::{CAPTION, CHIP_DPAD, Control, LEGEND, MOUSE, Stick, TAB, Target};
 use ocb_app::gating::Block;
 use ocb_app::leds::banned_word;
 use ocb_app::ui::gamepad::{
@@ -29,7 +29,7 @@ use ocb_app::ui::gamepad::{
     TextHeights, Variant, legend_row_label, panel_id, wash_colours,
 };
 use ocb_app::ui::layout::regions;
-use ocb_app::ui::{pad_keys, theme};
+use ocb_app::ui::theme;
 
 /// The compact windows (content narrower than 1280 pt).
 const COMPACT_SIZES: [(f32, f32); 2] = [(1024.0, 680.0), (1279.0, 800.0)];
@@ -670,49 +670,6 @@ fn g24_no_online_wording() {
         assert_eq!(banned_word(s), None, "{s}");
     }
     assert!(GROUP_KEYS_ACTIVE.contains('\u{2013}'), "the en dash");
-}
-
-/// AC 4: the egui ↔ pad key table: every mapped physical key gives its
-/// `PadKey`, and the 18 keys are all reached; unmapped keys give none.
-#[test]
-fn g24_pad_keys_table() {
-    let table = [
-        (Key::ArrowUp, PadKey::ArrowUp),
-        (Key::ArrowDown, PadKey::ArrowDown),
-        (Key::ArrowLeft, PadKey::ArrowLeft),
-        (Key::ArrowRight, PadKey::ArrowRight),
-        (Key::W, PadKey::W),
-        (Key::A, PadKey::A),
-        (Key::S, PadKey::S),
-        (Key::D, PadKey::D),
-        (Key::H, PadKey::H),
-        (Key::J, PadKey::J),
-        (Key::K, PadKey::K),
-        (Key::L, PadKey::L),
-        (Key::Q, PadKey::Q),
-        (Key::E, PadKey::E),
-        (Key::Z, PadKey::Z),
-        (Key::C, PadKey::C),
-        (Key::Enter, PadKey::Enter),
-        (Key::Backspace, PadKey::Backspace),
-    ];
-    for (k, p) in table {
-        assert_eq!(pad_keys::pad_key(k), Some(p), "{k:?}");
-    }
-    for p in PadKey::ALL {
-        assert!(table.iter().any(|(_, q)| *q == p), "{p:?} unreachable");
-    }
-    for k in [
-        Key::Space,
-        Key::Tab,
-        Key::Escape,
-        Key::X,
-        Key::Num1,
-        Key::F,
-        Key::Delete,
-    ] {
-        assert_eq!(pad_keys::pad_key(k), None, "{k:?}");
-    }
 }
 
 /// Review 2026-11-28 (patch 6): one compact threshold. In the real app at

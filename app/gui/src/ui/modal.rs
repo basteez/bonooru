@@ -21,10 +21,11 @@ use std::hash::Hash;
 
 use egui::epaint::Shadow;
 use egui::{
-    Align, Align2, Context, Frame, Id, Key, Layout, Margin, Modal, Modifiers, Rect, Response,
-    Sense, Stroke, Ui, pos2, vec2,
+    Align, Align2, Context, Frame, Id, Layout, Margin, Modal, Rect, Response, Sense, Stroke, Ui,
+    pos2, vec2,
 };
 
+use super::keyboard;
 use super::paint;
 use super::theme::{self, components::modal_dialog as md};
 use super::widgets::{self, ButtonKind};
@@ -154,10 +155,6 @@ pub enum ModalOutcome {
     Dismissed,
 }
 
-/// Keys that answer a dialog: Enter and Space click the focused button,
-/// Esc dismisses.
-const ANSWER_KEYS: [Key; 3] = [Key::Enter, Key::Space, Key::Escape];
-
 #[derive(Debug)]
 struct Open {
     spec: ModalSpec,
@@ -276,7 +273,7 @@ fn show_dialog(ctx: &Context, open: &mut Open) -> Option<ModalOutcome> {
     let first_frame = open.frames == 0;
     open.frames = open.frames.saturating_add(1);
     if !open.armed {
-        open.armed = !ctx.input(|i| ANSWER_KEYS.iter().any(|k| i.key_down(*k)));
+        open.armed = !keyboard::answer_key_down(ctx);
     }
     let spec = &open.spec;
     let frame = frame(ctx.pixels_per_point());
@@ -290,21 +287,7 @@ fn show_dialog(ctx: &Context, open: &mut Open) -> Option<ModalOutcome> {
         .show(ctx, |ui| contents(ui, spec, content_w));
     // A fresh Esc press (not a repeat) in the opening frame dismisses even
     // though the key is still down: it was pressed with the dialog there.
-    let fresh_esc = first_frame
-        && spec.opening_esc_dismisses
-        && ctx.input(|i| {
-            i.events.iter().any(|e| {
-                matches!(
-                    e,
-                    egui::Event::Key {
-                        key: Key::Escape,
-                        pressed: true,
-                        repeat: false,
-                        ..
-                    }
-                )
-            })
-        });
+    let fresh_esc = first_frame && spec.opening_esc_dismisses && keyboard::fresh_esc(ctx);
     if !open.armed && !fresh_esc {
         // A held Enter/Space/Esc from before the dialog opened: no answer.
         return None;
@@ -321,7 +304,7 @@ fn show_dialog(ctx: &Context, open: &mut Open) -> Option<ModalOutcome> {
     // contract on [`Modals`]).
     if (response.is_top_modal || first_frame)
         && !response.any_popup_open
-        && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        && keyboard::dialog_takes_esc(ctx)
     {
         return Some(ModalOutcome::Dismissed);
     }
