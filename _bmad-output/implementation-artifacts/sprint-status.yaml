@@ -211,7 +211,7 @@ action_items:
   - id: E4-A1
     source: epic-4-retrospective
     action: Spike - run the bench in a Linux ARM VM (UTM on the Mac) with the bridge passed through over USB, then Windows 11 ARM if Linux works; in parallel with Stories 5.1-5.6, before 5.7. Done when H.28 discovery passes in the VM or the reason it cannot is documented in #43
-    status: open
+    status: done # H.28 Linux PASS 2026-11-28 in an Ubuntu 26.04.1 arm64 VM (UTM/QEMU); Windows 11 ARM and the other Linux rows stay in #43
   - id: E4-A2
     source: epic-4-retrospective
     action: One module owns keyboard routing (Space, Enter, Esc, the gamepad keys, Cmd/Ctrl shortcuts, text fields) before Story 5.10; the G.20 and Story 4.9 rules move there
