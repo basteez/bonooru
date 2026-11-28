@@ -534,8 +534,19 @@ pub fn line_matches(line: &str, head: &str, fields: &[(&str, Pat)]) -> bool {
 }
 
 const ON_OFF: Pat = Pat::OneOf(&["on", "off"]);
+/// The six gate reasons (Story 4.8 AC 9) or `none`.
+const BLOCK_OR_NONE: Pat = Pat::OneOf(&[
+    "none",
+    "worker",
+    "no_bridge",
+    "bridge_not_ready",
+    "firmware_update",
+    "controller_link",
+    "switch_not_ready",
+]);
 
-/// Story 4.6 `gate` line: `^gamepad=(on|off) play=(on|off) reason=[a-z_]+
+/// Story 4.8 `gate` line (4.6 finding 14): `^gamepad=(on|off)
+/// gamepad_reason=<r|none> play=(on|off) play_reason=<r|none>
 /// controller_proto=(\d+|-) app_proto=(\d+|-)$`.
 pub fn is_gate_line(line: &str) -> bool {
     line_matches(
@@ -543,8 +554,9 @@ pub fn is_gate_line(line: &str) -> bool {
         "",
         &[
             ("gamepad", ON_OFF),
+            ("gamepad_reason", BLOCK_OR_NONE),
             ("play", ON_OFF),
-            ("reason", Pat::Word),
+            ("play_reason", BLOCK_OR_NONE),
             ("controller_proto", Pat::DigitsOrDash),
             ("app_proto", Pat::DigitsOrDash),
         ],

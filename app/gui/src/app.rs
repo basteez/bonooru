@@ -13,10 +13,12 @@ use ocb_services::worker::{
 };
 use raw_window_handle::HasWindowHandle as _;
 
+use crate::gamepad::{self, Pad, Release, Target};
 use crate::gating::{self, FirmwareWatch, Gate, GateTracker};
 use crate::leds::{self, LedTracker, Leds};
 use crate::smoke::{self, Report, Smoke};
 use crate::stop::{self, CommandResult, StopSource};
+use crate::ui::gamepad::{PadInput, view_of};
 use crate::ui::keys::{self, FrameKeys};
 use crate::ui::modal::{ModalOutcome, Modals};
 use crate::ui::{firmware, gallery, main_screen, theme};
@@ -193,6 +195,18 @@ pub struct App {
     /// The delay last passed to `request_repaint_after` for the LEDs'
     /// next timed change (test hook, [`App::last_repaint_after`]).
     last_repaint_after: Option<Duration>,
+    /// The virtual gamepad's model (Story 4.8).
+    pad: Pad,
+    /// The window had focus in the previous first pass (blur edge).
+    focused: bool,
+    /// The delay last passed to `request_repaint_after` for the pad (test
+    /// hook, [`App::last_pad_wake`]); asked again in every pass.
+    last_pad_wake: Option<Duration>,
+    /// This frame's background part saw a blur: the frame's press is spent.
+    blur_frame: bool,
+    /// A STOP for an input the pad held did not reach the worker's queue
+    /// (full): retried every frame until it does.
+    pad_stop_retry: bool,
 }
 
 impl App {
@@ -259,6 +273,11 @@ impl App {
             gate_tracker: GateTracker::new(log.clone()),
             log,
             last_repaint_after: None,
+            pad: Pad::new(),
+            focused: true,
+            last_pad_wake: None,
+            blur_frame: false,
+            pad_stop_retry: false,
         }
     }
 
@@ -285,11 +304,11 @@ impl App {
         self
     }
 
-    /// What the latest snapshot blocks (Story 4.6): the gamepad and Play
-    /// are off while the controller needs a firmware update.
+    /// What blocks the gamepad and Play now (Story 4.6, 4.8): the worker,
+    /// the three LEDs and a required firmware update.
     #[must_use]
     pub fn gate(&self) -> Gate {
-        gating::evaluate(self.link_snapshot().map(AsRef::as_ref))
+        gating::evaluate(self.link_snapshot().map(AsRef::as_ref), &self.leds())
     }
 
     /// The three LEDs now (Story 4.5): the latest snapshot, the UI clock's
@@ -380,11 +399,21 @@ impl App {
 
     /// Requests STOP (Story 4.7, AD-16): `WorkerCommand::Stop` with
     /// `try_send`, never waiting, and one `stop requested` line saying what
-    /// became of it. Harmless without a worker. Epic 6's countdown and Play
+    /// became of it (also returned). Harmless without a worker. Epic 6's countdown and Play
     /// reuse it.
-    pub fn request_stop(&mut self, source: StopSource) {
+    pub fn request_stop(&mut self, source: StopSource) -> CommandResult {
+        let result = self.send_stop();
+        self.log.log(
+            "stop",
+            stop::requested_line(source, self.modals.is_open(), result),
+        );
+        result
+    }
+
+    /// `WorkerCommand::Stop` with `try_send`, no line.
+    fn send_stop(&self) -> CommandResult {
         let now = self.clock.now();
-        let result = match self.link.as_ref() {
+        match self.link.as_ref() {
             None => CommandResult::NoWorker,
             Some(l) if l.health(now) == WorkerHealth::Ended => CommandResult::WorkerGone,
             Some(l) => match l.handle.commands.try_send(WorkerCommand::Stop) {
@@ -392,11 +421,172 @@ impl App {
                 Err(TrySendError::Full(_)) => CommandResult::QueueFull,
                 Err(TrySendError::Disconnected(_)) => CommandResult::WorkerGone,
             },
+        }
+    }
+
+    /// The delay the last main-screen first pass passed to
+    /// `request_repaint_after` for the pad (a tap's release, a resend), if
+    /// any (test hook).
+    #[must_use]
+    pub fn last_pad_wake(&self) -> Option<Duration> {
+        self.last_pad_wake
+    }
+
+    /// The virtual gamepad's model (test hook, read only).
+    #[must_use]
+    pub fn pad(&self) -> &Pad {
+        &self.pad
+    }
+
+    /// The UI clock in µs (the pad's time base).
+    fn now_us(&self) -> u64 {
+        micros(self.clock.now())
+    }
+
+    /// The gamepad's input part of a main-screen frame, first pass only
+    /// (Story 4.8 AC 4–9, 16, 17), after STOP was requested for the frame
+    /// (so a `stop requested` line precedes every `pad` line of the frame;
+    /// `stop` is what became of that STOP): the STOP release, the gate, the
+    /// pointer. A press in a STOP or blur frame is spent, not applied.
+    fn pad_input(&mut self, input: &PadInput, stop: Option<CommandResult>, gate: &Gate) {
+        let now = self.now_us();
+        let stopped = stop.is_some();
+        let blur_frame = std::mem::take(&mut self.blur_frame);
+        // STOP this frame (rule 8b, AC 16): STOP releases; the frame's press
+        // is ignored and spent. A STOP the worker did not take (its queue
+        // full) is retried until it is: the queued states may still hold an
+        // input (review 2026-11-27).
+        if let Some(result) = stop {
+            if self.pad.is_active() && result == CommandResult::QueueFull {
+                self.pad_stop_retry = true;
+            }
+            self.pad.release_all(Release::Stop);
+        }
+        if (stopped || blur_frame) && input.press.is_some() {
+            self.pad.spend_press();
+        }
+        let ignore_new = stopped || blur_frame;
+        // The pointer is up: a hold ends (also when the release happened
+        // where the pad did not see it).
+        let pointer_up = |pad: &mut Pad| {
+            if input.released || !input.primary_down {
+                pad.pointer_up(now);
+            }
         };
-        self.log.log(
-            "stop",
-            stop::requested_line(source, self.modals.is_open(), result),
-        );
+        match gate.gamepad {
+            Some(block) => {
+                // Rule 8c: the gate turned blocked while the controller may
+                // apply an input: STOP (NEUTRAL could be refused).
+                if self.pad.is_active() && !stopped {
+                    self.pad.release_all(Release::Gate);
+                    if self.request_stop(StopSource::Gamepad) == CommandResult::QueueFull {
+                        self.pad_stop_retry = true;
+                    }
+                }
+                if !ignore_new {
+                    let ignored = input.press.or(input.tap.map(Target::Control));
+                    if let Some(t) = ignored {
+                        self.log
+                            .log("pad", gamepad::ignored_line(t, block.as_str()));
+                    }
+                }
+                pointer_up(&mut self.pad);
+            }
+            None => {
+                // The gate is open: press, drag, taps, release.
+                let full = theme::components::gamepad_stick::FULL_DEFLECTION;
+                if !ignore_new {
+                    match input.press {
+                        Some(Target::Control(c)) => self.pad.press(c, now),
+                        Some(Target::Stick(s)) => self.pad.stick_start(s, input.press_offset, full),
+                        None => {}
+                    }
+                    if let Some(c) = input.tap {
+                        self.pad.tap(c, now);
+                    }
+                }
+                if let Some(o) = input.drag_offset {
+                    self.pad.stick_drag(o, full);
+                }
+                pointer_up(&mut self.pad);
+            }
+        }
+    }
+
+    /// The gamepad's part that runs in every frame, also when eframe runs
+    /// `logic` only (a minimized or occluded window gets no `ui` call):
+    /// blur (a `WindowFocused(false)` event, the focus flag falling, or the
+    /// window not visible) releases everything (rule 8a); then the
+    /// controller mode (rule 8d), the tap timer, a pending STOP retry and
+    /// the one `SetState` (its `pad` lines written first, AC 17). Returns
+    /// when the pad needs the next frame with no input. Public so a test
+    /// can drive a frame in which `ui` does not run.
+    pub fn pad_background(
+        &mut self,
+        focused: bool,
+        visible: bool,
+        blur_event: bool,
+    ) -> Option<Duration> {
+        let active = focused && visible && !blur_event;
+        if blur_event || (self.focused && !active) {
+            self.pad.release_all(Release::WindowBlur);
+            self.blur_frame = true;
+        }
+        self.focused = active;
+        self.pad_flush()
+    }
+
+    /// Rule 8d, the tap timer, the STOP retry and the send (idempotent: a
+    /// second call in a frame sends nothing new).
+    fn pad_flush(&mut self) -> Option<Duration> {
+        let now = self.now_us();
+        let status = self
+            .link_snapshot()
+            .and_then(|s| s.status.map(|(v, rx)| (v.mode, rx)));
+        self.pad
+            .observe_mode(status.map(|s| s.0), status.map(|s| s.1));
+        self.pad.tick(now);
+        if self.pad_stop_retry {
+            match self.send_stop() {
+                CommandResult::QueueFull => {}
+                result => {
+                    self.pad_stop_retry = false;
+                    self.log.log(
+                        "stop",
+                        stop::requested_line(StopSource::Gamepad, self.modals.is_open(), result),
+                    );
+                }
+            }
+        }
+        let send = self.pad.take_send();
+        for line in self.pad.take_lines() {
+            self.log.log("pad", line);
+        }
+        if let Some(state) = send {
+            let result = match self.link.as_ref() {
+                None => Err(CommandResult::NoWorker),
+                Some(l) if l.health(self.clock.now()) == WorkerHealth::Ended => {
+                    Err(CommandResult::WorkerGone)
+                }
+                Some(l) => match l.handle.commands.try_send(WorkerCommand::SetState(state)) {
+                    Ok(()) => Ok(()),
+                    Err(TrySendError::Full(_)) => Err(CommandResult::QueueFull),
+                    Err(TrySendError::Disconnected(_)) => Err(CommandResult::WorkerGone),
+                },
+            };
+            self.pad.sent(result.map_err(CommandResult::as_str));
+            for line in self.pad.take_lines() {
+                self.log.log("pad", line);
+            }
+        }
+        let retry = self
+            .pad_stop_retry
+            .then(|| now.saturating_add(gamepad::RESEND_AFTER_US));
+        let wake = match (self.pad.next_wake_us(now), retry) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        wake.map(|t| Duration::from_micros(t.saturating_sub(now).max(1)))
     }
 
     /// The dialog host, for screens and tests to request dialogs.
@@ -470,6 +660,25 @@ impl eframe::App for App {
         {
             link.drain(now);
         }
+        // The gamepad's blur, tap timer and send also run when the window is
+        // hidden: eframe then calls `logic` only and drops the window's
+        // events (review 2026-11-27). Idempotent within a frame.
+        if self.mode == Mode::Main {
+            let (focused, visible, blur_event) = ctx.input(|i| {
+                (
+                    i.raw.focused,
+                    i.raw.viewport().visible() != Some(false),
+                    i.raw
+                        .events
+                        .iter()
+                        .any(|e| matches!(e, egui::Event::WindowFocused(false))),
+                )
+            });
+            if let Some(d) = self.pad_background(focused, visible, blur_event) {
+                self.last_pad_wake = Some(d);
+                ctx.request_repaint_after(d);
+            }
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -486,6 +695,7 @@ impl eframe::App for App {
         };
         // At most one STOP per frame; the first source wins in the log.
         let mut stop = keys.stop.then_some(StopSource::Esc);
+        let mut stop_done = false;
         match self.mode {
             Mode::Main => {
                 let leds = self.leds();
@@ -520,15 +730,32 @@ impl eframe::App for App {
                     ui.ctx().request_discard("firmware dialog opens");
                     self.log.log("dialog", gating::dialog_shown_line(&info, at));
                 }
-                let out = main_screen::show(ui, &leds, &gate);
+                let view = view_of(
+                    &self.pad,
+                    gate.gamepad_enabled(),
+                    gate.gamepad.map(|b| b.gamepad_hint()),
+                );
+                let out = main_screen::show(ui, &leds, &gate, &view);
                 if out.stop_clicked && stop.is_none() {
                     stop = Some(StopSource::Button);
                 }
+                // STOP before any pad line of the frame (Story 4.8 AC 8b,
+                // 16); the gamepad reads input in the first pass only.
+                if first_pass {
+                    let result = stop.take().map(|source| self.request_stop(source));
+                    stop_done = result.is_some();
+                    self.pad_input(&out.pad, result, &gate);
+                    self.last_pad_wake = self.pad_flush();
+                }
                 // A staleness or grace boundary, or a silent worker turning
                 // stalled, changes an LED with no new snapshot: draw that
-                // frame on time (AC 6, 7, 8).
+                // frame on time (AC 6, 7, 8). The pad's tap release too.
                 self.last_repaint_after = self.repaint_after(&leds);
                 if let Some(d) = self.last_repaint_after {
+                    ui.ctx().request_repaint_after(d);
+                }
+                // Every pass: a discarded first pass loses its request.
+                if let Some(d) = self.last_pad_wake {
                     ui.ctx().request_repaint_after(d);
                 }
             }
@@ -541,6 +768,7 @@ impl eframe::App for App {
         // requested in every case.
         if let Some(source) = stop
             && first_pass
+            && !stop_done
         {
             self.request_stop(source);
         }

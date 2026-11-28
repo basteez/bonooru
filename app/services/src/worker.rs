@@ -18,9 +18,9 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 pub use crossbeam_channel::{TryRecvError, TrySendError};
 use ocb_core::device::{self, Class, PortInfo, Rules};
 use ocb_core::link::AbandonReason;
-use ocb_core::link::{LinkEvent, Phase, Session, SessionConfig, StatusView};
+use ocb_core::link::{CommandError, LinkEvent, Phase, Session, SessionConfig, StatusView};
 use ocb_core::protocol::consts::MSG_HELLO;
-use ocb_core::protocol::{Info, Mode, NakReason, RxSide, decode_frame};
+use ocb_core::protocol::{Info, Mode, NakReason, RxSide, State, decode_frame};
 
 use crate::log::LogHandle;
 use crate::port::{Backend, OpenError, OpenPort, PortLost, permission_message};
@@ -110,8 +110,8 @@ pub const fn host_rules() -> Rules {
     }
 }
 
-/// What the UI asks of the worker (AD-16). Later stories add `SetState`,
-/// the 1200-baud touch and the post-flash checks.
+/// What the UI asks of the worker (AD-16). Later stories add the
+/// 1200-baud touch and the post-flash checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum WorkerCommand {
@@ -120,6 +120,21 @@ pub enum WorkerCommand {
     /// Release every input: STOP to the controller if a session is
     /// connected; harmless otherwise (Story 4.7).
     Stop,
+    /// One DIRECT state from the virtual gamepad (Story 4.8): handed to
+    /// `Session::set_state` in command order; refused and logged, never
+    /// written, when the controller would refuse it (a refused NEUTRAL in
+    /// `Connected` becomes a STOP).
+    SetState(State),
+}
+
+/// The controller mode as the `stop after` and `mode` lines write it.
+fn mode_name(mode: Mode) -> String {
+    match mode {
+        Mode::Idle => "idle".to_owned(),
+        Mode::Direct => "direct".to_owned(),
+        Mode::Playing => "playing".to_owned(),
+        Mode::Unknown(m) => format!("0x{m:02x}"),
+    }
 }
 
 /// Something the UI (or the probe) should know. Scans are not events (one
@@ -396,6 +411,9 @@ pub struct WorkerCore<B: Backend, C: Clock> {
     stop_cmd_us: Option<u64>,
     /// A STOP was ACKed: the next STATUS writes the `stop after` line.
     stop_after_pending: bool,
+    /// The mode of the previous STATUS of this session, for the `mode`
+    /// line (Story 4.8); reset on close and on a controller reboot.
+    prev_mode: Option<Mode>,
 }
 
 /// When the worker ends (shutdown, or a panic unwinding its thread) its
@@ -473,6 +491,7 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             buf: vec![0; 4096],
             stop_cmd_us: None,
             stop_after_pending: false,
+            prev_mode: None,
         };
         let ends = Endpoints {
             commands: cmd_tx,
@@ -546,11 +565,14 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             self.publish();
             return;
         }
-        // Commands before `io_pass`: a STOP frame goes out in this pass.
+        // Commands before `io_pass`, in the order sent: a STOP or
+        // SET_STATE frame goes out in this pass.
         for cmd in commands {
-            if cmd == WorkerCommand::Stop {
-                let now = self.clock.now_us();
-                self.handle_stop(now);
+            let now = self.clock.now_us();
+            match cmd {
+                WorkerCommand::Stop => self.handle_stop(now),
+                WorkerCommand::SetState(s) => self.handle_set_state(now, s),
+                WorkerCommand::Shutdown => {}
             }
         }
         if let Some(reason) = self.log.take_unavailable() {
@@ -942,6 +964,7 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
         self.last_nak = None;
         self.stop_cmd_us = None;
         self.stop_after_pending = false;
+        self.prev_mode = None;
         self.dirty = true;
         Some(c)
     }
@@ -1007,6 +1030,72 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                     .log("stop", format!("skipped reason={reason} port={port}"));
             }
         }
+    }
+
+    // ------------------------------------------------------------ pad
+
+    /// A `SetState` command (Story 4.8): written only where the controller
+    /// would accept it (D8, C.27); every refusal is one `pad dropped` line.
+    /// A release (NEUTRAL) is never lost while the session is `Connected`:
+    /// when it would be refused there (`no_link`, `not_ready`, a local
+    /// session refusal), the worker sends STOP instead (STOP releases
+    /// everything and is accepted whatever the console does, AD-8) and the
+    /// line ends `action=stop` (review 2026-11-27).
+    fn handle_set_state(&mut self, now: u64, state: State) {
+        self.dirty = true;
+        let Some(c) = self.conn.as_mut() else {
+            self.log.log("pad", "dropped reason=no_port port=-");
+            return;
+        };
+        let port = c.name.clone();
+        let refused = match c.session.phase() {
+            Phase::Opening => Some("opening"),
+            Phase::Incompatible => Some("incompatible"),
+            Phase::Closed => Some("closed"),
+            Phase::Stopping => Some("stopping"),
+            Phase::Connected => match &self.status {
+                None => Some("no_link"),
+                Some((v, _)) if !v.link_ok => Some("no_link"),
+                Some((v, _)) if !v.console_ready => Some("not_ready"),
+                Some(_) => None,
+            },
+        };
+        let reason = match refused {
+            Some(r) => r,
+            None => match c.session.set_state(state) {
+                Ok(()) => {
+                    self.log.log(
+                        "pad",
+                        format!(
+                            "sent port={port} buttons=0x{:04x} hat={} lx={} ly={} rx={} ry={}",
+                            state.buttons, state.hat, state.lx, state.ly, state.rx, state.ry
+                        ),
+                    );
+                    return;
+                }
+                Err(e) => match e {
+                    CommandError::NoLink => "no_link",
+                    CommandError::Busy => "busy",
+                    CommandError::Stopping => "stopping",
+                    CommandError::NotConnected => "not_connected",
+                    CommandError::BadState | CommandError::Order | CommandError::EmptyQueue => {
+                        "bad_state"
+                    }
+                },
+            },
+        };
+        if state.is_neutral() && c.session.phase() == Phase::Connected {
+            // `stop()` cannot fail in `Connected`.
+            let _ = c.session.stop();
+            self.stop_cmd_us.get_or_insert(now);
+            self.log.log(
+                "pad",
+                format!("dropped reason={reason} port={port} action=stop"),
+            );
+            return;
+        }
+        self.log
+            .log("pad", format!("dropped reason={reason} port={port}"));
     }
 
     // ------------------------------------------------------------ session
@@ -1085,13 +1174,21 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
             LinkEvent::Status(v) => {
                 self.status = Some((*v, now));
                 self.dirty = true;
+                if let Some(prev) = self.prev_mode.replace(v.mode)
+                    && prev != v.mode
+                {
+                    self.log.log(
+                        "mode",
+                        format!(
+                            "port={port} from={} to={} abort_count={}",
+                            mode_name(prev),
+                            mode_name(v.mode),
+                            v.abort_count
+                        ),
+                    );
+                }
                 if std::mem::take(&mut self.stop_after_pending) {
-                    let mode = match v.mode {
-                        Mode::Idle => "idle".to_owned(),
-                        Mode::Direct => "direct".to_owned(),
-                        Mode::Playing => "playing".to_owned(),
-                        Mode::Unknown(m) => format!("0x{m:02x}"),
-                    };
+                    let mode = mode_name(v.mode);
                     self.log.log(
                         "stop",
                         format!(
@@ -1169,6 +1266,7 @@ impl<B: Backend, C: Clock> WorkerCore<B, C> {
                 self.last_nak = None;
                 self.stop_cmd_us = None;
                 self.stop_after_pending = false;
+                self.prev_mode = None;
                 self.log.log("reboot", format!("controller rebooted port={port}"));
             }
             LinkEvent::ControllerEvent(code) => self.log.log(

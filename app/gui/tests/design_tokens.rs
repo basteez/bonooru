@@ -529,6 +529,204 @@ fn g3_component_sizes() {
     report(&errs);
 }
 
+/// Story 4.8: the gamepad panel, legend, stick, body, control and key-chip
+/// tokens the pad draws with, every field compared (sizes as px or plain
+/// numbers, colours as `{colors.<name>}` references, widths from
+/// `'<w>px {colors.<name>}'`), and `gamepad::TAP_MIN_US` from
+/// `gamepad-control.tap-min-ms`.
+#[test]
+fn g3_gamepad_tokens() {
+    use theme::components::{
+        gamepad_body as body, gamepad_control as ctl, gamepad_key_chip as chip,
+        gamepad_legend as leg, gamepad_panel as panel, gamepad_stick as stick,
+    };
+    let doc = design_md();
+    let lines = frontmatter(&doc);
+    let groups = grouped_section(&lines, "components").unwrap_or_else(|e| panic!("{e}"));
+    let field = |group: &str, key: &str| -> String {
+        groups
+            .get(group)
+            .and_then(|g| g.get(key))
+            .unwrap_or_else(|| panic!("components.{group}.{key} missing in DESIGN.md"))
+            .clone()
+    };
+    let colour = |what: &str, v: &str| -> egui::Color32 {
+        let name = v
+            .strip_prefix("{colors.")
+            .and_then(|r| r.strip_suffix('}'))
+            .unwrap_or_else(|| panic!("{what}: `{v}` is not a colour reference"));
+        theme::color_tokens()
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{what}: no colour `{name}`"))
+            .color
+    };
+    let border = |what: &str, v: &str| -> (f32, egui::Color32) {
+        let (w, c) = v
+            .split_once(' ')
+            .unwrap_or_else(|| panic!("{what}: `{v}` is not `<w>px <colour>`"));
+        (px(w, what), colour(what, c))
+    };
+    let mut errs = Vec::new();
+    fn eq(errs: &mut Vec<String>, what: String, design: f32, ours: f32) {
+        if design != ours {
+            errs.push(format!(
+                "components.{what}: DESIGN.md {design}, theme {ours}"
+            ));
+        }
+    }
+    for (key, ours) in [
+        ("padding", panel::PADDING),
+        ("caption-gap", panel::CAPTION_GAP),
+        ("pad-margin", panel::PAD_MARGIN),
+        ("hint-gap", panel::HINT_GAP),
+        ("pad-width", panel::PAD_WIDTH),
+        ("pad-height", panel::PAD_HEIGHT),
+    ] {
+        eq(
+            &mut errs,
+            format!("gamepad-panel.{key}"),
+            px(&field("gamepad-panel", key), key),
+            ours,
+        );
+    }
+    assert_eq!(
+        groups.get("gamepad-panel").map(BTreeMap::len),
+        Some(6),
+        "every gamepad-panel field has a constant"
+    );
+    for (key, ours) in [
+        ("row-padding-y", leg::ROW_PADDING_Y),
+        ("row-padding-x", leg::ROW_PADDING_X),
+    ] {
+        eq(
+            &mut errs,
+            format!("gamepad-legend.{key}"),
+            px(&field("gamepad-legend", key), key),
+            ours,
+        );
+    }
+    let (w, c) = border(
+        "gamepad-legend.divider",
+        &field("gamepad-legend", "divider"),
+    );
+    eq(
+        &mut errs,
+        "gamepad-legend.divider width".to_owned(),
+        w,
+        leg::DIVIDER_WIDTH,
+    );
+    let mut cerr = Vec::new();
+    for (what, design, ours) in [
+        ("gamepad-legend.divider", c, leg::DIVIDER),
+        (
+            "gamepad-legend.name",
+            colour("name", &field("gamepad-legend", "name")),
+            leg::NAME,
+        ),
+        (
+            "gamepad-legend.keys",
+            colour("keys", &field("gamepad-legend", "keys")),
+            leg::KEYS,
+        ),
+        (
+            "gamepad-body.background",
+            colour("body", &field("gamepad-body", "background")),
+            body::FILL,
+        ),
+        (
+            "gamepad-control.background",
+            colour("control", &field("gamepad-control", "background")),
+            ctl::FILL,
+        ),
+        (
+            "gamepad-control.well",
+            colour("well", &field("gamepad-control", "well")),
+            ctl::WELL,
+        ),
+        (
+            "gamepad-control.foreground",
+            colour("fg", &field("gamepad-control", "foreground")),
+            ctl::FOREGROUND,
+        ),
+        (
+            "gamepad-key-chip.background",
+            colour("chip", &field("gamepad-key-chip", "background")),
+            chip::FILL,
+        ),
+        (
+            "gamepad-key-chip.foreground",
+            colour("chip fg", &field("gamepad-key-chip", "foreground")),
+            chip::FOREGROUND,
+        ),
+    ] {
+        if design != ours {
+            cerr.push(format!(
+                "components.{what}: DESIGN.md {design:?}, theme {ours:?}"
+            ));
+        }
+    }
+    errs.extend(cerr);
+    assert_eq!(field("gamepad-legend", "typography"), "{typography.small}");
+    assert_eq!(
+        field("gamepad-legend", "name-typography"),
+        "{typography.legend-name}"
+    );
+    eq(
+        &mut errs,
+        "gamepad-stick.full-deflection".to_owned(),
+        px(
+            &field("gamepad-stick", "full-deflection"),
+            "full-deflection",
+        ),
+        stick::FULL_DEFLECTION,
+    );
+    for (group, w_ours, c_ours) in [
+        ("gamepad-body", body::BORDER, body::BORDER_COLOR),
+        ("gamepad-control", ctl::BORDER, ctl::BORDER_COLOR),
+        ("gamepad-key-chip", chip::BORDER, chip::BORDER_COLOR),
+    ] {
+        let (w, c) = border(group, &field(group, "border"));
+        eq(&mut errs, format!("{group}.border width"), w, w_ours);
+        if c != c_ours {
+            errs.push(format!("components.{group}.border colour differs"));
+        }
+    }
+    eq(
+        &mut errs,
+        "gamepad-key-chip.radius".to_owned(),
+        px(&field("gamepad-key-chip", "radius"), "radius"),
+        chip::RADIUS,
+    );
+    eq(
+        &mut errs,
+        "gamepad-key-chip.size".to_owned(),
+        px(&field("gamepad-key-chip", "size"), "size"),
+        chip::SIZE,
+    );
+    assert_eq!(
+        field("gamepad-key-chip", "typography"),
+        "{typography.key-chip}"
+    );
+    let tap = num(&field("gamepad-control", "tap-min-ms"), "tap-min-ms");
+    eq(
+        &mut errs,
+        "gamepad-control.tap-min-ms".to_owned(),
+        tap,
+        ctl::TAP_MIN_MS,
+    );
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let tap_us = (ctl::TAP_MIN_MS * 1000.0) as u64;
+    if tap_us != ocb_app::gamepad::TAP_MIN_US {
+        errs.push(format!(
+            "gamepad::TAP_MIN_US {} differs from tap-min-ms {}",
+            ocb_app::gamepad::TAP_MIN_US,
+            ctl::TAP_MIN_MS
+        ));
+    }
+    report(&errs);
+}
+
 /// The blur `<n>` of a glow string written `Shadow blur <n>px ...`, if any.
 fn shadow_blur(glow: &str) -> Option<u8> {
     let rest = glow.strip_prefix("Shadow blur ")?;

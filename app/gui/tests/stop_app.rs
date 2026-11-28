@@ -62,7 +62,7 @@ fn is_requested(line: &str) -> bool {
         line,
         "requested",
         &[
-            ("source", Pat::OneOf(&["esc", "button"])),
+            ("source", Pat::OneOf(&["esc", "button", "gamepad"])),
             ("dialog", Pat::OneOf(&["open", "none"])),
             (
                 "command",

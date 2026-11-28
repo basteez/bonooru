@@ -239,6 +239,90 @@ pub mod components {
         pub const INSET: f32 = 10.0;
     }
 
+    /// `components.gamepad-panel` layout (Story 4.8, lifted from
+    /// `mockups/key-empty-state.html`: `.right{padding:10px}`,
+    /// `.sub{margin:4px 0}`, `.padwrap{margin:6px 0}`,
+    /// `.ihint{margin-top:8px}`, the 280 × 200 pad svg).
+    pub mod gamepad_panel {
+        /// Inner padding of the gamepad region.
+        pub const PADDING: f32 = 10.0;
+        /// Above and below the caption.
+        pub const CAPTION_GAP: f32 = 4.0;
+        /// Above and below the pad.
+        pub const PAD_MARGIN: f32 = 6.0;
+        /// Legend bottom to the inline hint's top.
+        pub const HINT_GAP: f32 = 8.0;
+        /// The pad's width.
+        pub const PAD_WIDTH: f32 = 280.0;
+        /// The pad's height.
+        pub const PAD_HEIGHT: f32 = 200.0;
+    }
+
+    /// `components.gamepad-legend` (Story 4.8, mock `.legend`).
+    pub mod gamepad_legend {
+        /// Vertical padding of a row.
+        pub const ROW_PADDING_Y: f32 = 3.0;
+        /// Horizontal padding of a row.
+        pub const ROW_PADDING_X: f32 = 4.0;
+        /// The divider under each row (`1px {colors.well}`).
+        pub const DIVIDER_WIDTH: f32 = 1.0;
+        /// The divider colour.
+        pub const DIVIDER: egui::Color32 = super::super::WELL;
+        /// The control names' colour.
+        pub const NAME: egui::Color32 = super::super::PARCHMENT;
+        /// The keys' colour.
+        pub const KEYS: egui::Color32 = super::super::TEXT;
+    }
+
+    /// `components.gamepad-stick` (Story 4.8 AC 5).
+    pub mod gamepad_stick {
+        /// Pointer travel from the well centre for full deflection (the
+        /// well radius).
+        pub const FULL_DEFLECTION: f32 = 17.0;
+    }
+
+    /// `components.gamepad-body`.
+    pub mod gamepad_body {
+        /// Fill.
+        pub const FILL: egui::Color32 = super::super::RULE;
+        /// Outline width.
+        pub const BORDER: f32 = 1.5;
+        /// Outline colour.
+        pub const BORDER_COLOR: egui::Color32 = super::super::RIM;
+    }
+
+    /// `components.gamepad-control`.
+    pub mod gamepad_control {
+        /// Fill.
+        pub const FILL: egui::Color32 = super::super::CONTROL;
+        /// Border width.
+        pub const BORDER: f32 = 1.0;
+        /// Border colour.
+        pub const BORDER_COLOR: egui::Color32 = super::super::RIM;
+        /// The wells (sticks, D-pad, ABXY).
+        pub const WELL: egui::Color32 = super::super::WELL;
+        /// Letters and symbols on the controls.
+        pub const FOREGROUND: egui::Color32 = super::super::TEXT;
+        /// The shortest press a click sends, ms (`gamepad::TAP_MIN_US`).
+        pub const TAP_MIN_MS: f32 = 50.0;
+    }
+
+    /// `components.gamepad-key-chip`.
+    pub mod gamepad_key_chip {
+        /// Fill.
+        pub const FILL: egui::Color32 = super::super::WELL;
+        /// Border width.
+        pub const BORDER: f32 = 1.0;
+        /// Border colour.
+        pub const BORDER_COLOR: egui::Color32 = super::super::RIM;
+        /// Text colour.
+        pub const FOREGROUND: egui::Color32 = super::super::TEXT;
+        /// Corner radius.
+        pub const RADIUS: f32 = 3.0;
+        /// Height (and the width of a one-letter chip).
+        pub const SIZE: f32 = 13.0;
+    }
+
     /// `components.bottom-bar` layout (Story 4.7, lifted from
     /// `mockups/key-empty-state.html`: `.bottom{gap:14px;padding:0 16px}`).
     pub mod bottom_bar {
@@ -521,6 +605,13 @@ pub const RULER: TypeStyle = TypeStyle::new(Body, 10.5, 400.0);
 pub const NOTE_LABEL: TypeStyle = TypeStyle::new(Body, 11.5, 700.0);
 pub const GLYPH: TypeStyle = TypeStyle::new(Body, 10.5, 700.0);
 pub const KEY_CHIP: TypeStyle = TypeStyle::new(Body, 10.0, 600.0);
+/// The letters on the gamepad's controls (Story 4.8): `typography.key-chip`'s
+/// family and size, bold (mock `.pb`: 10 px, 700). Not a `DESIGN.md` token:
+/// the AC names it "key-chip-sized bold text".
+pub const GAMEPAD_LETTER: TypeStyle = TypeStyle::new(Body, 10.0, 700.0);
+/// The gamepad legend's control names (Story 4.8, lifted from
+/// `mockups/key-empty-state.html`: `.legend b`).
+pub const LEGEND_NAME: TypeStyle = TypeStyle::new(Body, 12.5, 600.0);
 /// The bottom bar's safety note (Story 4.7, lifted from
 /// `mockups/key-empty-state.html`: `.safety{font-size:13px;line-height:1.35}`).
 pub const SAFETY_NOTE: TypeStyle = TypeStyle::new(Body, 13.0, 400.0).lh(1.35);
@@ -556,6 +647,7 @@ pub fn typography_tokens() -> &'static [(&'static str, TypeStyle)] {
         ("note-label", NOTE_LABEL),
         ("glyph", GLYPH),
         ("key-chip", KEY_CHIP),
+        ("legend-name", LEGEND_NAME),
         ("safety-note", SAFETY_NOTE),
         ("code", CODE),
     ]

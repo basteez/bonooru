@@ -229,8 +229,10 @@ pub fn text_node_colored(
 
 /// An `inline-hint` (Story 4.6, UX-DR38): `text` in `typography.small`,
 /// `text-muted`, left-aligned at `rect.min` and wrapped to `rect`'s width.
-/// One `Role::Label` node named with the text, not focusable. Story 4.8
-/// reuses it for the gamepad's other hints.
+/// One `Role::Label` node named with the text, not focusable. Never outside
+/// `rect` (Story 4.8, 4.6 finding 15): a text taller than `rect` is clipped
+/// to it, and the node's rect is the text box intersected with `rect`. Story
+/// 4.8 draws it under the gamepad's legend for every gate reason.
 pub fn inline_hint(ui: &mut Ui, rect: Rect, text: &str) -> Response {
     let galley = paint::layout(
         ui.ctx(),
@@ -240,8 +242,16 @@ pub fn inline_hint(ui: &mut Ui, rect: Rect, text: &str) -> Response {
         rect.width(),
         Align::Min,
     );
-    let box_rect = Rect::from_min_size(rect.min, vec2(rect.width(), galley.rect.height()));
-    text_node_colored(ui, box_rect, galley, Align2::LEFT_TOP, theme::TEXT_MUTED)
+    let box_rect =
+        Rect::from_min_size(rect.min, vec2(rect.width(), galley.rect.height())).intersect(rect);
+    let resp = ui.allocate_rect(box_rect, Sense::hover());
+    let label = galley.text().to_owned();
+    let pos = rect.min - galley.rect.min.to_vec2();
+    ui.painter()
+        .with_clip_rect(rect.intersect(ui.clip_rect()))
+        .galley(pos, galley, theme::TEXT_MUTED);
+    resp.widget_info(|| WidgetInfo::labeled(Role::Label, true, &label));
+    resp
 }
 
 /// STOP, idle look (`button-stop-idle`, Story 4.7): `stop-idle-fill`, 1 pt

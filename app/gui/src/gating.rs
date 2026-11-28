@@ -1,19 +1,24 @@
-//! The gate as data (Story 4.6; FR-10, UX-DR13, UX-DR38, AD-7): whether
-//! the gamepad and Play are blocked, and why, as a pure function of the
-//! latest worker snapshot. No drawing here (G.17 checks this file never
-//! names the GUI crate): `ui::main_screen` draws the hint, `ui::firmware`
-//! builds the dialog, the app logs every change through [`GateTracker`].
+//! The gate as data (Story 4.6, 4.8; FR-10, UX-DR13, UX-DR38, AD-7):
+//! whether the gamepad and Play are blocked, and why, as a pure function of
+//! the latest worker snapshot and the three LEDs. No drawing here (G.17
+//! checks this file never names the GUI crate): `ui::gamepad` draws the
+//! hint, `ui::firmware` builds the dialog, the app logs every change through
+//! [`GateTracker`].
 //!
-//! Story 4.6 has one reason, a required firmware update. The decision reads
-//! `LinkSnapshot.required_update` only: never `info` (it is `None` in
-//! `Incompatible`) and never `status` (a mismatching controller's STATUS is
-//! decoded with this app's layout and is not trusted; AD-7: only INFO byte 0
-//! is frozen). Every string the gate can show lives in this module.
+//! The firmware reason reads `LinkSnapshot.required_update` only: never
+//! `info` (it is `None` in `Incompatible`) and never `status` (a mismatching
+//! controller's STATUS is decoded with this app's layout and is not trusted;
+//! AD-7: only INFO byte 0 is frozen). The link reasons (Story 4.8, D4) read
+//! the LEDs, which already judge staleness, the INFO grace, the worker's
+//! health and the NAKs: the gate never disagrees with the strip. Every
+//! string the gate can show lives in this module.
 
 use ocb_core::protocol::Info;
 use ocb_core::protocol::consts::PROTO_VERSION;
 use ocb_services::log::LogHandle;
 use ocb_services::worker::LinkSnapshot;
+
+use crate::leds::{LedState, Leds, Reason};
 
 /// The gamepad hint while a required update blocks it (`EXPERIENCE.md`
 /// Voice, "Required update, gamepad hint", draft).
@@ -28,18 +33,49 @@ pub const MODAL_OK: &str = "OK";
 /// The firmware dialog's id in the `dialog` log lines.
 pub const DIALOG_LOG_ID: &str = "firmware_update_needed";
 
-/// Every string the gate can show, for the banned-words check (G.17).
-pub const STRINGS: [&str; 4] = [HINT_FIRMWARE, MODAL_TITLE, MODAL_BODY, MODAL_OK];
+/// The gamepad hint while the serial worker is stuck or gone (Story 4.8
+/// Copy, draft; the LED worker tooltip's wording).
+pub const HINT_WORKER: &str = "Gamepad clicks are ignored: Bonooru's USB check is not responding.";
+/// The gamepad hint while no bridge is found (`EXPERIENCE.md` State
+/// Patterns › Bridge not found; "Set up / Reflash…" comes with Epic 8).
+pub const HINT_NO_BRIDGE: &str = "Plug the bridge into your PC.";
+/// The gamepad hint while the bridge is found but not ready (draft).
+pub const HINT_BRIDGE_NOT_READY: &str = "Gamepad clicks are ignored until the bridge is ready.";
+/// The gamepad hint while the controller does not answer (draft).
+pub const HINT_CONTROLLER_LINK: &str = "Gamepad clicks are ignored until the controller answers.";
+/// The gamepad hint while the Switch is not ready (`epics.md` Story 4.8,
+/// mock `.ihint`).
+pub const HINT_SWITCH_NOT_READY: &str = "Gamepad clicks are ignored until the Switch is ready.";
 
-/// Why the gamepad or Play is off.
+/// Every string the gate can show, for the banned-words check (G.17).
+pub const STRINGS: [&str; 9] = [
+    HINT_WORKER,
+    HINT_NO_BRIDGE,
+    HINT_BRIDGE_NOT_READY,
+    HINT_FIRMWARE,
+    HINT_CONTROLLER_LINK,
+    HINT_SWITCH_NOT_READY,
+    MODAL_TITLE,
+    MODAL_BODY,
+    MODAL_OK,
+];
+
+/// Why the gamepad or Play is off, in precedence order (first match wins,
+/// Story 4.8 AC 9). Epic 6 adds the song reasons.
 ///
-/// Story 4.8 adds `NoBridge`, `LinkDown` and `SwitchNotReady`, Epic 6 the
-/// song reasons. A required update outranks the Controller and Switch link
-/// reasons because they are its consequence: no STATUS is trusted in
-/// `Incompatible`.
+/// A required update outranks the Controller and Switch link reasons
+/// because they are its consequence: no STATUS is trusted in
+/// `Incompatible`. The bridge reasons outrank it: without a bridge no INFO
+/// can be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Block {
+    /// The serial worker is stuck or ended (the LEDs show it).
+    Worker,
+    /// No bridge port (PC↔Bridge `NotFound`).
+    NoBridge,
+    /// PC↔Bridge not `ok` for any other reason.
+    BridgeNotReady,
     /// The controller speaks another protocol version (FR-10).
     FirmwareUpdate {
         /// INFO byte 0 of the controller.
@@ -47,28 +83,77 @@ pub enum Block {
         /// This app's `PROTO_VERSION`.
         app_proto: u8,
     },
+    /// Bridge↔Controller not `ok`.
+    ControllerLink,
+    /// Controller↔Switch not `ok`.
+    SwitchNotReady,
 }
 
 impl Block {
+    /// One block of every variant (G.17, finding 16).
+    #[must_use]
+    pub fn samples() -> [Self; 6] {
+        let all = [
+            Self::Worker,
+            Self::NoBridge,
+            Self::BridgeNotReady,
+            Self::FirmwareUpdate {
+                controller_proto: PROTO_VERSION.wrapping_add(1),
+                app_proto: PROTO_VERSION,
+            },
+            Self::ControllerLink,
+            Self::SwitchNotReady,
+        ];
+        // Every entry's rank (an exhaustive `match`: a new variant fails to
+        // compile until it has one) must be its place here (its
+        // precedence); G.17 runs this.
+        for (i, b) in all.iter().enumerate() {
+            assert_eq!(b.rank(), i, "Block::samples() out of order");
+        }
+        all
+    }
+
+    /// The precedence of this reason (0 = first), an exhaustive `match`.
+    #[must_use]
+    pub const fn rank(&self) -> usize {
+        match self {
+            Self::Worker => 0,
+            Self::NoBridge => 1,
+            Self::BridgeNotReady => 2,
+            Self::FirmwareUpdate { .. } => 3,
+            Self::ControllerLink => 4,
+            Self::SwitchNotReady => 5,
+        }
+    }
+
     /// The inline hint the gamepad panel shows for this block.
     #[must_use]
     pub fn gamepad_hint(&self) -> &'static str {
         match self {
+            Self::Worker => HINT_WORKER,
+            Self::NoBridge => HINT_NO_BRIDGE,
+            Self::BridgeNotReady => HINT_BRIDGE_NOT_READY,
             Self::FirmwareUpdate { .. } => HINT_FIRMWARE,
+            Self::ControllerLink => HINT_CONTROLLER_LINK,
+            Self::SwitchNotReady => HINT_SWITCH_NOT_READY,
         }
     }
 
-    /// The reason in the `gate` log line.
+    /// The reason in the `gate` and `pad ignored` log lines.
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Worker => "worker",
+            Self::NoBridge => "no_bridge",
+            Self::BridgeNotReady => "bridge_not_ready",
             Self::FirmwareUpdate { .. } => "firmware_update",
+            Self::ControllerLink => "controller_link",
+            Self::SwitchNotReady => "switch_not_ready",
         }
     }
 }
 
-/// What is blocked now. `None` = enabled (as far as this story knows: 4.8
-/// adds the link reasons).
+/// What is blocked now. `None` = enabled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Gate {
     /// Why the gamepad is off.
@@ -91,17 +176,35 @@ impl Gate {
     }
 }
 
-/// The gate for the latest snapshot. Independent of the worker's health: a
-/// dead worker's last known mismatch keeps blocking (the safe side; 4.8
-/// adds the dead-worker reason).
+/// The gate for the latest snapshot and the LEDs drawn from it (Story 4.8
+/// AC 9, D4): first match wins: `worker` › `no_bridge` ›
+/// `bridge_not_ready` › `firmware_update` › `controller_link` ›
+/// `switch_not_ready`; open only with the three LEDs `ok` and no required
+/// update. Play gets the same block (Epic 6 adds the song reasons).
 #[must_use]
-pub fn evaluate(snap: Option<&LinkSnapshot>) -> Gate {
-    let block = snap
-        .and_then(|s| s.required_update.as_ref())
-        .map(|info| Block::FirmwareUpdate {
+pub fn evaluate(snap: Option<&LinkSnapshot>, leds: &Leds) -> Gate {
+    let worker = leds
+        .all()
+        .iter()
+        .any(|(_, l)| matches!(l.reason, Reason::WorkerStalled | Reason::WorkerEnded));
+    let block = if worker {
+        Some(Block::Worker)
+    } else if leds.pc_bridge.reason == Reason::NotFound {
+        Some(Block::NoBridge)
+    } else if leds.pc_bridge.state != LedState::Ok {
+        Some(Block::BridgeNotReady)
+    } else if let Some(info) = snap.and_then(|s| s.required_update.as_ref()) {
+        Some(Block::FirmwareUpdate {
             controller_proto: info.proto_ver,
             app_proto: PROTO_VERSION,
-        });
+        })
+    } else if leds.bridge_controller.state != LedState::Ok {
+        Some(Block::ControllerLink)
+    } else if leds.switch.state != LedState::Ok {
+        Some(Block::SwitchNotReady)
+    } else {
+        None
+    };
     Gate {
         gamepad: block,
         play: block,
@@ -134,26 +237,30 @@ impl FirmwareWatch {
     }
 }
 
-/// The `gate` log line for `gate` (without the kind tag).
+/// The `gate` log line for `gate` (without the kind tag): each gate with
+/// its own reason (Story 4.8 AC 10, 4.6 finding 14); the protocol versions
+/// of a firmware block of either gate, `-` otherwise.
 #[must_use]
 pub fn gate_line(gate: &Gate) -> String {
     let on = |b: &Option<Block>| if b.is_some() { "off" } else { "on" };
-    let reason = gate.gamepad.or(gate.play);
-    let (name, controller, app) = match reason {
-        Some(Block::FirmwareUpdate {
-            controller_proto,
-            app_proto,
-        }) => (
-            "firmware_update",
-            controller_proto.to_string(),
-            app_proto.to_string(),
-        ),
-        None => ("none", "-".to_owned(), "-".to_owned()),
-    };
+    let reason = |b: &Option<Block>| b.as_ref().map_or("none", Block::as_str);
+    let protos = [gate.gamepad, gate.play]
+        .into_iter()
+        .flatten()
+        .find_map(|b| match b {
+            Block::FirmwareUpdate {
+                controller_proto,
+                app_proto,
+            } => Some((controller_proto.to_string(), app_proto.to_string())),
+            _ => None,
+        });
+    let (controller, app) = protos.unwrap_or_else(|| ("-".to_owned(), "-".to_owned()));
     format!(
-        "gamepad={} play={} reason={name} controller_proto={controller} app_proto={app}",
+        "gamepad={} gamepad_reason={} play={} play_reason={} controller_proto={controller} app_proto={app}",
         on(&gate.gamepad),
-        on(&gate.play)
+        reason(&gate.gamepad),
+        on(&gate.play),
+        reason(&gate.play)
     )
 }
 
