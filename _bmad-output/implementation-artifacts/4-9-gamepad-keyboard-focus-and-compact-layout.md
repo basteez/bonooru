@@ -4,7 +4,7 @@ baseline_commit: d62be7acce29099bf51fe44a2283c0c447d41212
 
 # Story 4.9: Gamepad keyboard focus and compact layout
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
