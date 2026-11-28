@@ -4,7 +4,8 @@
 # Tested environment: Switch 2 system 23.5.0, OoT 1.1.1 (docs/test-plan.md, "Test environment";
 # Story 1.4 field trials, "Environment and capture"). Other game versions need their own profile.
 # Read-only default: a user copy with the same `name` and `game_version` overrides it (AD-17).
-# Loading, validation and migration belong to Story 5.1 (ocb-core `profile` module); this file is data.
+# Loaded, validated and migrated only by ocb-core's `profile` module (Story 5.1); this file is data.
+# A user copy goes in <config dir>/profiles/ (docs/score-format-and-mapping.md, "Mapping profile").
 #
 # Pitches are MIDI numbers of the SOUNDING pitch: the game sounds one octave above the community chart
 # (A = 81 = A5, chart name A4). docs/ocarina-input-mechanics.md, "Note buttons".

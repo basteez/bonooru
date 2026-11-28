@@ -4,7 +4,7 @@ baseline_commit: d731a7b9f4a6982814598e48624ae17d4ca37acd
 
 # Story 5.0: Keyboard routing module
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

@@ -1,6 +1,7 @@
 //! C.4: the `ocb-core` purity gate (AD-18, Story 3.2 D10). The core has no
 //! GUI, no threads, no I/O, no clocks, no `unsafe` and no printing; its
-//! `[dependencies]` stay empty. Checked on the real tree and, as a self-test,
+//! `[dependencies]` name only `toml` and `serde`, exactly pinned (Story 5.1
+//! D1; empty until then, Story 3.2 D2). Checked on the real tree and, as a self-test,
 //! on fixtures (each bad fixture must produce the hit it names, the good one
 //! passes), like the firmware gates F.13, F.18 and F.30.
 //!
@@ -87,6 +88,11 @@ const ALLOWED_MODULES: &[&str] = &[
 ];
 
 const ROOTS: &[&str] = &["std", "core", "alloc"];
+
+/// The only runtime dependencies the core may have, each with an exact `=`
+/// pin (Story 5.1 D1: the `profile` module parses TOML with `toml` +
+/// `serde`, both pure: no I/O, threads or clocks).
+const ALLOWED_RUNTIME: &[&str] = &["toml", "serde"];
 
 /// Crates the core must never depend on, in any dependency table.
 const BANNED_CRATES: &[&str] = &["egui", "eframe", "serialport"];
@@ -214,7 +220,31 @@ fn manifest_problems(toml: &str) -> Vec<String> {
             || section.starts_with("dependencies.")
             || (section.is_empty() && key.starts_with("dependencies."));
         if runtime {
-            problems.push(format!("line {}: runtime dependency `{line}`", i + 1));
+            // The crate: the table's (`[dependencies.toml]`), the dotted
+            // key's (`dependencies.toml = …`) or the key (`toml = …`).
+            let (krate, pin_value) = if let Some(c) = section.strip_prefix("dependencies.") {
+                // `path` / `git` replace the registry pin: not allowed.
+                let source = matches!(key.as_str(), "path" | "git");
+                (c.to_owned(), (key == "version" || source).then_some(line))
+            } else if let Some(c) = key.strip_prefix("dependencies.") {
+                (c.to_owned(), Some(line))
+            } else {
+                (key.clone(), Some(line))
+            };
+            let allowed = ALLOWED_RUNTIME.contains(&krate.as_str());
+            // An exact pin: the value (inline string or `version = …`)
+            // starts with `"=`.
+            let pinned = |v: &str| {
+                let v: String = v.chars().filter(|c| !c.is_whitespace()).collect();
+                v.contains("=\"=") || v.contains("version=\"=")
+            };
+            let pin_ok = match pin_value {
+                Some(v) => pinned(v),
+                None => true,
+            };
+            if !allowed || !pin_ok {
+                problems.push(format!("line {}: runtime dependency `{line}`", i + 1));
+            }
         }
         let in_dep_table = is_dep_table(&section) || key.contains("dependencies.");
         let crate_name = if section.is_empty() || !is_dep_table(&section) {
@@ -310,6 +340,20 @@ fn c4_good_fixture_passes() {
 fn c4_manifest_rules() {
     let clean = "[package]\nname = \"x\"\ndescription = \"no egui here\"\n\n[dependencies]\n# none\n\n[dev-dependencies]\nproptest = \"1\"\n";
     assert_eq!(manifest_problems(clean), Vec::<String>::new());
+    // Story 5.1 D1: exactly `toml` and `serde` may be runtime deps, with
+    // exact `=` pins, in every manifest spelling.
+    for good in [
+        "[dependencies]\ntoml = { version = \"=1.2.3\", default-features = false, features = [\"std\", \"parse\", \"serde\"] }\nserde = { version = \"=1.0.229\", features = [\"derive\"] }\n",
+        "[dependencies]\ntoml = \"=1.2.3\"\n",
+        "[dependencies.serde]\nversion = \"=1.0.229\"\nfeatures = [\"derive\"]\n",
+        "dependencies.toml = \"=1.2.3\"\n[package]\n",
+    ] {
+        assert_eq!(
+            manifest_problems(good),
+            Vec::<String>::new(),
+            "flagged:\n{good}"
+        );
+    }
     for bad in [
         "[dependencies]\ncrc = \"3\"\n",
         "[dependencies] # runtime\ncrc = \"3\"\n",
@@ -321,6 +365,16 @@ fn c4_manifest_rules() {
         "[dev-dependencies]\negui = \"0.37\"\n",
         "[build-dependencies]\neframe = \"0.37\"\n",
         "[dev-dependencies.serialport]\nversion = \"4\"\n",
+        // Story 5.1 D1: a third crate, an unpinned allowed crate, a target
+        // table even for an allowed crate.
+        "[dependencies]\ntoml = \"=1.2.3\"\nregex = \"=1.11.0\"\n",
+        "[dependencies]\ntoml = \"1.2.3\"\n",
+        "[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n",
+        "[dependencies.serde]\nversion = \"^1.0\"\n",
+        "[dependencies.regex]\nversion = \"=1.11.0\"\n",
+        "[target.'cfg(unix)'.dependencies]\ntoml = \"=1.2.3\"\n",
+        "[dependencies.toml]\npath = \"../toml\"\n",
+        "[dependencies]\ntoml = { path = \"../toml\" }\n",
     ] {
         assert!(!manifest_problems(bad).is_empty(), "not flagged:\n{bad}");
     }
