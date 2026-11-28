@@ -73,7 +73,7 @@ development_status:
   4-7-stop-esc-and-the-bottom-bar: done
   4-8-virtual-gamepad-with-mouse: done
   4-9-gamepad-keyboard-focus-and-compact-layout: done
-  epic-4-retrospective: optional
+  epic-4-retrospective: done
 
   epic-5: backlog
   5-1-mapping-profile-module: backlog
@@ -179,15 +179,15 @@ action_items:
   - id: E3-A1
     source: epic-3-retrospective
     action: AC measurability at create-story - every AC number names the bench tool and field that measure it ("AC -> measurement" table in Dev Notes before dev-story); if none can, ask the owner then
-    status: open
+    status: done
   - id: E3-A2
     source: epic-3-retrospective
     action: A red proof for every verdict branch of every new or changed bench tool, listed in the story's Debug Log
-    status: open
+    status: done
   - id: E3-A3
     source: epic-3-retrospective
     action: Bench start checklist in each rig block (console auto-sleep off; close a returning connection screen with link_probe.py press --button A; boards plugged before tools start; SIGINT to the tool's own PID via pgrep -x)
-    status: open
+    status: done
   - id: E3-A4
     source: epic-3-retrospective
     action: Cleanup story before Epic 4 for issues #20 (purity gates) and #25 (P2 reply-queue overflows in the debug STATUS), host tests only
@@ -195,7 +195,7 @@ action_items:
   - id: E3-A5
     source: epic-3-retrospective
     action: Story 4.4 Dev Notes carry cross-OS discovery, the serialport libudev feature with libudev-dev in Linux CI, and the SerialIo lessons (reopen after unplug, clear stale input, non-blocking writes, macOS port rename)
-    status: open
+    status: done
   - id: E3-A6
     source: epic-3-retrospective
     action: Keep M4 TODO in roadmap.md until the bridge discovery is verified on all three OS
@@ -207,4 +207,28 @@ action_items:
   - id: S4.4-A1
     source: story-4-4
     action: Run the Story 4.4 discovery bench on Windows and Linux (#43); then set M4 DONE
+    status: open
+  - id: E4-A1
+    source: epic-4-retrospective
+    action: Spike - run the bench in a Linux ARM VM (UTM on the Mac) with the bridge passed through over USB, then Windows 11 ARM if Linux works; in parallel with Stories 5.1-5.6, before 5.7. Done when H.28 discovery passes in the VM or the reason it cannot is documented in #43
+    status: open
+  - id: E4-A2
+    source: epic-4-retrospective
+    action: One module owns keyboard routing (Space, Enter, Esc, the gamepad keys, Cmd/Ctrl shortcuts, text fields) before Story 5.10; the G.20 and Story 4.9 rules move there
+    status: open
+  - id: E4-A3
+    source: epic-4-retrospective
+    action: A red proof for every new or changed test or check, not only bench tools, listed in the story's Debug Log
+    status: open
+  - id: E4-A4
+    source: epic-4-retrospective
+    action: Anti-flake rules in every story's Dev Notes - no tight wall-clock upper bounds, take time references before the action, wait for the log line not only the state, a high kittest max_steps when a worker thread runs
+    status: open
+  - id: E4-A5
+    source: epic-4-retrospective
+    action: Release and STOP logic lives in App::logic, never only in ui (eframe skips ui for hidden or occluded windows); applies to Epic 6 Resume and STOP
+    status: open
+  - id: E4-A6
+    source: epic-4-retrospective
+    action: Before the story that adds them, verify the Epic 5 dependencies online - midly licence against deny.toml, libasound2-dev in Linux CI for rodio/cpal, rfd's Linux backend
     status: open
