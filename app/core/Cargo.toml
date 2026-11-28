@@ -1,6 +1,6 @@
 [package]
 name = "ocb-core"
-description = "Bonooru app core: protocol codec and (later) sans-IO link, no GUI, no threads, no I/O"
+description = "Bonooru app core: protocol codec, sans-IO link, mapping profiles; no GUI, no threads, no I/O"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,12 @@ license.workspace = true
 publish.workspace = true
 build = "build.rs"
 
-# Must stay empty (Story 3.2 D2; enforced by tests/purity.rs).
+# Only `toml` and `serde`, exactly pinned (Story 5.1 D1: the `profile`
+# module parses mapping profiles; both crates are pure). Empty until Story
+# 5.1 (Story 3.2 D2). Enforced by tests/purity.rs (C.4).
 [dependencies]
+toml = { version = "=1.2.3", default-features = false, features = ["std", "parse", "serde"] }
+serde = { version = "=1.0.229", features = ["derive"] }
 
 [dev-dependencies]
 proptest = "=1.12.0"

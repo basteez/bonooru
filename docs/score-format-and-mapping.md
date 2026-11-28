@@ -45,7 +45,7 @@ Weights live in the profile's `[cost]` table (keys `dpad_change`, `stick_change`
 
 ## Mapping profile (TOML, one per game version)
 
-Source of truth: [`app/profiles/oot-switch2-1.1.1.toml`](../app/profiles/oot-switch2-1.1.1.toml) (bundled default for OoT 1.1.1, Story 1.5). Every value there has a comment with its test plan row and a tag (`MEASURED`, `MARGIN`, `OWNER CHOICE`, `ESTIMATE`, `DESIGN DEFAULT`). Shape (abridged; Story 5.1 owns loading, validation and the schema):
+Source of truth: [`app/profiles/oot-switch2-1.1.1.toml`](../app/profiles/oot-switch2-1.1.1.toml) (bundled default for OoT 1.1.1, Story 1.5). Every value there has a comment with its test plan row and a tag (`MEASURED`, `MARGIN`, `OWNER CHOICE`, `ESTIMATE`, `DESIGN DEFAULT`). Shape (abridged; the rules are in › Loading and validation below):
 
 ```toml
 schema = 1                 # integer (AD-17)
@@ -98,6 +98,39 @@ chart = true               # true for the 19 chart fingerings
 ```
 
 Why these units: the three grid values are integer frames because every measurement is in frames and the pipeline snaps to the frame grid (2 or 5 frames in ms are not integers, so ms would risk off-by-one rounding at the snap). `max_sustain_ms` and `start_lead_ms` are not on the frame grid.
+
+### Loading and validation (Story 5.1)
+
+Only the core `profile` module (`ocb_core::profile`) parses a profile (AD-17); everyone else gets a validated `Profile`. The steps:
+
+1. **TOML.** A syntax error is refused with its line (`reason=parse`).
+2. **Schema.** `schema` must be an integer. This version reads schema **1**. An older schema goes through the migration chain, one step `N → N + 1` at a time; no step exists yet, because schema 1 is the first. A newer schema, a missing or non-integer one, or an older one with no path is refused (`reason=schema`) and never guessed.
+3. **Shape.** Every key above is required, and an unknown key is refused (a typo such as `min_pres_frames` must not silently fall back to a default). A wrong type is refused too (`reason=invalid`, with the line for a file at the current schema; a migrated file has no line to point to).
+4. **Values** (`reason=invalid`, naming the field, the value and the rule):
+   - `name` and `game_version` must not be empty or start or end with spaces, and `frame_rate` is 1–240.
+   - Button pitches and the range are MIDI 0–127, with `low < high`.
+   - Modifier offsets are −12…+12, and stick bytes are 0–255.
+   - The timing values are > 0 (the lead and the start lead may be 0) and at most 600 frames or 600 000 ms.
+   - `max_sustain_ms` must be above the min press.
+   - Cost weights are finite and ≥ 0.
+   - Fingerings use a known button, D-pad and stick. Each pitch lies inside the range, no (button, dpad, stick) appears twice, and every pitch of the range has at least one fingering.
+5. **Timing floor (AD-15).** `min_press_frames` and `min_gap_same_button_frames` must last at least `2 × max(report_period_us, frame time)`. The frame time is `1 000 000 / frame_rate` µs, rounded down (16 666 at 60 Hz). At load the report period is unknown, so 2 frames is the floor. Once the controller's `INFO.report_period_us` is known, `Profile::check_report_period` applies the full rule (Play gating, Epic 6).
+
+**User copies.** A user copy is any `*.toml` file (extension in any case, not a dot-file such as `._x.toml`) in `<config dir>/profiles/`:
+- macOS: `~/Library/Application Support/Bonooru/profiles/`
+- Windows: `%APPDATA%\Bonooru\config\profiles\`
+- Linux: `$XDG_CONFIG_HOME/bonooru/profiles/` (default `~/.config/bonooru/profiles/`)
+
+The file name is free. A valid copy with the bundled default's `name` and `game_version` overrides the bundled default, and when there are several, the first by file name wins.
+
+A file that cannot be read (not a regular file, larger than 1 MiB, no permission), parsed, migrated or validated is **refused**, and so is a `profiles` folder that cannot be listed. When a refusal leaves the bundled default in use, Settings (Story 5.13) shows "This mapping profile can't be read by this version. Defaults are in use." When another file is the user copy in use, the message is not shown, because it would be false. A valid file with another identity, or a second valid match, is **ignored**.
+
+At start the app writes one `profile` line per file and then the one in use:
+- `profile refused file="<f>" reason=<read|parse|schema|invalid> detail="…"`
+- `profile ignored file="<f>" reason=<other_identity|duplicate>`
+- `profile loaded name="…" game_version="…" schema=… source=<bundled|user> file=<"f"|->`
+
+Logs carry file names only, never paths; names and details are quoted, with control characters turned into spaces, so a file name cannot forge a line. App settings live in a separate file, `<config dir>/settings.toml`, never inside a profile.
 
 ## Text score format (draft)
 

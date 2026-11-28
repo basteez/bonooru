@@ -5,9 +5,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::{Context, ThemePreference};
+use ocb_core::profile::{Profile, Resolved, Source};
 use ocb_core::protocol::Info;
 use ocb_services::log::{LogHandle, Logger};
 use ocb_services::port::SerialBackend;
+use ocb_services::profiles;
 use ocb_services::worker::{
     self, LinkSnapshot, TimedEvent, TryRecvError, TrySendError, WorkerCommand, WorkerHandle,
 };
@@ -223,6 +225,9 @@ pub struct App {
     /// The window lost focus while the panel had it: its focus is
     /// surrendered at the next chance with a context (D4).
     panel_surrender_pending: bool,
+    /// The mapping profile in use and where it came from (Story 5.1,
+    /// AD-17): loaded once at start.
+    profile: Resolved,
 }
 
 impl App {
@@ -243,7 +248,9 @@ impl App {
         )
         .ok()
         .map(|h| Link::new(h, Some(logger), clock.now()));
-        Self::build(cc, mode, link, clock, app_log)
+        // The mapping profile: the bundled default or the user copy from the
+        // OS config dir (Story 5.1); a bad user file never stops the app.
+        Self::build(cc, mode, link, clock, app_log).profile(profiles::load())
     }
 
     /// Builds the app on a worker the caller started (tests: a fake
@@ -299,7 +306,33 @@ impl App {
             lock_event_last_frame: false,
             tab_last_frame: false,
             panel_surrender_pending: false,
+            // Tests: the bundled default, no file access, no line.
+            profile: profiles::bundled_only(),
         }
+    }
+
+    /// This app on a given profile resolution (Story 5.1 AC 10): writes its
+    /// `profile` lines (refused and ignored files, then `loaded`) to the
+    /// app's log. Call after [`App::led_log`] in tests.
+    #[must_use]
+    pub fn profile(mut self, resolved: Resolved) -> Self {
+        for line in profiles::log_lines(&resolved) {
+            self.log.log("profile", line);
+        }
+        self.profile = resolved;
+        self
+    }
+
+    /// The mapping profile in use (validated, AD-17).
+    #[must_use]
+    pub fn mapping_profile(&self) -> &Profile {
+        &self.profile.profile
+    }
+
+    /// Where the profile in use came from.
+    #[must_use]
+    pub fn profile_source(&self) -> &Source {
+        &self.profile.source
     }
 
     /// This app on another UI clock (tests: a clock moved by hand). The
