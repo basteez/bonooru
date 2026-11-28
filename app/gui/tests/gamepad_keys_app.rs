@@ -317,6 +317,20 @@ impl Rig {
             self.frame(FRAME_US);
         }
         self.until_direct(n);
+        // The worker writes its `pad sent` line after the controller has the
+        // state, so wait for the line too (a slow runner can see the state
+        // before the line).
+        let start = Instant::now();
+        while self
+            .all_now()
+            .iter()
+            .filter(|l| l.starts_with("pad sent "))
+            .count()
+            < self.direct().len()
+        {
+            assert!(start.elapsed() < LIMIT, "pad sent line never written");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn center(&self, name: &str) -> Pos2 {
