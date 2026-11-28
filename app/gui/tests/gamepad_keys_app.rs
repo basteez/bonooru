@@ -10,8 +10,9 @@
 //! pushed as winit sends them (`physical_key: Some(..)`, `repeat: false`:
 //! egui itself flags a press of a held key as a repeat). The UI clock is a
 //! `TestClock` and the worker's a `FakeClock`, moved together; waits on the
-//! worker thread are bounded polls (≤ 2 s); no wall-clock upper bound is
-//! asserted. Never the real backend or the real log (G.13).
+//! worker thread are bounded polls; no wall-clock upper bound is
+//! asserted (waits are bounded at 10 s). Never the real backend or the
+//! real log (G.13).
 
 #![allow(
     clippy::unwrap_used,
@@ -49,7 +50,13 @@ use ocb_sim::{ControllerConfig, FakeController};
 
 const CU: &str = "/dev/cu.usbmodem2101";
 const SERIAL: &str = "53032847189C2E9C";
-const LIMIT: Duration = Duration::from_secs(2);
+/// The bound of every wait on the worker or log thread (review
+/// 2026-11-28: 10 s, a generous bound for slow CI runners; no test asserts
+/// a wall-clock upper bound on the code under test).
+const LIMIT: Duration = Duration::from_secs(10);
+/// Makes every log marker unique (review 2026-11-28: two markers in the
+/// same `Instant` tick could match each other's line).
+static MARKER: AtomicU64 = AtomicU64::new(0);
 /// UI and worker time per frame in the tests (about one 60 Hz frame).
 const FRAME_US: u64 = 16_000;
 
@@ -174,7 +181,10 @@ impl Rig {
     /// Every line so far (`<kind> <text>`, no stamps): a marker is written
     /// and waited for (the log is FIFO).
     fn all_now(&self) -> Vec<String> {
-        let marker = format!("marker-{:?}", Instant::now());
+        let marker = format!(
+            "marker-{}",
+            MARKER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
         self.log.log("test", marker.clone());
         let start = Instant::now();
         loop {
@@ -2074,4 +2084,244 @@ fn g25_h36_dry_run() {
     for l in r.app_pads() {
         assert!(is_app_pad_line(&l), "{l}");
     }
+}
+
+/// Review 2026-11-28 (patch 1): eframe may run `logic` only and drop the
+/// window's events for `ui`; a key-up seen there ends its hold (one NEUTRAL,
+/// `release … reason=key_up key=l`) with no `ui` call, and the same key-up
+/// seen again by `ui` changes nothing.
+#[test]
+fn g25_key_up_in_a_logic_only_pass() {
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    r.focus_panel();
+    r.key_down(Key::L);
+    r.until_direct(1);
+    r.wait_us(200_000);
+    let n = r.app_pads().len();
+    let _ =
+        r.h.state_mut()
+            .pad_background_keys(true, true, false, &[PadKey::L]);
+    assert_eq!(
+        r.h.state().pad().last_sent(),
+        NEUTRAL,
+        "released without ui"
+    );
+    r.until_direct(2);
+    assert_eq!(r.direct(), vec![with(BTN_A), NEUTRAL]);
+    // `ui` now sees the same release: nothing more.
+    r.key_up(Key::L);
+    for _ in 0..3 {
+        r.frame(FRAME_US);
+    }
+    assert_eq!(r.direct().len(), 2);
+    assert_eq!(r.app_pads()[n..], ["release control=a reason=key_up key=l"]);
+}
+
+/// Review 2026-11-28 (patch 3): an open dialog takes the keys, also one
+/// opened in the same frame as an Enter press (`Modals::show` runs after
+/// the pad) and one whose primary button is disabled (it never takes
+/// focus): `keys=off reason=dialog`, the held key released (`focus_lost`),
+/// Enter and L press nothing, and the panel is not focused.
+#[test]
+fn g25_dialog_takes_the_keys() {
+    for disabled in [false, true] {
+        let ctx = format!("disabled primary {disabled}");
+        let mut r = rig(vec![bridge()]);
+        r.until_open();
+        r.focus_panel();
+        r.key_down(Key::L);
+        r.until_direct(1);
+        let mut spec = sample_dialog();
+        if disabled {
+            spec.primary = ModalAction::new("OK").disabled();
+        }
+        r.h.state_mut().modals_mut().request(spec);
+        r.key(Key::Enter, true, Modifiers::NONE);
+        r.key(Key::Enter, false, Modifiers::NONE);
+        r.frame(0);
+        assert!(!r.panel_has_focus(), "{ctx}");
+        r.until_direct(2);
+        assert_eq!(r.direct(), vec![with(BTN_A), NEUTRAL], "{ctx}: no +");
+        let pads = r.app_pads();
+        let off = pads
+            .iter()
+            .position(|l| l == "keys=off reason=dialog")
+            .unwrap_or_else(|| panic!("{ctx}: {pads:?}"));
+        assert_eq!(pads[off + 1], "release control=a reason=focus_lost key=l");
+        // While the dialog is open the keys do nothing.
+        r.key_up(Key::L);
+        r.tap_key(Key::L);
+        r.tap_key(Key::Enter);
+        for _ in 0..5 {
+            r.frame(FRAME_US);
+        }
+        assert_eq!(r.direct().len(), 2, "{ctx}");
+        assert!(!r.panel_has_focus(), "{ctx}");
+        assert_eq!(r.app_pads().len(), pads.len(), "{ctx}");
+    }
+}
+
+/// Review 2026-11-28 (patch 4): an AccessKit `Focus` on another widget in
+/// the panel's first frame of focus is not pulled back by the lock
+/// fallback, even with an arrow press in the same frame.
+#[test]
+fn g25_accesskit_focus_leaves_the_panel() {
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    let p = r.panel_spot();
+    r.click(p);
+    assert!(r.panel_has_focus());
+    r.key(Key::ArrowLeft, true, Modifiers::NONE);
+    r.key(Key::ArrowLeft, false, Modifiers::NONE);
+    r.h.get_by_role_and_label(Role::Button, ocb_app::stop::STOP_A11Y_NAME)
+        .focus();
+    r.frame(0);
+    r.frame(0);
+    r.frame(0);
+    assert_eq!(r.focused(), Some(bottom_bar::stop_id()));
+    assert_eq!(
+        r.app_pads().last().map(String::as_str),
+        Some("keys=off reason=elsewhere")
+    );
+}
+
+/// Review 2026-11-28 (patch 5): the mapped keys are consumed in every frame
+/// the panel has focus, also the frame the click gives it and a Shift+Esc
+/// STOP frame, without being applied there.
+#[test]
+fn g25_keys_consumed_in_every_focused_frame() {
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    let p = r.panel_spot();
+    r.hover(p);
+    r.push(button(p, true));
+    r.push(button(p, false));
+    r.key(Key::L, true, Modifiers::NONE);
+    r.frame(0);
+    assert!(r.panel_has_focus());
+    assert!(!has_key_event(&r, Key::L), "consumed in the gain frame");
+    r.key_up(Key::L);
+    r.frame(FRAME_US);
+    r.esc(Modifiers::SHIFT);
+    r.key(Key::K, true, Modifiers::NONE);
+    r.frame(0);
+    assert!(r.panel_has_focus());
+    assert!(!has_key_event(&r, Key::K), "consumed in the STOP frame");
+    r.key_up(Key::K);
+    for _ in 0..5 {
+        r.frame(FRAME_US);
+    }
+    assert!(r.direct().is_empty(), "not applied");
+    assert!(
+        !r.app_pads().iter().any(|l| l.starts_with("press ")),
+        "{:?}",
+        r.app_pads()
+    );
+}
+
+/// Review 2026-11-28 (patch 7): a right or middle click inside the panel
+/// (on a control or on empty panel space) keeps the panel's focus and the
+/// key hold; only the primary button presses a control.
+#[test]
+fn g25_other_buttons_keep_focus() {
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    r.focus_panel();
+    r.key_down(Key::L);
+    r.until_direct(1);
+    let a = r.center("B");
+    let spot = r.panel_spot();
+    for (pos, b) in [
+        (a, PointerButton::Secondary),
+        (a, PointerButton::Middle),
+        (spot, PointerButton::Secondary),
+        (spot, PointerButton::Middle),
+    ] {
+        r.hover(pos);
+        for pressed in [true, false] {
+            r.push(Event::PointerButton {
+                pos,
+                button: b,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        r.frame(0);
+        r.frame(FRAME_US);
+        assert!(r.panel_has_focus(), "{b:?} at {pos:?}");
+        assert!(r.h.state().pad().is_pressed(Control::A), "{b:?} at {pos:?}");
+    }
+    assert_eq!(r.direct(), vec![with(BTN_A)], "B never pressed");
+    assert!(!r.app_pads().iter().any(|l| l.starts_with("keys=off")));
+    // A secondary click on empty panel space gives the focus too.
+    r.esc(Modifiers::NONE);
+    r.frame(0);
+    assert_eq!(r.focused(), None);
+    r.hover(spot);
+    r.push(Event::PointerButton {
+        pos: spot,
+        button: PointerButton::Secondary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    r.push(Event::PointerButton {
+        pos: spot,
+        button: PointerButton::Secondary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    r.frame(0);
+    assert!(r.panel_has_focus());
+}
+
+/// H.36 step 13 (review 2026-11-28: its verdict needed a host test): at
+/// about 1100 pt the compact grid's A (at its Dev Notes position) and the
+/// L key each send 0x0004, then NEUTRAL.
+#[test]
+fn g25_compact_presses() {
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    r.h.set_size(vec2(1100.0, 800.0));
+    r.frame(FRAME_US);
+    r.frame(FRAME_US);
+    let region = r.region();
+    assert!((region.width() - 200.0).abs() < 0.5, "{region:?}");
+    let lay = ocb_app::ui::gamepad::compact_layout(
+        region,
+        ocb_app::ui::gamepad::TextHeights::measure(&r.h.ctx),
+    );
+    let a = lay.grid.min + vec2(153.0, 90.0);
+    r.click(a);
+    r.settle(2);
+    assert!(r.panel_has_focus());
+    r.frame(0);
+    r.tap_key(Key::L);
+    r.settle(4);
+    assert_eq!(r.direct(), vec![with(BTN_A), NEUTRAL, with(BTN_A), NEUTRAL]);
+    let pads = r.app_pads();
+    assert!(pads.contains(&"press control=a source=mouse".to_owned()));
+    assert!(pads.contains(&"press control=a source=keyboard key=l".to_owned()));
+}
+
+/// Review 2026-11-28 (patch 4): an arrow already held when the click gives
+/// the panel focus arrives as an OS repeat in the next frame; egui moves
+/// the focus on a repeat as on a fresh press, so the lock fallback counts
+/// it too and the panel keeps its focus.
+#[test]
+fn g25_focus_lock_held_arrow() {
+    let mut r = rig(vec![bridge()]);
+    r.until_open();
+    r.key_down(Key::ArrowDown);
+    let p = r.panel_spot();
+    r.click(p);
+    assert!(r.panel_has_focus());
+    // The OS repeat (egui flags it: ArrowDown is down).
+    r.key(Key::ArrowDown, true, Modifiers::NONE);
+    r.frame(0);
+    r.frame(0);
+    r.frame(0);
+    assert!(r.panel_has_focus(), "the held arrow did not take the focus");
+    assert!(!r.app_pads().iter().any(|l| l.starts_with("keys=off")));
+    r.key_up(Key::ArrowDown);
 }

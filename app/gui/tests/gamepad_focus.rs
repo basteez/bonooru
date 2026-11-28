@@ -41,6 +41,12 @@ fn region_of(w: f32, h: f32) -> Rect {
     regions(Rect::from_min_size(Pos2::ZERO, vec2(w, h))).gamepad
 }
 
+/// The variant `main_screen::show` gives a `w × h` content rect (the one
+/// threshold, `layout::is_compact`).
+fn variant_of(w: f32, h: f32) -> Variant {
+    Variant::for_content(Rect::from_min_size(Pos2::ZERO, vec2(w, h)))
+}
+
 /// The panel alone over the gamepad region of a `w × h` window, focused or
 /// not; the state is the region.
 fn panel(w: f32, h: f32, ppp: f32, view: PadView, focused: bool) -> Harness<'static, Rect> {
@@ -54,6 +60,10 @@ fn panel(w: f32, h: f32, ppp: f32, view: PadView, focused: bool) -> Harness<'sta
                 if focused {
                     ui.ctx().memory_mut(|m| m.request_focus(panel_id()));
                 }
+                let view = PadView {
+                    variant: variant_of(w, h),
+                    ..view
+                };
                 let _ = gamepad::show(ui, *region, &view);
             },
             Rect::NOTHING,
@@ -78,9 +88,9 @@ fn views() -> Vec<(String, PadView)> {
 }
 
 /// The header boxes (tab, chip, underline) of the region's variant.
-fn header(ctx: &egui::Context, region: Rect) -> (Rect, Rect, f32) {
+fn header(ctx: &egui::Context, region: Rect, variant: Variant) -> (Rect, Rect, f32) {
     let text = TextHeights::measure(ctx);
-    match Variant::of(region) {
+    match variant {
         Variant::Full => {
             let l = gamepad::layout(region, text);
             (l.tab, l.chip, l.underline_y)
@@ -150,7 +160,7 @@ fn g24_focused_look() {
                 assert!(at < ring_at, "{ctx_s}: the wash under the ring");
             }
             // The chip.
-            let (tab, chip_box, underline_y) = header(&hn.ctx, region);
+            let (tab, chip_box, underline_y) = header(&hn.ctx, region, variant_of(w, h));
             let pills: Vec<_> = flat
                 .iter()
                 .filter_map(|f| match &f.shape {
@@ -247,7 +257,7 @@ fn g24_compact_layout() {
         let region = region_of(w, h);
         let ctx = format!("{w}x{h}");
         assert_eq!(region.width(), 200.0, "{ctx}");
-        assert_eq!(Variant::of(region), Variant::Compact, "{ctx}");
+        assert_eq!(variant_of(w, h), Variant::Compact, "{ctx}");
         let l = gamepad::compact_layout(region, text);
         let inner = region.shrink(10.0);
         assert!((l.tab.min - inner.min).length() <= 0.5, "{ctx}");
@@ -278,10 +288,10 @@ fn g24_compact_layout() {
             }
         }
         // `main_screen::hint_rect` and `gamepad::hint_rect` agree with it.
-        assert_eq!(gamepad::hint_rect(region, text), l.hint);
+        assert_eq!(gamepad::hint_rect(region, text, Variant::Compact), l.hint);
     }
     // At 1280 pt and wider: the full panel.
-    assert_eq!(Variant::of(region_of(1280.0, 800.0)), Variant::Full);
+    assert_eq!(variant_of(1280.0, 800.0), Variant::Full);
 }
 
 /// AC 9: every compact control at Dev Notes › Compact geometry plus the
@@ -532,6 +542,8 @@ fn tooltip_after_hover(hn: &mut Harness<'static, Rect>, p: Pos2) -> Option<(Stri
 #[test]
 fn g24_compact_tooltips() {
     let mut hn = panel(1024.0, 680.0, 1.0, PadView::default(), false);
+    // No hover delay (review 2026-11-28): the tooltip itself is under test.
+    hn.ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.0);
     let region = *hn.state();
     let lay = gamepad::compact_layout(region, TextHeights::measure(&hn.ctx));
     let geo = PadGeometry::compact(lay.grid.min);
@@ -551,6 +563,8 @@ fn g24_compact_tooltips() {
         assert_eq!(text, c.key_hint(), "{c:?}");
     }
     let mut full = panel(1280.0, 800.0, 1.0, PadView::default(), false);
+    full.ctx
+        .all_styles_mut(|s| s.interaction.tooltip_delay = 0.0);
     let region = *full.state();
     let lay = gamepad::layout(region, TextHeights::measure(&full.ctx));
     let a = PadGeometry::new(lay.pad.min)
@@ -626,7 +640,7 @@ fn g24_accesskit_group() {
                     }
                 }
             }
-            let compact = Variant::of(*hn.state()) == Variant::Compact;
+            let compact = variant_of(w, h) == Variant::Compact;
             assert_eq!(hn.query_all_by_role(Role::Button).count(), 16, "{ctx}");
             assert_eq!(
                 hn.query_all_by_role(Role::Slider).count(),
@@ -698,5 +712,38 @@ fn g24_pad_keys_table() {
         Key::Delete,
     ] {
         assert_eq!(pad_keys::pad_key(k), None, "{k:?}");
+    }
+}
+
+/// Review 2026-11-28 (patch 6): one compact threshold. In the real app at
+/// ppp 1.1 a window of 1279.6 or 1280 pt draws the full 300 pt panel (two
+/// sticks), 1279 pt the 200 pt grid (none): the region and the panel come
+/// from the same `layout::is_compact`, with half a point of slack.
+#[test]
+fn g24_one_compact_threshold() {
+    use ocb_app::app::{App, Mode};
+    for (w, compact) in [(1279.0, true), (1279.6, false), (1280.0, false)] {
+        let mut h = Harness::builder()
+            .with_size(vec2(w, 800.0))
+            .with_pixels_per_point(1.1)
+            .build_eframe(|cc| App::with_link(cc, Mode::Main, common::fake_link(&cc.egui_ctx)));
+        h.run();
+        let ctx = format!("{w} pt at ppp 1.1");
+        let group = h
+            .query_all_by_role(Role::Group)
+            .find(|n| {
+                n.accesskit_node()
+                    .label()
+                    .is_some_and(|l| l == GROUP_KEYS_OFF)
+            })
+            .expect("the gamepad group");
+        let width = group.rect().width();
+        let want = if compact { 200.0 } else { 300.0 };
+        assert!((width - want).abs() < 1.0, "{ctx}: region {width}");
+        assert_eq!(
+            h.query_all_by_role(Role::Slider).count(),
+            if compact { 0 } else { 2 },
+            "{ctx}: the panel drawn matches the region"
+        );
     }
 }

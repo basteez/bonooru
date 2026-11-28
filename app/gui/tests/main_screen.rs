@@ -168,7 +168,10 @@ fn g1_gamepad_hint_geometry() {
         gamepad: block,
         play: block,
     };
-    for (w, hgt) in [(1024.0, 680.0), (1280.0, 800.0)] {
+    // Review 2026-11-28: 1320 × 800 is full width inside the kittest
+    // screen's margins, so the full-layout hint is checked on the real main
+    // screen too.
+    for (w, hgt) in [(1024.0, 680.0), (1280.0, 800.0), (1320.0, 800.0)] {
         for ppp in [1.0, 2.0] {
             let ctx = format!("{w}x{hgt} ppp {ppp}");
             let h = screen(w, hgt, ppp, blocked);
@@ -204,7 +207,7 @@ fn g1_gamepad_hint_geometry() {
                 t.galley.job.wrap.max_width,
                 pad.width() - 20.0
             );
-            let hint = main_screen::hint_rect(&h.ctx, pad);
+            let hint = main_screen::hint_rect(&h.ctx, *h.state());
             assert!(
                 (ink.top() - hint.top()).abs() <= 0.5,
                 "{ctx}: top {} vs {}",
@@ -214,9 +217,11 @@ fn g1_gamepad_hint_geometry() {
             // Story 4.9: below 1280 pt the region is the compact grid and
             // the hint sits 8 pt under the grid, not the legend.
             let text = ocb_app::ui::gamepad::TextHeights::measure(&h.ctx);
-            let compact =
-                ocb_app::ui::gamepad::Variant::of(pad) == ocb_app::ui::gamepad::Variant::Compact;
+            let compact = ocb_app::ui::layout::is_compact(*h.state());
             assert_eq!(compact, pad.width() < 300.0, "{ctx}");
+            if w >= 1320.0 {
+                assert!(!compact, "{ctx}: full width in the harness");
+            }
             let above = if compact {
                 ocb_app::ui::gamepad::compact_layout(pad, text)
                     .grid

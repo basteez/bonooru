@@ -13,7 +13,7 @@ use ocb_services::worker::{
 };
 use raw_window_handle::HasWindowHandle as _;
 
-use crate::gamepad::{self, KeysOff, KeysOn, Pad, Release, Target};
+use crate::gamepad::{self, KeysOff, KeysOn, Pad, PadKey, Release, Target};
 use crate::gating::{self, FirmwareWatch, Gate, GateTracker};
 use crate::leds::{self, LedTracker, Leds};
 use crate::smoke::{self, Report, Smoke};
@@ -554,12 +554,17 @@ impl App {
         // end of the previous first pass and now (D6), never in a STOP or
         // blur frame. OS repeats press nothing; Cmd/Ctrl presses are left
         // in the input; a gated press writes `pad ignored … key=`.
+        // Review 2026-11-28: the mapped keys are consumed in every frame
+        // the panel has focus (the focus-gain frame and a Shift/Alt+Esc
+        // STOP frame too) and applied only under that condition; a key-up
+        // is always honoured (idempotent with `logic`'s, `pad_background_keys`).
         let focused_now = ctx.memory(|m| m.has_focus(panel_id()));
-        if self.panel_focused && focused_now && !ignore_new {
+        if focused_now {
+            let apply = self.panel_focused && !ignore_new;
             for e in pad_keys::take(ctx) {
                 if !e.pressed {
                     self.pad.key_up(e.key, now);
-                } else if e.repeat || e.command {
+                } else if !apply || e.repeat || e.command {
                 } else if let Some(block) = gate.gamepad {
                     self.pad.ignored_key(e.key, block.as_str());
                 } else {
@@ -601,30 +606,45 @@ impl App {
     fn panel_focus(&mut self, ctx: &Context, input: &PadInput, stopped: bool, ignore_new: bool) {
         let pid = panel_id();
         let was = self.panel_focused;
-        let (esc_plain, lock_event, tab_event, any_press) = ctx.input(|i| {
+        let (esc_plain, lock_event, tab_event, any_press, accesskit_focus) = ctx.input(|i| {
             let mut esc = false;
             let mut lock = false;
             let mut tab = false;
+            let mut ak = false;
             for e in &i.events {
-                if let egui::Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } = e
-                {
-                    match key {
+                match e {
+                    // Only what egui's own focus navigation acts on (review
+                    // 2026-11-28): unmodified arrows and Tab, Shift-only
+                    // Shift+Tab. Key repeats count too: `Memory::begin_pass`
+                    // (egui 0.37 `memory/mod.rs` ~l.583) moves the focus on a
+                    // repeated press as on a fresh one.
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => match key {
                         egui::Key::Escape if !modifiers.any() => esc = true,
-                        egui::Key::Tab => {
+                        egui::Key::Tab if !modifiers.any() || modifiers.shift_only() => {
                             tab = true;
                             lock = true;
                         }
                         egui::Key::ArrowUp
                         | egui::Key::ArrowDown
                         | egui::Key::ArrowLeft
-                        | egui::Key::ArrowRight => lock = true,
+                        | egui::Key::ArrowRight
+                            if !modifiers.any() =>
+                        {
+                            lock = true;
+                        }
                         _ => {}
+                    },
+                    egui::Event::AccessKitActionRequest(r)
+                        if r.action == egui::accesskit::Action::Focus =>
+                    {
+                        ak = true;
                     }
+                    _ => {}
                 }
             }
             (
@@ -632,20 +652,30 @@ impl App {
                 lock,
                 tab,
                 i.pointer.any_pressed() || i.pointer.any_click(),
+                ak,
             )
         });
         let dialog = self.modals.is_open();
-        // A press that reached the panel gives it focus; the release of
-        // such a press keeps the focus it has (D11), it never gives it.
-        let released = input.released || !input.primary_down;
+        // A press of any button that reached the panel gives it focus (only
+        // the primary button presses a control); the release of such a
+        // press keeps the focus it has (D11), it never gives it (review
+        // 2026-11-28: a right or middle click inside the panel keeps it).
+        let released = input.any_released || !input.any_down;
         let pressed_on_panel = input.panel_press && !ignore_new;
         let on_panel = pressed_on_panel || (was && self.panel_pointer_down && released);
-        if input.panel_press && !ignore_new && input.primary_down {
+        if pressed_on_panel && input.any_down {
             self.panel_pointer_down = true;
         } else if released {
             self.panel_pointer_down = false;
         }
         let mut focused = ctx.memory(|m| m.has_focus(pid));
+        // An open dialog takes the keys (review 2026-11-28): also one whose
+        // primary button is disabled (it never takes focus) and one opened
+        // in this frame (`Modals::show` runs after the pad).
+        if dialog && focused {
+            ctx.memory_mut(|m| m.surrender_focus(pid));
+            focused = false;
+        }
         if !dialog && !ignore_new {
             if on_panel {
                 ctx.memory_mut(|m| m.request_focus(pid));
@@ -654,6 +684,7 @@ impl App {
                 && !focused
                 && !esc_plain
                 && !any_press
+                && !accesskit_focus
                 && (lock_event || self.lock_event_last_frame)
             {
                 // The lock's first-frame fallback (AC 2): no line.
@@ -685,7 +716,7 @@ impl App {
             // The next frame sets the lock filter without waiting for input.
             ctx.request_repaint();
         }
-        self.lock_event_last_frame = focused && lock_event;
+        self.lock_event_last_frame = focused && lock_event && !accesskit_focus;
         self.tab_last_frame = tab_event;
     }
 
@@ -710,6 +741,25 @@ impl App {
         visible: bool,
         blur_event: bool,
     ) -> Option<Duration> {
+        self.pad_background_keys(focused, visible, blur_event, &[])
+    }
+
+    /// [`App::pad_background`] with the frame's key releases (review
+    /// 2026-11-28): eframe may run `logic` only and drop the window's events
+    /// for `ui` (a redraw overdue, a hidden window), so a key-up read there
+    /// ends its hold here; idempotent with `ui`'s path (a key not held, or
+    /// already waiting for its tap minimum, is ignored).
+    pub fn pad_background_keys(
+        &mut self,
+        focused: bool,
+        visible: bool,
+        blur_event: bool,
+        key_ups: &[PadKey],
+    ) -> Option<Duration> {
+        let now = self.now_us();
+        for k in key_ups {
+            self.pad.key_up(*k, now);
+        }
         let active = focused && visible && !blur_event;
         if blur_event || (self.focused && !active) {
             self.pad.release_all(Release::WindowBlur);
@@ -855,7 +905,7 @@ impl eframe::App for App {
         // hidden: eframe then calls `logic` only and drops the window's
         // events (review 2026-11-27). Idempotent within a frame.
         if self.mode == Mode::Main {
-            let (focused, visible, blur_event) = ctx.input(|i| {
+            let (focused, visible, blur_event, key_ups) = ctx.input(|i| {
                 (
                     i.raw.focused,
                     i.raw.viewport().visible() != Some(false),
@@ -863,9 +913,21 @@ impl eframe::App for App {
                         .events
                         .iter()
                         .any(|e| matches!(e, egui::Event::WindowFocused(false))),
+                    i.raw
+                        .events
+                        .iter()
+                        .filter_map(|e| match e {
+                            egui::Event::Key {
+                                pressed: false,
+                                physical_key: Some(k),
+                                ..
+                            } => pad_keys::pad_key(*k),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
                 )
             });
-            if let Some(d) = self.pad_background(focused, visible, blur_event) {
+            if let Some(d) = self.pad_background_keys(focused, visible, blur_event, &key_ups) {
                 self.last_pad_wake = Some(d);
                 ctx.request_repaint_after(d);
             }

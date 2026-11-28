@@ -554,7 +554,7 @@ fn g18_hint() {
         "{ink:?} in {pad:?}"
     );
     // Story 4.8: under the gamepad legend.
-    let hint = ocb_app::ui::main_screen::hint_rect(&r.h.ctx, pad);
+    let hint = ocb_app::ui::main_screen::hint_rect(&r.h.ctx, r.h.ctx.content_rect());
     assert!((ink.top() - hint.top()).abs() <= 0.5);
     r.click_ok();
     assert!(hint_shape(&r.h).is_some(), "after OK");

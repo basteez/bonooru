@@ -261,7 +261,11 @@ fn g10_gamepad_nodes() {
     use egui::accesskit::Role as AkRole;
     let compact = harness(|ui| {
         let region = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 548.0));
-        let _ = ocb_app::ui::gamepad::show(ui, region, &ocb_app::ui::gamepad::PadView::default());
+        let view = ocb_app::ui::gamepad::PadView {
+            variant: ocb_app::ui::gamepad::Variant::Compact,
+            ..ocb_app::ui::gamepad::PadView::default()
+        };
+        let _ = ocb_app::ui::gamepad::show(ui, region, &view);
     });
     assert_eq!(compact.query_all_by_role(AkRole::Group).count(), 1);
     assert_eq!(compact.query_all_by_role(AkRole::Button).count(), 16);

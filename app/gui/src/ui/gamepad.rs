@@ -97,12 +97,12 @@ pub enum Variant {
 }
 
 impl Variant {
-    /// The variant for a gamepad region: [`layout::regions`](super::layout::regions)
-    /// gives the full width from 1280 pt up and the compact one below, so a
-    /// region narrower than the full panel is the compact variant.
+    /// The variant for a main-screen content rect: the one threshold,
+    /// [`layout::is_compact`](super::layout::is_compact), which also sizes
+    /// the region (review 2026-11-28: no second test on the region width).
     #[must_use]
-    pub fn of(region: Rect) -> Self {
-        if region.width() < theme::spacing::GAMEPAD_PANEL_WIDTH - 0.5 {
+    pub fn for_content(content: Rect) -> Self {
+        if super::layout::is_compact(content) {
             Self::Compact
         } else {
             Self::Full
@@ -324,11 +324,11 @@ pub fn compact_layout(region: Rect, text: TextHeights) -> CompactLayout {
     }
 }
 
-/// The inline hint's rect in a gamepad region, for the variant the region
-/// gets (`main_screen::hint_rect`).
+/// The inline hint's rect in a gamepad region drawn as `variant`
+/// (`main_screen::hint_rect`).
 #[must_use]
-pub fn hint_rect(region: Rect, text: TextHeights) -> Rect {
-    match Variant::of(region) {
+pub fn hint_rect(region: Rect, text: TextHeights, variant: Variant) -> Rect {
+    match variant {
         Variant::Full => layout(region, text).hint,
         Variant::Compact => compact_layout(region, text).hint,
     }
@@ -663,6 +663,9 @@ pub struct PadView {
     pub dragging: Option<Stick>,
     /// The stick values (the knobs' positions).
     pub sticks: [(u8, u8); 2],
+    /// The panel to draw (`main_screen::show` sets it from the content
+    /// rect, `Variant::for_content`).
+    pub variant: Variant,
 }
 
 impl Default for PadView {
@@ -674,6 +677,7 @@ impl Default for PadView {
             key_held: 0,
             dragging: None,
             sticks: [(128, 128); 2],
+            variant: Variant::Full,
         }
     }
 }
@@ -712,10 +716,16 @@ pub struct PadInput {
     pub drag_offset: Option<(f32, f32)>,
     /// An AccessKit `Click` on a control (a click the pointer did not make).
     pub tap: Option<Control>,
-    /// A primary press this frame reached the panel: a control, a stick or
-    /// empty panel space, not through a layer above it (a dialog) (Story
-    /// 4.9 AC 1: the press gives the panel keyboard focus).
+    /// A press of any pointer button this frame reached the panel: a
+    /// control, a stick or empty panel space, not through a layer above it
+    /// (a dialog) (Story 4.9 AC 1: the press gives the panel keyboard
+    /// focus; review 2026-11-28: a right or middle click keeps it too, only
+    /// the primary button presses a control).
     pub panel_press: bool,
+    /// Any pointer button is down at the end of the frame's input.
+    pub any_down: bool,
+    /// Any pointer button came up this frame.
+    pub any_released: bool,
     /// The panel drawn this frame (Story 4.9 AC 9).
     pub variant: Variant,
 }
@@ -726,7 +736,7 @@ pub struct PadInput {
 /// compact grid in a child `Ui` parented to the group.
 pub fn show(ui: &mut Ui, region: Rect, view: &PadView) -> PadInput {
     let ppp = ui.ctx().pixels_per_point();
-    let variant = Variant::of(region);
+    let variant = view.variant;
     // The group node first (D10): `FOCUSABLE` only (D11 in the app keeps
     // its focus through presses on the controls above it).
     let panel = ui.interact(region, panel_id(), Sense::FOCUSABLE);
@@ -750,8 +760,16 @@ pub fn show(ui: &mut Ui, region: Rect, view: &PadView) -> PadInput {
         })
         .inner;
     input.variant = variant;
-    let pressed = ui.input(|i| i.pointer.primary_pressed());
-    input.panel_press = pressed && (input.panel_press || panel.contains_pointer());
+    let (any_pressed, any_down, any_released) = ui.input(|i| {
+        (
+            i.pointer.any_pressed(),
+            i.pointer.any_down(),
+            i.pointer.any_released(),
+        )
+    });
+    input.panel_press = any_pressed && (input.panel_press || panel.contains_pointer());
+    input.any_down = any_down;
+    input.any_released = any_released;
     input
 }
 
@@ -910,7 +928,9 @@ fn sense_and_paint(ui: &mut Ui, geo: &PadGeometry, view: &PadView, tooltips: boo
     let reached = on_pad(Response::is_pointer_button_down_on)
         || on_pad(Response::clicked)
         || on_pad(Response::contains_pointer);
-    input.panel_press = pressed && reached;
+    // Any button (the caller adds `any_pressed`): a right or middle click
+    // on a control keeps the panel's focus but presses nothing.
+    input.panel_press = reached;
     if pressed
         && reached
         && let Some(o) = origin
@@ -1259,5 +1279,7 @@ pub fn view_of(pad: &gamepad::Pad, enabled: bool, hint: Option<&'static str>) ->
         key_held: pad.keys_held().fold(0, |m, k| m | control_bit(k.control())),
         dragging: pad.dragging(),
         sticks: [pad.stick_value(Stick::Left), pad.stick_value(Stick::Right)],
+        // `main_screen::show` sets it from the content rect.
+        variant: Variant::Full,
     }
 }

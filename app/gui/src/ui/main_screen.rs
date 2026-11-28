@@ -10,6 +10,7 @@
 
 use egui::{Rect, Stroke, Ui, UiBuilder, pos2};
 
+use super::gamepad::Variant;
 use super::gamepad::{self, PadInput, PadView, TextHeights};
 use super::layout::{RegionId, regions};
 use super::{bottom_bar, paint, status_strip, theme};
@@ -36,6 +37,8 @@ pub fn show(ui: &mut Ui, leds: &Leds, gate: &Gate, pad: &PadView) -> MainOutput 
             }
             if id == RegionId::Gamepad {
                 let mut view = *pad;
+                // The one compact threshold (review 2026-11-28).
+                view.variant = Variant::for_content(content);
                 view.enabled = view.enabled && gate.gamepad_enabled();
                 if view.hint.is_none() {
                     view.hint = gate.gamepad.map(|b| b.gamepad_hint());
@@ -59,12 +62,16 @@ pub struct MainOutput {
     pub pad: PadInput,
 }
 
-/// Where the gamepad hint goes in the gamepad region `rect` (Story 4.8: 8 pt
-/// under the legend, `ui::gamepad::layout`; Story 4.9: 8 pt under the
-/// compact grid when the region is the compact variant).
+/// Where the gamepad hint goes for the main-screen content rect `content`
+/// (Story 4.8: 8 pt under the legend, `ui::gamepad::layout`; Story 4.9: 8
+/// pt under the compact grid when the content is narrower than 1280 pt).
 #[must_use]
-pub fn hint_rect(ctx: &egui::Context, rect: Rect) -> Rect {
-    gamepad::hint_rect(rect, TextHeights::measure(ctx))
+pub fn hint_rect(ctx: &egui::Context, content: Rect) -> Rect {
+    gamepad::hint_rect(
+        regions(content).gamepad,
+        TextHeights::measure(ctx),
+        Variant::for_content(content),
+    )
 }
 
 /// A 1 pt bottom hairline snapped to physical pixels: returns the line's

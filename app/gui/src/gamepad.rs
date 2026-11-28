@@ -967,8 +967,17 @@ impl Pad {
     /// from now. A key already held is ignored (no line). The `press` line
     /// is written also when the control is already held by the mouse or
     /// another key (then the state does not change and nothing is sent).
+    ///
+    /// A fresh press of a key whose release is still waiting for its tap
+    /// minimum (pressed again within 50 ms) keeps the hold: the pending
+    /// release is cancelled, the hold keeps its start, and the press line
+    /// is written (review 2026-11-28), so the next release ends it.
     pub fn key_down(&mut self, key: PadKey, now_us: u64) {
-        if self.keys.iter().any(|k| k.key == key) {
+        if let Some(k) = self.keys.iter_mut().find(|k| k.key == key) {
+            if k.release_at.take().is_some() {
+                self.lines
+                    .push(press_line(key.control(), Source::Keyboard, Some(key)));
+            }
             return;
         }
         self.keys.push(KeyHold {
@@ -1567,6 +1576,37 @@ mod tests {
         p.key_up(PadKey::K, 4_000_000);
         assert!(p.take_lines().is_empty());
         assert_eq!(p.take_send(), None);
+    }
+
+    /// Review 2026-11-28: a key pressed again while its release waits for
+    /// the tap minimum is held again (one press line), and its next
+    /// release ends it; nothing is sent in between.
+    #[test]
+    fn key_repress_in_the_tap_window() {
+        let mut p = Pad::new();
+        p.key_down(PadKey::L, 0);
+        let _ = p.take_send();
+        p.sent(Ok(()));
+        p.key_up(PadKey::L, 10_000);
+        p.key_down(PadKey::L, 20_000);
+        p.tick(60_000);
+        assert!(
+            p.is_pressed(Control::A),
+            "held again, the tap release cancelled"
+        );
+        assert_eq!(p.take_send(), None, "no change on the wire");
+        assert_eq!(p.next_wake_us(60_000), None);
+        p.key_up(PadKey::L, 2_000_000);
+        assert!(!p.is_pressed(Control::A));
+        assert_eq!(
+            p.take_lines(),
+            vec![
+                "press control=a source=keyboard key=l",
+                "press control=a source=keyboard key=l",
+                "release control=a reason=key_up key=l"
+            ]
+        );
+        assert_eq!(p.take_send(), Some(NEUTRAL));
     }
 
     /// Chords: the union of every key held; duplicates keep the control

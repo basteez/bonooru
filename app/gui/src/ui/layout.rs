@@ -48,9 +48,12 @@ pub const COMPACT_BELOW: f32 = 1280.0;
 
 /// Whether a content rect this wide gets the compact gamepad (the one test
 /// both [`regions`] and the panel use, so they never disagree).
+///
+/// Half a point of slack: at a fractional pixel density a 1280 pt window's
+/// content rect can come out a hair narrower (review 2026-11-28).
 #[must_use]
 pub fn is_compact(content: Rect) -> bool {
-    content.width() < COMPACT_BELOW
+    content.width() < COMPACT_BELOW - 0.5
 }
 
 /// Computes the regions from the content rect: status strip on top, bottom
@@ -145,12 +148,15 @@ mod tests {
     }
 
     /// Story 4.9: the compact threshold is the content width, in points,
-    /// independent of where the content rect starts.
+    /// independent of where the content rect starts; half a point of slack
+    /// below 1280 (review 2026-11-28).
     #[test]
     fn g1_compact_threshold() {
         for (w, compact) in [
             (1024.0, true),
-            (1279.75, true),
+            (1279.0, true),
+            (1279.4, true),
+            (1279.6, false),
             (1280.0, false),
             (1920.0, false),
         ] {
