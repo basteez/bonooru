@@ -2,7 +2,8 @@
 //! the main screen: the layout (padding, caption, pad, legend, hint), the
 //! pad geometry from the mock's svg, the token look (no mock hex), convex
 //! fills and the one body outline, the legend, the circle hit test, the
-//! AccessKit nodes (16 buttons, 2 sliders, no Focus), the hover and pressed
+//! AccessKit nodes (16 buttons, 2 sliders, no Focus; Story 4.9: under the
+//! panel's `Group` node), the hover and pressed
 //! tints (none while blocked), the inline hint clipped to its rect, the
 //! wording check and the pure model's source.
 
@@ -33,7 +34,10 @@ use ocb_app::ui::layout::regions;
 use ocb_app::ui::paint::{self, ButtonState};
 use ocb_app::ui::theme;
 
-const SIZES: [(f32, f32); 2] = [(1024.0, 680.0), (1280.0, 800.0)];
+/// The full panel's window sizes. Story 4.9: below 1280 pt the region is
+/// the 200 pt compact grid (G.24 checks it at 1024 × 680 and 1279 × 800),
+/// so the full pad is checked at 1280 × 800 and 1920 × 1080.
+const SIZES: [(f32, f32); 2] = [(1280.0, 800.0), (1920.0, 1080.0)];
 const PPPS: [f32; 2] = [1.0, 2.0];
 
 /// The panel alone over the gamepad region of a `w × h` window; the state
@@ -80,6 +84,7 @@ fn heights() -> TextHeights {
         tab: vec2(61.0, gamepad::TAB_TEXT_HEIGHT),
         caption: gamepad::CAPTION_HEIGHT,
         row: gamepad::LEGEND_TEXT_HEIGHT,
+        chip: vec2(62.0, gamepad::CHIP_TEXT_HEIGHT),
     }
 }
 
@@ -142,7 +147,7 @@ fn g22_panel_layout() {
                 );
             }
         }
-        // The hint has room for two lines at 1024 × 680.
+        // The hint has room for two lines at both sizes.
         assert!(l.hint.height() >= 2.0 * 17.0, "{ctx}: {}", l.hint.height());
     }
 }
@@ -650,6 +655,9 @@ fn g22_accesskit() {
     }
     assert_eq!(hn.query_all_by_role(Role::Slider).count(), 2);
     assert_eq!(hn.query_all_by_role(Role::Image).count(), 0);
+    // Story 4.9: the panel's one `Group` node (G.24 checks that every node
+    // of the panel is under it).
+    assert_eq!(hn.query_all_by_role(Role::Group).count(), 1);
     // (The chip "L" shares its text with the L button: not checked.)
     for chip in CHIP_TEXTS
         .iter()

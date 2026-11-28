@@ -1,8 +1,9 @@
 //! The main screen (UX-DR5): five regions filled in reading order, each a
 //! scoped `Ui` over its rect (never egui panels). The status strip shows
 //! the brand and the three LEDs (Story 4.5); the gamepad region shows the
-//! gamepad panel, with the gate's inline hint under the legend while the
-//! gamepad is blocked (Story 4.6, 4.8); the bottom
+//! gamepad panel (the compact grid below 1280 pt, Story 4.9), with the
+//! gate's inline hint under the legend while the gamepad is blocked (Story
+//! 4.6, 4.8); the bottom
 //! bar shows STOP and the safety note, its Play/Listen slots reserved and
 //! empty (Story 4.7); the other regions are empty placeholders until later
 //! stories.
@@ -59,10 +60,11 @@ pub struct MainOutput {
 }
 
 /// Where the gamepad hint goes in the gamepad region `rect` (Story 4.8: 8 pt
-/// under the legend, `ui::gamepad::layout`).
+/// under the legend, `ui::gamepad::layout`; Story 4.9: 8 pt under the
+/// compact grid when the region is the compact variant).
 #[must_use]
 pub fn hint_rect(ctx: &egui::Context, rect: Rect) -> Rect {
-    gamepad::layout(rect, TextHeights::measure(ctx)).hint
+    gamepad::hint_rect(rect, TextHeights::measure(ctx))
 }
 
 /// A 1 pt bottom hairline snapped to physical pixels: returns the line's

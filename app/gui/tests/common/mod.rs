@@ -623,3 +623,163 @@ pub fn dialog_frame_rect(flat: &[Flat]) -> Rect {
     assert_eq!(frames[0].corner_radius, theme::corner(theme::rounded::LG));
     frames[0].rect
 }
+
+/// The 16 control names of the `pad` lines (Story 4.8).
+pub const PAD_CONTROLS: [&str; 16] = [
+    "a", "b", "x", "y", "dup", "ddown", "dleft", "dright", "l", "r", "zl", "zr", "minus", "plus",
+    "home", "capture",
+];
+/// The 18 key names of the `pad` lines (Story 4.9, `PadKey::log_name`).
+pub const PAD_KEYS: [&str; 18] = [
+    "arrow_up",
+    "arrow_down",
+    "arrow_left",
+    "arrow_right",
+    "w",
+    "a",
+    "s",
+    "d",
+    "h",
+    "j",
+    "k",
+    "l",
+    "q",
+    "e",
+    "z",
+    "c",
+    "enter",
+    "backspace",
+];
+/// `pad ignored` reasons: the six gate reasons and `busy`.
+pub const PAD_IGNORED_REASONS: [&str; 7] = [
+    "worker",
+    "no_bridge",
+    "bridge_not_ready",
+    "firmware_update",
+    "controller_link",
+    "switch_not_ready",
+    "busy",
+];
+const PAD_IGNORED_CONTROLS: [&str; 18] = [
+    "a",
+    "b",
+    "x",
+    "y",
+    "dup",
+    "ddown",
+    "dleft",
+    "dright",
+    "l",
+    "r",
+    "zl",
+    "zr",
+    "minus",
+    "plus",
+    "home",
+    "capture",
+    "stick_left",
+    "stick_right",
+];
+const PAD_RELEASE_REASONS: [&str; 8] = [
+    "pointer_up",
+    "tap",
+    "key_up",
+    "focus_lost",
+    "window_blur",
+    "stop",
+    "gate",
+    "controller_idle",
+];
+const PAD_STICK_END_REASONS: [&str; 7] = [
+    "pointer_up",
+    "window_blur",
+    "focus_lost",
+    "stop",
+    "gate",
+    "controller_idle",
+    "layout",
+];
+
+/// `head` + fields, or `head` + fields + ` key=<k>` (one of the 18 keys).
+fn with_optional_key(text: &str, head: &str, fields: &[(&str, Pat)]) -> bool {
+    if line_matches(text, head, fields) {
+        return true;
+    }
+    let mut keyed = fields.to_vec();
+    keyed.push(("key", Pat::OneOf(&PAD_KEYS)));
+    line_matches(text, head, &keyed)
+}
+
+/// An app `pad` line (its text after `pad `) against its pattern (Story 4.8
+/// Dev Notes › Log lines, extended by Story 4.9): `press` (` key=` only
+/// with `source=keyboard`, and always there), `release` (optional ` key=`),
+/// `stick=<s> start|end`, `ignored` (optional ` key=`, never `busy` with a
+/// key), `keys=on|off`, `command=`.
+pub fn is_app_pad_line(text: &str) -> bool {
+    let control = ("control", Pat::OneOf(&PAD_CONTROLS));
+    line_matches(
+        text,
+        "press",
+        &[control, ("source", Pat::OneOf(&["mouse", "accesskit"]))],
+    ) || line_matches(
+        text,
+        "press",
+        &[
+            control,
+            ("source", Pat::OneOf(&["keyboard"])),
+            ("key", Pat::OneOf(&PAD_KEYS)),
+        ],
+    ) || with_optional_key(
+        text,
+        "release",
+        &[control, ("reason", Pat::OneOf(&PAD_RELEASE_REASONS))],
+    ) || line_matches(
+        text,
+        "ignored",
+        &[
+            ("control", Pat::OneOf(&PAD_IGNORED_CONTROLS)),
+            ("reason", Pat::OneOf(&PAD_IGNORED_REASONS)),
+        ],
+    ) || line_matches(
+        text,
+        "ignored",
+        &[
+            control,
+            ("reason", Pat::OneOf(&PAD_IGNORED_REASONS[..6])),
+            ("key", Pat::OneOf(&PAD_KEYS)),
+        ],
+    ) || matches!(text, "stick=left start" | "stick=right start")
+        || ["left", "right"].iter().any(|s| {
+            text.strip_prefix(&format!("stick={s} end "))
+                .is_some_and(|r| {
+                    line_matches(r, "", &[("reason", Pat::OneOf(&PAD_STICK_END_REASONS))])
+                })
+        })
+        || line_matches(
+            text,
+            "",
+            &[
+                ("keys", Pat::OneOf(&["on"])),
+                ("source", Pat::OneOf(&["click", "tab", "other"])),
+            ],
+        )
+        || line_matches(
+            text,
+            "",
+            &[
+                ("keys", Pat::OneOf(&["off"])),
+                (
+                    "reason",
+                    Pat::OneOf(&["esc", "dialog", "window_blur", "elsewhere"]),
+                ),
+            ],
+        )
+        || line_matches(
+            text,
+            "",
+            &[(
+                "command",
+                Pat::OneOf(&["queue_full", "no_worker", "worker_gone"]),
+            )],
+        )
+}

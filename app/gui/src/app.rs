@@ -13,14 +13,15 @@ use ocb_services::worker::{
 };
 use raw_window_handle::HasWindowHandle as _;
 
-use crate::gamepad::{self, Pad, Release, Target};
+use crate::gamepad::{self, KeysOff, KeysOn, Pad, Release, Target};
 use crate::gating::{self, FirmwareWatch, Gate, GateTracker};
 use crate::leds::{self, LedTracker, Leds};
 use crate::smoke::{self, Report, Smoke};
 use crate::stop::{self, CommandResult, StopSource};
-use crate::ui::gamepad::{PadInput, view_of};
+use crate::ui::gamepad::{PadInput, Variant, panel_id, view_of};
 use crate::ui::keys::{self, FrameKeys};
 use crate::ui::modal::{ModalOutcome, Modals};
+use crate::ui::pad_keys;
 use crate::ui::{firmware, gallery, main_screen, theme};
 
 /// Which screen the window shows.
@@ -207,6 +208,22 @@ pub struct App {
     /// A STOP for an input the pad held did not reach the worker's queue
     /// (full): retried every frame until it does.
     pad_stop_retry: bool,
+    /// The gamepad panel had keyboard focus at the end of the previous
+    /// first pass (Story 4.9 AC 1, 5: keys need it at both ends).
+    panel_focused: bool,
+    /// A primary press that reached the panel is still down (its release
+    /// re-requests the panel's focus, D11).
+    panel_pointer_down: bool,
+    /// The previous first pass had a Tab or arrow press while the panel
+    /// had focus (the lock fallback also covers a focus move egui applies
+    /// one frame later: Shift+Tab, arrows; D12).
+    lock_event_last_frame: bool,
+    /// The previous first pass had a Tab press (a Shift+Tab gain lands one
+    /// frame later: still `source=tab`).
+    tab_last_frame: bool,
+    /// The window lost focus while the panel had it: its focus is
+    /// surrendered at the next chance with a context (D4).
+    panel_surrender_pending: bool,
 }
 
 impl App {
@@ -278,6 +295,11 @@ impl App {
             last_pad_wake: None,
             blur_frame: false,
             pad_stop_retry: false,
+            panel_focused: false,
+            panel_pointer_down: false,
+            lock_event_last_frame: false,
+            tab_last_frame: false,
+            panel_surrender_pending: false,
         }
     }
 
@@ -438,20 +460,36 @@ impl App {
         &self.pad
     }
 
+    /// Whether the gamepad panel had keyboard focus at the end of the last
+    /// first pass (Story 4.9; test hook, read only).
+    #[must_use]
+    pub fn panel_focused(&self) -> bool {
+        self.panel_focused
+    }
+
     /// The UI clock in µs (the pad's time base).
     fn now_us(&self) -> u64 {
         micros(self.clock.now())
     }
 
     /// The gamepad's input part of a main-screen frame, first pass only
-    /// (Story 4.8 AC 4–9, 16, 17), after STOP was requested for the frame
-    /// (so a `stop requested` line precedes every `pad` line of the frame;
-    /// `stop` is what became of that STOP): the STOP release, the gate, the
-    /// pointer. A press in a STOP or blur frame is spent, not applied.
-    fn pad_input(&mut self, input: &PadInput, stop: Option<CommandResult>, gate: &Gate) {
+    /// (Story 4.8 AC 4–9, 16, 17; Story 4.9 AC 1, 2, 5–9), after STOP was
+    /// requested for the frame (so a `stop requested` line precedes every
+    /// `pad` line of the frame; `stop` is what became of that STOP): the
+    /// STOP release, the panel's focus (gain, keep, lock fallback, loss),
+    /// the gate, the pointer, the keys, the focus lock filter and the
+    /// layout switch. A press in a STOP or blur frame is spent, not applied.
+    fn pad_input(
+        &mut self,
+        ctx: &Context,
+        input: &PadInput,
+        stop: Option<CommandResult>,
+        gate: &Gate,
+    ) {
         let now = self.now_us();
         let stopped = stop.is_some();
         let blur_frame = std::mem::take(&mut self.blur_frame);
+        self.apply_panel_surrender(ctx);
         // STOP this frame (rule 8b, AC 16): STOP releases; the frame's press
         // is ignored and spent. A STOP the worker did not take (its queue
         // full) is retried until it is: the queued states may still hold an
@@ -466,6 +504,7 @@ impl App {
             self.pad.spend_press();
         }
         let ignore_new = stopped || blur_frame;
+        self.panel_focus(ctx, input, stopped, ignore_new);
         // The pointer is up: a hold ends (also when the release happened
         // where the pad did not see it).
         let pointer_up = |pad: &mut Pad| {
@@ -476,7 +515,8 @@ impl App {
         match gate.gamepad {
             Some(block) => {
                 // Rule 8c: the gate turned blocked while the controller may
-                // apply an input: STOP (NEUTRAL could be refused).
+                // apply an input (a key hold counts): STOP (NEUTRAL could be
+                // refused).
                 if self.pad.is_active() && !stopped {
                     self.pad.release_all(Release::Gate);
                     if self.request_stop(StopSource::Gamepad) == CommandResult::QueueFull {
@@ -486,8 +526,7 @@ impl App {
                 if !ignore_new {
                     let ignored = input.press.or(input.tap.map(Target::Control));
                     if let Some(t) = ignored {
-                        self.log
-                            .log("pad", gamepad::ignored_line(t, block.as_str()));
+                        self.pad.ignored(t, block.as_str());
                     }
                 }
                 pointer_up(&mut self.pad);
@@ -511,6 +550,150 @@ impl App {
                 pointer_up(&mut self.pad);
             }
         }
+        // The keys (Story 4.9 AC 4–8): only with the panel focused at the
+        // end of the previous first pass and now (D6), never in a STOP or
+        // blur frame. OS repeats press nothing; Cmd/Ctrl presses are left
+        // in the input; a gated press writes `pad ignored … key=`.
+        let focused_now = ctx.memory(|m| m.has_focus(panel_id()));
+        if self.panel_focused && focused_now && !ignore_new {
+            for e in pad_keys::take(ctx) {
+                if !e.pressed {
+                    self.pad.key_up(e.key, now);
+                } else if e.repeat || e.command {
+                } else if let Some(block) = gate.gamepad {
+                    self.pad.ignored_key(e.key, block.as_str());
+                } else {
+                    self.pad.key_down(e.key, now);
+                }
+            }
+        }
+        // The lock (AC 2, D11): set last, after any `request_focus` of the
+        // frame (which resets the filter); egui accepts it from the panel's
+        // second frame of focus.
+        if focused_now {
+            ctx.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    panel_id(),
+                    egui::EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: false,
+                    },
+                );
+            });
+        }
+        // The compact grid has no sticks: a drag ends at the switch (AC 9).
+        if input.variant == Variant::Compact && self.pad.dragging().is_some() {
+            self.pad.end_drag_for_layout();
+        }
+        self.panel_focused = focused_now;
+    }
+
+    /// The panel's keyboard focus for the frame (Story 4.9 AC 1, 2): keeps
+    /// it through a press or release on the panel (egui surrenders a
+    /// focused widget that is not hovered at a click, and the controls lie
+    /// above the panel: D11), gives it on a press that reached the panel,
+    /// pulls it back when a Tab or arrow took it in the panel's first
+    /// frame of focus (D12), and writes `keys=on`/`keys=off`; a loss
+    /// releases what the pad holds (`focus_lost`, rule a′) unless STOP
+    /// already did.
+    fn panel_focus(&mut self, ctx: &Context, input: &PadInput, stopped: bool, ignore_new: bool) {
+        let pid = panel_id();
+        let was = self.panel_focused;
+        let (esc_plain, lock_event, tab_event, any_press) = ctx.input(|i| {
+            let mut esc = false;
+            let mut lock = false;
+            let mut tab = false;
+            for e in &i.events {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = e
+                {
+                    match key {
+                        egui::Key::Escape if !modifiers.any() => esc = true,
+                        egui::Key::Tab => {
+                            tab = true;
+                            lock = true;
+                        }
+                        egui::Key::ArrowUp
+                        | egui::Key::ArrowDown
+                        | egui::Key::ArrowLeft
+                        | egui::Key::ArrowRight => lock = true,
+                        _ => {}
+                    }
+                }
+            }
+            (
+                esc,
+                lock,
+                tab,
+                i.pointer.any_pressed() || i.pointer.any_click(),
+            )
+        });
+        let dialog = self.modals.is_open();
+        // A press that reached the panel gives it focus; the release of
+        // such a press keeps the focus it has (D11), it never gives it.
+        let released = input.released || !input.primary_down;
+        let pressed_on_panel = input.panel_press && !ignore_new;
+        let on_panel = pressed_on_panel || (was && self.panel_pointer_down && released);
+        if input.panel_press && !ignore_new && input.primary_down {
+            self.panel_pointer_down = true;
+        } else if released {
+            self.panel_pointer_down = false;
+        }
+        let mut focused = ctx.memory(|m| m.has_focus(pid));
+        if !dialog && !ignore_new {
+            if on_panel {
+                ctx.memory_mut(|m| m.request_focus(pid));
+                focused = true;
+            } else if was
+                && !focused
+                && !esc_plain
+                && !any_press
+                && (lock_event || self.lock_event_last_frame)
+            {
+                // The lock's first-frame fallback (AC 2): no line.
+                ctx.memory_mut(|m| m.request_focus(pid));
+                focused = true;
+            }
+        }
+        if was && !focused {
+            let reason = if stopped && esc_plain {
+                KeysOff::Esc
+            } else if dialog {
+                KeysOff::Dialog
+            } else {
+                KeysOff::Elsewhere
+            };
+            self.pad.keys_off(reason);
+            if !stopped {
+                self.pad.release_all(Release::FocusLost);
+            }
+        } else if !was && focused {
+            let source = if pressed_on_panel {
+                KeysOn::Click
+            } else if tab_event || self.tab_last_frame {
+                KeysOn::Tab
+            } else {
+                KeysOn::Other
+            };
+            self.pad.keys_on(source);
+            // The next frame sets the lock filter without waiting for input.
+            ctx.request_repaint();
+        }
+        self.lock_event_last_frame = focused && lock_event;
+        self.tab_last_frame = tab_event;
+    }
+
+    /// Surrenders the panel's focus after a window blur (D4).
+    fn apply_panel_surrender(&mut self, ctx: &Context) {
+        if std::mem::take(&mut self.panel_surrender_pending) {
+            ctx.memory_mut(|m| m.surrender_focus(panel_id()));
+        }
     }
 
     /// The gamepad's part that runs in every frame, also when eframe runs
@@ -531,6 +714,14 @@ impl App {
         if blur_event || (self.focused && !active) {
             self.pad.release_all(Release::WindowBlur);
             self.blur_frame = true;
+            // The panel's focus goes with the window's (Story 4.9 D4): the
+            // keys stay off until the panel is clicked again.
+            if self.panel_focused {
+                self.pad.keys_off(KeysOff::WindowBlur);
+                self.panel_focused = false;
+                self.panel_surrender_pending = true;
+            }
+            self.panel_pointer_down = false;
         }
         self.focused = active;
         self.pad_flush()
@@ -678,6 +869,7 @@ impl eframe::App for App {
                 self.last_pad_wake = Some(d);
                 ctx.request_repaint_after(d);
             }
+            self.apply_panel_surrender(ctx);
         }
     }
 
@@ -744,7 +936,8 @@ impl eframe::App for App {
                 if first_pass {
                     let result = stop.take().map(|source| self.request_stop(source));
                     stop_done = result.is_some();
-                    self.pad_input(&out.pad, result, &gate);
+                    let ctx = ui.ctx().clone();
+                    self.pad_input(&ctx, &out.pad, result, &gate);
                     self.last_pad_wake = self.pad_flush();
                 }
                 // A staleness or grace boundary, or a silent worker turning

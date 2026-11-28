@@ -323,6 +323,51 @@ pub mod components {
         pub const SIZE: f32 = 13.0;
     }
 
+    /// `components.gamepad-panel-focused` (Story 4.9, DESIGN.md › Virtual
+    /// gamepad › Focused; mock `.gfocus{box-shadow:inset 0 0 0 2px amber,
+    /// inset 0 0 22px #f0b43c40}`): the inset ring and the stacked inset
+    /// wash strokes, each [`WASH_STEP`] wide, `amber-wash` with its alpha
+    /// fading inward.
+    pub mod gamepad_panel_focused {
+        /// The inset ring's width.
+        pub const RING_WIDTH: f32 = 2.0;
+        /// The ring's colour.
+        pub const RING: egui::Color32 = super::super::AMBER;
+        /// How many stacked wash strokes.
+        pub const WASH_STEPS: usize = 6;
+        /// Each wash stroke's width.
+        pub const WASH_STEP: f32 = 3.0;
+        /// The wash colour (alpha scaled per stroke).
+        pub const WASH: egui::Color32 = super::super::AMBER_WASH;
+    }
+
+    /// `components.gamepad-compact` (Story 4.9, UX-DR6): the 200 pt
+    /// variant's button grid and caption.
+    pub mod gamepad_compact {
+        /// The button grid's width.
+        pub const GRID_WIDTH: f32 = 180.0;
+        /// The button grid's height.
+        pub const GRID_HEIGHT: f32 = 124.0;
+        /// The caption wraps in at most this many lines.
+        pub const CAPTION_LINES: usize = 2;
+    }
+
+    /// `components.chip-keys-active` (Story 4.9, mock `.ph em`).
+    pub mod chip_keys_active {
+        /// Fill.
+        pub const FILL: egui::Color32 = super::super::AMBER;
+        /// Text colour.
+        pub const FOREGROUND: egui::Color32 = super::super::INK;
+        /// Left and right padding.
+        pub const PADDING_X: f32 = 8.0;
+        /// Top and bottom padding.
+        pub const PADDING_Y: f32 = 1.0;
+        /// The chip's bottom sits this far above the tab underline.
+        pub const GAP_BOTTOM: f32 = 3.0;
+        /// Corner radius (`rounded.full`).
+        pub const RADIUS: f32 = super::super::rounded::FULL;
+    }
+
     /// `components.bottom-bar` layout (Story 4.7, lifted from
     /// `mockups/key-empty-state.html`: `.bottom{gap:14px;padding:0 16px}`).
     pub mod bottom_bar {
@@ -609,6 +654,9 @@ pub const KEY_CHIP: TypeStyle = TypeStyle::new(Body, 10.0, 600.0);
 /// family and size, bold (mock `.pb`: 10 px, 700). Not a `DESIGN.md` token:
 /// the AC names it "key-chip-sized bold text".
 pub const GAMEPAD_LETTER: TypeStyle = TypeStyle::new(Body, 10.0, 700.0);
+/// The "Keys active" chip (Story 4.9, lifted from
+/// `mockups/key-empty-state.html`: `.ph em{font-size:11.5px;font-weight:700}`).
+pub const CHIP: TypeStyle = TypeStyle::new(Body, 11.5, 700.0);
 /// The gamepad legend's control names (Story 4.8, lifted from
 /// `mockups/key-empty-state.html`: `.legend b`).
 pub const LEGEND_NAME: TypeStyle = TypeStyle::new(Body, 12.5, 600.0);
@@ -647,6 +695,7 @@ pub fn typography_tokens() -> &'static [(&'static str, TypeStyle)] {
         ("note-label", NOTE_LABEL),
         ("glyph", GLYPH),
         ("key-chip", KEY_CHIP),
+        ("chip", CHIP),
         ("legend-name", LEGEND_NAME),
         ("safety-note", SAFETY_NOTE),
         ("code", CODE),

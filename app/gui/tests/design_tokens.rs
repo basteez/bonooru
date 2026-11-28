@@ -727,6 +727,108 @@ fn g3_gamepad_tokens() {
     report(&errs);
 }
 
+/// Story 4.9: the focused panel's ring and wash, the compact variant's grid
+/// and caption, and the "Keys active" chip, every field compared (sizes as
+/// px or plain numbers, colours as `{colors.<name>}` references), and
+/// `spacing.gamepad-compact-width` no longer an assumption.
+#[test]
+fn g3_gamepad_focus_and_compact_tokens() {
+    use theme::components::{
+        chip_keys_active as chip, gamepad_compact as compact, gamepad_panel_focused as focused,
+    };
+    let doc = design_md();
+    let lines = frontmatter(&doc);
+    let groups = grouped_section(&lines, "components").unwrap_or_else(|e| panic!("{e}"));
+    let field = |group: &str, key: &str| -> String {
+        groups
+            .get(group)
+            .and_then(|g| g.get(key))
+            .unwrap_or_else(|| panic!("components.{group}.{key} missing in DESIGN.md"))
+            .clone()
+    };
+    let colour = |v: &str| -> egui::Color32 {
+        let name = v
+            .strip_prefix("{colors.")
+            .and_then(|r| r.strip_suffix('}'))
+            .unwrap_or_else(|| panic!("`{v}` is not a colour reference"));
+        theme::color_tokens()
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no colour `{name}`"))
+            .color
+    };
+    let mut errs = Vec::new();
+    let mut eq = |what: &str, design: f32, ours: f32| {
+        if design != ours {
+            errs.push(format!(
+                "components.{what}: DESIGN.md {design}, theme {ours}"
+            ));
+        }
+    };
+    let f = "gamepad-panel-focused";
+    eq(
+        "gamepad-panel-focused.ring-width",
+        px(&field(f, "ring-width"), "ring-width"),
+        focused::RING_WIDTH,
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let steps = focused::WASH_STEPS as f32;
+    eq(
+        "gamepad-panel-focused.wash-steps",
+        num(&field(f, "wash-steps"), "wash-steps"),
+        steps,
+    );
+    eq(
+        "gamepad-panel-focused.wash-step",
+        px(&field(f, "wash-step"), "wash-step"),
+        focused::WASH_STEP,
+    );
+    assert_eq!(field(f, "ring"), "inset 2px {colors.amber}");
+    assert_eq!(focused::RING, theme::AMBER);
+    assert!(field(f, "glow").contains("{colors.amber-wash}"));
+    assert_eq!(focused::WASH, theme::AMBER_WASH);
+    let c = "gamepad-compact";
+    eq(
+        "gamepad-compact.grid-width",
+        px(&field(c, "grid-width"), "grid-width"),
+        compact::GRID_WIDTH,
+    );
+    eq(
+        "gamepad-compact.grid-height",
+        px(&field(c, "grid-height"), "grid-height"),
+        compact::GRID_HEIGHT,
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let lines_n = compact::CAPTION_LINES as f32;
+    eq(
+        "gamepad-compact.caption-lines",
+        num(&field(c, "caption-lines"), "caption-lines"),
+        lines_n,
+    );
+    assert_eq!(groups.get(c).map(BTreeMap::len), Some(3));
+    let k = "chip-keys-active";
+    for (key, ours) in [
+        ("padding-x", chip::PADDING_X),
+        ("padding-y", chip::PADDING_Y),
+        ("gap-bottom", chip::GAP_BOTTOM),
+    ] {
+        eq(&format!("{k}.{key}"), px(&field(k, key), key), ours);
+    }
+    assert_eq!(field(k, "typography"), "{typography.chip}");
+    assert_eq!(field(k, "radius"), "{rounded.full}");
+    assert_eq!(chip::RADIUS, theme::rounded::FULL);
+    assert_eq!(colour(&field(k, "background")), chip::FILL);
+    assert_eq!(colour(&field(k, "foreground")), chip::FOREGROUND);
+    report(&errs);
+    // The compact width is a confirmed token now (Story 4.9, Open
+    // questions 9): no `[ASSUMPTION]` mark on its line.
+    let line = lines
+        .iter()
+        .find(|l| l.trim_start().starts_with("gamepad-compact-width:"))
+        .expect("spacing.gamepad-compact-width");
+    assert!(!line.contains("[ASSUMPTION]"), "{line}");
+}
+
 /// The blur `<n>` of a glow string written `Shadow blur <n>px ...`, if any.
 fn shadow_blur(glow: &str) -> Option<u8> {
     let rest = glow.strip_prefix("Shadow blur ")?;

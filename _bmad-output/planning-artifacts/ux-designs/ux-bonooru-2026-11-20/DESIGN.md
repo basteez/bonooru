@@ -156,6 +156,10 @@ typography:
     fontFamily: Nunito Sans
     fontSize: 10px
     fontWeight: '600'
+  chip:                             # lifted from mockups/key-empty-state.html .ph em (Story 4.9)
+    fontFamily: Nunito Sans
+    fontSize: 11.5px
+    fontWeight: '700'
   legend-name:                      # lifted from mockups/key-empty-state.html .legend b (Story 4.8)
     fontFamily: Nunito Sans
     fontSize: 12.5px
@@ -185,7 +189,7 @@ spacing:
   bottom-bar-height: 88px
   song-panel-width: 260px
   gamepad-panel-width: 300px
-  gamepad-compact-width: 200px      # [ASSUMPTION]
+  gamepad-compact-width: 200px      # below 1280 pt (UX-DR6; confirmed with Story 4.9)
   song-rail-width: 48px             # [ASSUMPTION] collapsed song panel (icon strip)
   card-inset: 6px
   note-view-header-height: 40px
@@ -374,10 +378,21 @@ components:
   gamepad-panel-focused:
     ring: 'inset 2px {colors.amber}'
     glow: 'inset wash {colors.amber-wash}, 5-6 stacked inset strokes'
+    ring-width: 2px                  # Story 4.9
+    wash-steps: 6                    # stacked inset strokes, alpha fading inward
+    wash-step: 3px                   # each stroke's width
+  gamepad-compact:                   # Story 4.9, the 200 pt variant (no mock)
+    grid-width: 180px
+    grid-height: 124px
+    caption-lines: 2
   chip-keys-active:
     background: '{colors.amber}'
     foreground: '{colors.ink}'
     radius: '{rounded.full}'
+    typography: '{typography.chip}'  # Story 4.9, mock .ph em
+    padding-x: 8px
+    padding-y: 1px
+    gap-bottom: 3px                  # above the tab underline
   chip-locked:
     background: '{colors.well}'
     foreground: '{colors.text-muted}'
@@ -710,9 +725,9 @@ An `unknown` LED shows its label only ("Switch"), with no detail text. → Refer
 
 **Virtual gamepad.** → Reference: direction 3 (gamepad, focus and lit states). An original Pro-Controller-like silhouette (`gamepad-body`: Rule fill, 1.5 px rim), **filled as a union of convex shapes** (rounded rects and circles for body and grips) and **outlined by one stroked path** on top, so the result looks like one closed shape without concave fills. Controls: ZL/ZR and L/R as rounded rects above the body; two sticks (17 px well ring + 11 px knob); D-pad cross (two rects) in a 22 px well; ABXY diamond (10 px circles in a 31 px well); −, +, Capture (square with dot), Home (house shape, convex). All controls `gamepad-control`. **Callouts**: a `gamepad-key-chip` beside each keyboard-mapped control — Z, Q, E, C, H, J, K, L, ⌫, ↵ (⌫ and ↵ painted as shapes), and one "WASD · arrows" chip under the D-pad; "mouse" in `{colors.text-muted}` next to the sticks. Where a chip cannot sit beside its control, a 1 px rim leader line joins them [ASSUMPTION]. A legend list under the pad repeats the mapping (control name in parchment, keys in body). **Epic 4 (Story 4.8):** geometry from the empty-state mock's 280 × 200 svg (`mockups/key-empty-state.html`), colours from the tokens (the mock's hexes are a darker study); the body is filled as one mesh of convex triangles (a fan from a point the outline is star-shaped from) under the one stroked outline; panel layout `components.gamepad-panel` (10 px padding, caption 4 px under the tab's underline, the pad after the larger of the caption's 4 px and the pad's 6 px margin, the legend 6 px under the pad); legend `components.gamepad-legend` (names `typography.legend-name`); letters on the controls in the key-chip family at 10 px bold; the D-pad arrows are painted triangles (down reuses the ▾ shape); held = the state-layer pressed tint, hover = the state-layer hover tint, both only while the gate is open (lit amber stays for the Play visualizer); the hint sits 8 px under the legend.
 
-- **Focused** (`gamepad-panel-focused`): the whole panel gets an inset 2 px amber ring plus an inset amber wash (stacked inset strokes), and the panel tab shows `chip-keys-active` "Keys active".
+- **Focused** (`gamepad-panel-focused`): the whole panel gets an inset 2 px amber ring plus an inset amber wash (stacked inset strokes), and the panel tab shows `chip-keys-active` "Keys active". **Story 4.9:** on the gamepad region (square corners), over the region fill and under the panel content: the wash first, `wash-steps` (6) inset strokes `wash-step` (3 px) wide, stroke *i* (0–5) centred 2 + 3·*i* + 1.5 px in from the edge, `{colors.amber-wash}` with its alpha scaled by (6 − *i*) / 6, so the edge is strongest and the wash fades over about 20 px like the mock's 22 px inset blur (`.gfocus`); then the ring, `ring-width` (2 px, at least one physical pixel) `{colors.amber}` inside the region's edge. The chip "Keys active" (`typography.chip`: 11.5 px, 700, no tracking; `{colors.ink}` on `{colors.amber}`, `rounded.full`, padding 1 × 8 px) sits right-aligned in the header, its bottom 3 px (`gap-bottom`) above the tab underline (mock `.ph em`), beside the tab and never over it at both widths; it adds no AccessKit node. Both show only while the panel has keyboard focus, whatever the gate says. Tune only the tokens at the eye check.
 - **Lit-key visualizer** (during countdown and Play): the panel shows `chip-locked` "Locked · live view"; every control the song is pressing turns `gamepad-control-lit` (amber fill with Shadow glow, ink letter); a caption under the pad names the current input, e.g. "Now: Y + D↑ (C5)".
-- **Compact variant** (< 1280 px wide): the silhouette is dropped; the controls render as a tight grid of buttons in the same styles, with no key chips (key hints move to tooltips). Spine-only: no mock.
+- **Compact variant** (< 1280 px wide): the silhouette is dropped; the controls render as a tight grid of buttons in the same styles, with no key chips (key hints move to tooltips). Specified here (Story 4.9), no mock. The region is `{spacing.gamepad-compact-width}` (200 px) below a 1280 px content width; the panel keeps the 10 px padding (180 px inner width). Top to bottom: the tab "Gamepad" (and the focused chip) over the 1 px underline; the caption 4 px under it, wrapped in at most two lines (`gamepad-compact.caption-lines`) in a box two caption lines high; the button grid (`grid-width` × `grid-height`, 180 × 124 px) 6 px under the caption; the inline hint 8 px under the grid while gated. The grid, in px from its top-left corner: shoulder row ZL, L, R, ZR as 42 × 15 rounded rects (r 6) at x 0, 46, 92, 138; middle row on y 34 at the quarters of 180: − (r 7) at 22.5, Capture (11 × 11, r 2, the dot r 2.6) centred at 67.5, Home (r 6.5, the house) at 112.5, + (r 7) at 157.5; the D-pad in its well (c 45, 90, r 22), arms 14 × 14 r 2 around the centre square at (38, 83), one cross outline; the ABXY diamond in its well (c 135, 90, r 31): X (135, 72), Y (117, 90), A (153, 90), B (135, 108), each r 10. Letters, arrows, symbols, tints and hit tests exactly as the full pad. No silhouette, no sticks (both are mouse-only and free play needs none), no key chips, no legend, no "mouse" labels. Each control shows its key hint in a `components.tooltip` on hover (egui's delay; the controls are not focusable), e.g. "A: L key", "Home: mouse only".
 
 **Bottom bar.** → Reference: [mockups/key-editor-staff.html](mockups/key-editor-staff.html) (Play off, Listen on) and [mockups/key-empty-state.html](mockups/key-empty-state.html) (all off but STOP). Left to right: **Play from cursor** (`button-play-primary`, amber, ▶ painted, label "Play from cursor" + sub-line with the cursor position, e.g. "0:12"), **Play from start** (`button-play-secondary`, ⏮ painted, sub-line "0:00"), **Listen** (`button-listen`: the secondary style, fairy-orb icon, label "Listen" + sub-line "on this PC"). Disabled buttons use `button-disabled` (45 % opacity, no glow; the orb loses its glow too) and show a tooltip naming the first blocking reason. Centre-right: safety note, two lines, right-aligned in `{colors.text-muted}`: "Don't dock the Switch mid-song." / "Esc stops at any time." (second line 70 %). Right: **STOP** with sub-line "Esc". Idle STOP is `button-stop-idle` (dim, 75 % opacity, still clickable); during countdown and Play it becomes `button-stop-live` (ember fill, on-ember text 4.96:1, ember glow). Big buttons: `{spacing.big-button-height}` high, min `{spacing.big-button-min-width}` wide, 22 px side padding, `{rounded.xl}`, 14 px apart. Epic 4 (Story 4.7): STOP idle and the safety note; the three Play/Listen slots are reserved and empty until Epics 5–6; STOP's content sits at 22 px left padding (mock flex start). Tokens: `components.bottom-bar`, `components.big-button`, `components.safety-note`, `typography.safety-note`.
 

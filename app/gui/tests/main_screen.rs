@@ -211,13 +211,22 @@ fn g1_gamepad_hint_geometry() {
                 ink.top(),
                 hint.top()
             );
-            let lay = ocb_app::ui::gamepad::layout(
-                pad,
-                ocb_app::ui::gamepad::TextHeights::measure(&h.ctx),
-            );
+            // Story 4.9: below 1280 pt the region is the compact grid and
+            // the hint sits 8 pt under the grid, not the legend.
+            let text = ocb_app::ui::gamepad::TextHeights::measure(&h.ctx);
+            let compact =
+                ocb_app::ui::gamepad::Variant::of(pad) == ocb_app::ui::gamepad::Variant::Compact;
+            assert_eq!(compact, pad.width() < 300.0, "{ctx}");
+            let above = if compact {
+                ocb_app::ui::gamepad::compact_layout(pad, text)
+                    .grid
+                    .bottom()
+            } else {
+                ocb_app::ui::gamepad::layout(pad, text).legend_rows[5].bottom()
+            };
             assert!(
-                (hint.top() - (lay.legend_rows[5].bottom() + 8.0)).abs() <= 0.5,
-                "{ctx}: 8 pt under the legend"
+                (hint.top() - (above + 8.0)).abs() <= 0.5,
+                "{ctx}: 8 pt under the legend (full) or the grid (compact)"
             );
             // One label node, not focusable (no Focus action).
             let node = h.get_by_role_and_label(Role::Label, HINT_FIRMWARE);

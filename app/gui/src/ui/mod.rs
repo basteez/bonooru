@@ -10,6 +10,7 @@ pub mod keys;
 pub mod layout;
 pub mod main_screen;
 pub mod modal;
+pub mod pad_keys;
 pub mod paint;
 pub mod status_strip;
 pub mod symbols;

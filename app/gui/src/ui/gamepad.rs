@@ -7,14 +7,25 @@
 //! pad model (`crate::gamepad`) and the app decide what it means.
 //!
 //! Controls sense `Sense::CLICK | Sense::DRAG` (sticks `Sense::DRAG`), never
-//! `FOCUSABLE`: they stay out of the Tab ring (AC 13) and a press does not
-//! take keyboard focus. Every control is one AccessKit node (`Button` or
-//! `Slider`); the chips and symbols add none.
+//! `FOCUSABLE`: they stay out of the Tab ring (Story 4.8 AC 13). Every
+//! control is one AccessKit node (`Button` or `Slider`); the chips and
+//! symbols add none.
+//!
+//! Story 4.9: the panel itself is one focusable widget, [`panel_id`], sensed
+//! over the whole region with `Sense::FOCUSABLE` only (never `CLICK`: egui
+//! fake-clicks a focused clickable widget on Enter, and Enter is "+" while
+//! the panel has focus). It is the panel's `Role::Group` AccessKit node,
+//! created first, and every other node of the panel is built in a child
+//! `Ui` that names it as its accessibility parent. While it has focus the
+//! inset amber ring, the wash and the "Keys active" chip show (the app
+//! decides when it gains and loses focus, and reads the keys). Below 1280
+//! pt the region is 200 pt wide and the panel is the compact variant: a
+//! button grid with key hints in tooltips, no sticks.
 
 use egui::epaint::{Mesh, PathShape};
 use egui::{
-    Align, Align2, CornerRadius, Id, Pos2, Rect, Response, Role, Sense, StrokeKind, Ui, WidgetInfo,
-    pos2, vec2,
+    Align, Align2, Color32, CornerRadius, Id, Pos2, Rect, Response, Role, Sense, StrokeKind,
+    Tooltip, Ui, UiBuilder, WidgetInfo, pos2, vec2,
 };
 
 use super::paint::{self, ButtonState};
@@ -61,6 +72,44 @@ pub const BODY_QUAD_SEGMENTS: usize = 12;
 /// is star-shaped from here, so the fan's triangles never overlap (G.22).
 pub const BODY_FAN_CENTRE: (f32, f32) = (140.0, 50.0);
 
+/// The panel's one focus id (Story 4.9 AC 1): the focusable `Role::Group`
+/// widget over the whole gamepad region.
+#[must_use]
+pub fn panel_id() -> Id {
+    Id::unique("gamepad-panel-focus")
+}
+
+/// The chip shown while the panel has focus (mock `.kbd-on`, UX-DR37).
+pub const CHIP_KEYS_ACTIVE: &str = "Keys active";
+/// The group node's name while the panel has focus (Story 4.9 AC 10).
+pub const GROUP_KEYS_ACTIVE: &str = "Gamepad \u{2013} keys active";
+/// The group node's name otherwise.
+pub const GROUP_KEYS_OFF: &str = "Gamepad \u{2013} keys off";
+
+/// Which panel the region gets (Story 4.9 AC 9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Variant {
+    /// The 300 pt panel of Story 4.8 (content 1280 pt and wider).
+    #[default]
+    Full,
+    /// The 200 pt button grid (content narrower than 1280 pt).
+    Compact,
+}
+
+impl Variant {
+    /// The variant for a gamepad region: [`layout::regions`](super::layout::regions)
+    /// gives the full width from 1280 pt up and the compact one below, so a
+    /// region narrower than the full panel is the compact variant.
+    #[must_use]
+    pub fn of(region: Rect) -> Self {
+        if region.width() < theme::spacing::GAMEPAD_PANEL_WIDTH - 0.5 {
+            Self::Compact
+        } else {
+            Self::Full
+        }
+    }
+}
+
 /// The stable id of a control's widget (G.22, G.23).
 #[must_use]
 pub fn control_id(c: Control) -> Id {
@@ -82,6 +131,8 @@ pub struct TextHeights {
     pub caption: f32,
     /// A legend row's text height (the taller of its two galleys).
     pub row: f32,
+    /// The "Keys active" chip text's size (`typography.chip`; Story 4.9).
+    pub chip: egui::Vec2,
 }
 
 /// The tab label's line height in points (`typography.panel-tab`, measured
@@ -93,6 +144,8 @@ pub const TAB_TEXT_HEIGHT: f32 = 19.0;
 pub const CAPTION_HEIGHT: f32 = 17.0;
 /// A legend row's text height (`typography.small` and `legend-name`).
 pub const LEGEND_TEXT_HEIGHT: f32 = 17.0;
+/// The chip text's line height (`typography.chip`, Story 4.9).
+pub const CHIP_TEXT_HEIGHT: f32 = 16.0;
 
 impl TextHeights {
     /// The heights the panel uses: the fixed line heights above and the tab
@@ -102,10 +155,19 @@ impl TextHeights {
         let tab = paint::layout_line(ctx, &theme::PANEL_TAB, TAB, theme::INK)
             .rect
             .width();
+        let chip = paint::layout_line(
+            ctx,
+            &theme::CHIP,
+            CHIP_KEYS_ACTIVE,
+            theme::components::chip_keys_active::FOREGROUND,
+        )
+        .rect
+        .width();
         Self {
             tab: vec2(tab.ceil(), TAB_TEXT_HEIGHT),
             caption: CAPTION_HEIGHT,
             row: LEGEND_TEXT_HEIGHT,
+            chip: vec2(chip.ceil(), CHIP_TEXT_HEIGHT),
         }
     }
 }
@@ -115,6 +177,8 @@ impl TextHeights {
 pub struct PanelLayout {
     /// The panel tab (parchment, top corners rounded).
     pub tab: Rect,
+    /// The "Keys active" chip (drawn only while the panel has focus).
+    pub chip: Rect,
     /// The 1 pt `rim` underline's centre y, across `underline_x`.
     pub underline_y: f32,
     /// The underline's left and right ends.
@@ -173,12 +237,100 @@ pub fn layout(region: Rect, text: TextHeights) -> PanelLayout {
     );
     PanelLayout {
         tab,
+        chip: chip_rect(inner.right(), tab, text.chip),
         underline_y,
         underline_x: (inner.left(), inner.right()),
         caption,
         pad,
         legend_rows,
         hint,
+    }
+}
+
+/// The "Keys active" chip (mock `.ph em`, `.ph{align-items:flex-end;
+/// justify-content:space-between}`): the text plus 8 pt left/right and 1
+/// pt top/bottom, right edge at the panel's inner right, bottom 3 pt above
+/// the tab underline.
+#[must_use]
+pub fn chip_rect(inner_right: f32, tab: Rect, text: egui::Vec2) -> Rect {
+    use theme::components::chip_keys_active::{GAP_BOTTOM, PADDING_X, PADDING_Y};
+    let size = text + 2.0 * vec2(PADDING_X, PADDING_Y);
+    let bottom = tab.bottom() - GAP_BOTTOM;
+    Rect::from_min_max(
+        pos2(inner_right - size.x, bottom - size.y),
+        pos2(inner_right, bottom),
+    )
+}
+
+/// Where everything of the compact panel goes (Story 4.9, pure geometry,
+/// G.24).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompactLayout {
+    /// The panel tab, as in the full panel.
+    pub tab: Rect,
+    /// The "Keys active" chip.
+    pub chip: Rect,
+    /// The underline's centre y.
+    pub underline_y: f32,
+    /// The underline's ends.
+    pub underline_x: (f32, f32),
+    /// The caption's box (wrapped, at most two lines).
+    pub caption: Rect,
+    /// The button grid (180 × 124).
+    pub grid: Rect,
+    /// Where the inline hint may paint (8 pt under the grid).
+    pub hint: Rect,
+}
+
+/// The compact panel layout (Story 4.9 AC 9, Dev Notes › Compact geometry):
+/// 10 pt padding; tab and chip as the full panel; the caption 4 pt under
+/// the underline in a box two caption lines high; the grid 6 pt under the
+/// caption; the hint 8 pt under the grid, down to the inner bottom.
+#[must_use]
+pub fn compact_layout(region: Rect, text: TextHeights) -> CompactLayout {
+    use theme::components::gamepad_compact::{CAPTION_LINES, GRID_HEIGHT, GRID_WIDTH};
+    use theme::components::gamepad_panel::{CAPTION_GAP, HINT_GAP, PAD_MARGIN, PADDING};
+    let inner = region.shrink(PADDING);
+    let tab = Rect::from_min_size(
+        inner.min,
+        vec2(
+            text.tab.x + 2.0 * TAB_PADDING_X,
+            text.tab.y + TAB_PADDING_TOP,
+        ),
+    );
+    let header_bottom = tab.bottom() + 1.0;
+    #[allow(clippy::cast_precision_loss, reason = "2 lines")]
+    let caption_h = text.caption * CAPTION_LINES as f32;
+    let caption = Rect::from_min_size(
+        pos2(inner.left(), header_bottom + CAPTION_GAP),
+        vec2(inner.width(), caption_h),
+    );
+    let grid = Rect::from_min_size(
+        pos2(inner.left(), caption.bottom() + PAD_MARGIN),
+        vec2(GRID_WIDTH, GRID_HEIGHT),
+    );
+    let hint_top = grid.bottom() + HINT_GAP;
+    CompactLayout {
+        tab,
+        chip: chip_rect(inner.right(), tab, text.chip),
+        underline_y: tab.bottom() + 0.5,
+        underline_x: (inner.left(), inner.right()),
+        caption,
+        grid,
+        hint: Rect::from_min_max(
+            pos2(inner.left(), hint_top),
+            pos2(inner.right(), inner.bottom().max(hint_top)),
+        ),
+    }
+}
+
+/// The inline hint's rect in a gamepad region, for the variant the region
+/// gets (`main_screen::hint_rect`).
+#[must_use]
+pub fn hint_rect(region: Rect, text: TextHeights) -> Rect {
+    match Variant::of(region) {
+        Variant::Full => layout(region, text).hint,
+        Variant::Compact => compact_layout(region, text).hint,
     }
 }
 
@@ -267,6 +419,49 @@ pub struct PadGeometry {
     pub chips: Vec<(Rect, ChipContent)>,
     /// Where each stick's "mouse" label is centred.
     pub mouse_labels: [Pos2; 2],
+    /// The sticks are on this pad (not in the compact grid, Story 4.9): their
+    /// wells, knobs, hit targets and "mouse" labels.
+    pub has_sticks: bool,
+    /// The body silhouette is drawn (not in the compact grid).
+    pub has_body: bool,
+    /// The D-pad's cross outline (closed).
+    pub dpad_outline: Vec<Pos2>,
+    /// Home's house symbol (convex polygon).
+    pub house: Vec<Pos2>,
+}
+
+/// The D-pad cross outline around the centre square whose top-left corner
+/// is `c0` (arms 14 × 14, 12 pt out from the square's edges).
+fn cross_outline(c0: Pos2) -> Vec<Pos2> {
+    [
+        (0.0, -12.0),
+        (14.0, -12.0),
+        (14.0, 0.0),
+        (26.0, 0.0),
+        (26.0, 14.0),
+        (14.0, 14.0),
+        (14.0, 26.0),
+        (0.0, 26.0),
+        (0.0, 14.0),
+        (-12.0, 14.0),
+        (-12.0, 0.0),
+        (0.0, 0.0),
+    ]
+    .map(|(x, y)| c0 + vec2(x, y))
+    .to_vec()
+}
+
+/// Home's house around its centre (Story 4.8's shape).
+fn house_at(centre: Pos2) -> Vec<Pos2> {
+    [
+        (-3.5, 1.0),
+        (0.0, -2.5),
+        (3.5, 1.0),
+        (3.5, 3.5),
+        (-3.5, 3.5),
+    ]
+    .map(|(x, y)| centre + vec2(x, y))
+    .to_vec()
 }
 
 impl PadGeometry {
@@ -323,7 +518,69 @@ impl PadGeometry {
                 (chip(66.0, 151.0, 76.0), ChipContent::Text(CHIP_DPAD)),
             ],
             mouse_labels: [p(70.0, 114.5), p(176.0, 148.5)],
+            has_sticks: true,
+            has_body: true,
+            dpad_outline: cross_outline(p(97.0, 115.0)),
+            house: house_at(p(160.0, 89.5)),
         }
+    }
+
+    /// The compact grid whose top-left corner is `origin` (Story 4.9, Dev
+    /// Notes › Compact geometry; 180 × 124, no mock): the same control
+    /// shapes and sizes as the full pad in a denser arrangement, no body,
+    /// no sticks, no chips.
+    #[must_use]
+    pub fn compact(origin: Pos2) -> Self {
+        let p = |x: f32, y: f32| origin + vec2(x, y);
+        let r = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(p(x, y), vec2(w, h));
+        let c = |x: f32, y: f32, radius: f32| Circle {
+            center: p(x, y),
+            radius,
+        };
+        let shape = |ctl: Control| match ctl {
+            Control::Zl => ControlShape::Rect(r(0.0, 0.0, 42.0, 15.0), 6.0),
+            Control::L => ControlShape::Rect(r(46.0, 0.0, 42.0, 15.0), 6.0),
+            Control::R => ControlShape::Rect(r(92.0, 0.0, 42.0, 15.0), 6.0),
+            Control::Zr => ControlShape::Rect(r(138.0, 0.0, 42.0, 15.0), 6.0),
+            Control::Minus => ControlShape::Circle(c(22.5, 34.0, 7.0)),
+            Control::Capture => ControlShape::Rect(r(62.0, 28.5, 11.0, 11.0), 2.0),
+            Control::Home => ControlShape::Circle(c(112.5, 34.0, 6.5)),
+            Control::Plus => ControlShape::Circle(c(157.5, 34.0, 7.0)),
+            Control::DUp => ControlShape::Rect(r(38.0, 71.0, 14.0, 14.0), theme::rounded::XS),
+            Control::DDown => ControlShape::Rect(r(38.0, 95.0, 14.0, 14.0), theme::rounded::XS),
+            Control::DLeft => ControlShape::Rect(r(26.0, 83.0, 14.0, 14.0), theme::rounded::XS),
+            Control::DRight => ControlShape::Rect(r(50.0, 83.0, 14.0, 14.0), theme::rounded::XS),
+            Control::X => ControlShape::Circle(c(135.0, 72.0, 10.0)),
+            Control::Y => ControlShape::Circle(c(117.0, 90.0, 10.0)),
+            Control::A => ControlShape::Circle(c(153.0, 90.0, 10.0)),
+            Control::B => ControlShape::Circle(c(135.0, 108.0, 10.0)),
+        };
+        // No sticks: zero-size wells (never hit, never drawn).
+        let none = Circle {
+            center: origin,
+            radius: 0.0,
+        };
+        Self {
+            origin,
+            controls: Control::ALL.iter().map(|&ctl| (ctl, shape(ctl))).collect(),
+            wells: [none, none],
+            knob_radius: 0.0,
+            dpad_well: c(45.0, 90.0, 22.0),
+            dpad_centre: r(38.0, 83.0, 14.0, 14.0),
+            abxy_well: c(135.0, 90.0, 31.0),
+            chips: Vec::new(),
+            mouse_labels: [origin, origin],
+            has_sticks: false,
+            has_body: false,
+            dpad_outline: cross_outline(p(38.0, 83.0)),
+            house: house_at(p(112.5, 34.0)),
+        }
+    }
+
+    /// The stick wells on this pad (none in the compact grid).
+    #[must_use]
+    pub fn stick_wells(&self) -> &[Circle] {
+        if self.has_sticks { &self.wells } else { &[] }
     }
 
     /// The shape of a control.
@@ -350,6 +607,9 @@ impl PadGeometry {
     pub fn hit(&self, pos: Pos2) -> Option<Target> {
         if let Some((c, _)) = self.controls.iter().find(|(_, s)| s.contains(pos)) {
             return Some(Target::Control(*c));
+        }
+        if !self.has_sticks {
+            return None;
         }
         Stick::ALL
             .into_iter()
@@ -394,8 +654,11 @@ pub struct PadView {
     pub enabled: bool,
     /// The inline hint under the legend (the gate's reason), if blocked.
     pub hint: Option<&'static str>,
-    /// The control held (drawn pressed).
+    /// The control held by the mouse or an AccessKit tap (drawn pressed).
     pub held: Option<Control>,
+    /// The controls held by keys (Story 4.9; drawn pressed), as bits of
+    /// their index in [`Control::ALL`].
+    pub key_held: u32,
     /// The stick being dragged (its knob drawn pressed).
     pub dragging: Option<Stick>,
     /// The stick values (the knobs' positions).
@@ -408,9 +671,27 @@ impl Default for PadView {
             enabled: true,
             hint: None,
             held: None,
+            key_held: 0,
             dragging: None,
             sticks: [(128, 128); 2],
         }
+    }
+}
+
+/// `c`'s bit in [`PadView::key_held`].
+#[must_use]
+pub fn control_bit(c: Control) -> u32 {
+    Control::ALL
+        .iter()
+        .position(|k| *k == c)
+        .map_or(0, |i| 1 << i)
+}
+
+impl PadView {
+    /// Whether `c` is drawn pressed (mouse, AccessKit or a key).
+    #[must_use]
+    pub fn pressed(&self, c: Control) -> bool {
+        self.held == Some(c) || self.key_held & control_bit(c) != 0
     }
 }
 
@@ -431,31 +712,171 @@ pub struct PadInput {
     pub drag_offset: Option<(f32, f32)>,
     /// An AccessKit `Click` on a control (a click the pointer did not make).
     pub tap: Option<Control>,
+    /// A primary press this frame reached the panel: a control, a stick or
+    /// empty panel space, not through a layer above it (a dialog) (Story
+    /// 4.9 AC 1: the press gives the panel keyboard focus).
+    pub panel_press: bool,
+    /// The panel drawn this frame (Story 4.9 AC 9).
+    pub variant: Variant,
 }
 
-/// Draws the panel in the gamepad `region` and senses the pointer (AC 1–5,
-/// 11, 13–16).
+/// Draws the panel in the gamepad `region` and senses the pointer (Story
+/// 4.8 AC 1–5, 11, 13–16; Story 4.9 AC 1, 3, 9, 10): the focusable group
+/// first, the focused look while it has focus, then the full panel or the
+/// compact grid in a child `Ui` parented to the group.
 pub fn show(ui: &mut Ui, region: Rect, view: &PadView) -> PadInput {
+    let ppp = ui.ctx().pixels_per_point();
+    let variant = Variant::of(region);
+    // The group node first (D10): `FOCUSABLE` only (D11 in the app keeps
+    // its focus through presses on the controls above it).
+    let panel = ui.interact(region, panel_id(), Sense::FOCUSABLE);
+    let focused = panel.has_focus();
+    let name = if focused {
+        GROUP_KEYS_ACTIVE
+    } else {
+        GROUP_KEYS_OFF
+    };
+    panel.widget_info(|| WidgetInfo::labeled(Role::Group, true, name));
+    if focused {
+        paint_focus_look(ui, region, ppp);
+    }
+    let builder = UiBuilder::new()
+        .max_rect(region)
+        .accessibility_parent(panel.id);
+    let mut input = ui
+        .scope_builder(builder, |ui| match variant {
+            Variant::Full => show_full(ui, region, view, focused),
+            Variant::Compact => show_compact(ui, region, view, focused),
+        })
+        .inner;
+    input.variant = variant;
+    let pressed = ui.input(|i| i.pointer.primary_pressed());
+    input.panel_press = pressed && (input.panel_press || panel.contains_pointer());
+    input
+}
+
+/// The focused look (Story 4.9 AC 3, Dev Notes › Focused look): the wash
+/// (stacked inset strokes, `amber-wash` fading inward), then the inset 2
+/// pt `amber` ring, over the region fill and under the content.
+fn paint_focus_look(ui: &Ui, region: Rect, ppp: f32) {
+    use theme::components::gamepad_panel_focused::{RING, RING_WIDTH, WASH_STEP};
+    let painter = ui.painter();
+    for (i, colour) in wash_colours().into_iter().enumerate() {
+        #[allow(clippy::cast_precision_loss, reason = "i < 6")]
+        let inset = RING_WIDTH + WASH_STEP * i as f32;
+        painter.rect_stroke(
+            region.shrink(inset),
+            theme::corner(0.0),
+            paint::stroke(WASH_STEP, colour, ppp),
+            StrokeKind::Inside,
+        );
+    }
+    painter.rect_stroke(
+        region,
+        theme::corner(0.0),
+        paint::stroke(RING_WIDTH, RING, ppp),
+        StrokeKind::Inside,
+    );
+}
+
+/// The wash strokes' colours, outermost first: `amber-wash` with its alpha
+/// scaled by `(steps − i) / steps`.
+#[must_use]
+pub fn wash_colours() -> Vec<Color32> {
+    use theme::components::gamepad_panel_focused::{WASH, WASH_STEPS};
+    (0..WASH_STEPS)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss, reason = "i < 6")]
+            let k = (WASH_STEPS - i) as f32 / WASH_STEPS as f32;
+            WASH.gamma_multiply(k)
+        })
+        .collect()
+}
+
+fn show_full(ui: &mut Ui, region: Rect, view: &PadView, focused: bool) -> PadInput {
     let ctx = ui.ctx().clone();
     let ppp = ctx.pixels_per_point();
     let lay = layout(region, TextHeights::measure(&ctx));
-    paint_header(ui, &lay);
+    let caption = paint::layout_line(&ctx, &theme::SMALL, CAPTION, theme::TEXT_MUTED);
+    paint_header(
+        ui,
+        &Header {
+            tab: lay.tab,
+            chip: focused.then_some(lay.chip),
+            underline_y: lay.underline_y,
+            underline_x: lay.underline_x,
+            caption: lay.caption,
+        },
+        caption,
+    );
     let geo = PadGeometry::new(lay.pad.min);
     paint_body(ui, &geo, ppp);
+    let input = sense_and_paint(ui, &geo, view, false);
+    paint_legend(ui, &lay);
+    if let Some(text) = view.hint {
+        let _ = widgets::inline_hint(ui, lay.hint, text);
+    }
+    input
+}
 
+fn show_compact(ui: &mut Ui, region: Rect, view: &PadView, focused: bool) -> PadInput {
+    let ctx = ui.ctx().clone();
+    let lay = compact_layout(region, TextHeights::measure(&ctx));
+    let caption = paint::layout(
+        &ctx,
+        &theme::SMALL,
+        CAPTION,
+        theme::TEXT_MUTED,
+        lay.caption.width(),
+        Align::Min,
+    );
+    paint_header(
+        ui,
+        &Header {
+            tab: lay.tab,
+            chip: focused.then_some(lay.chip),
+            underline_y: lay.underline_y,
+            underline_x: lay.underline_x,
+            caption: lay.caption,
+        },
+        caption,
+    );
+    let geo = PadGeometry::compact(lay.grid.min);
+    let input = sense_and_paint(ui, &geo, view, true);
+    if let Some(text) = view.hint {
+        let _ = widgets::inline_hint(ui, lay.hint, text);
+    }
+    input
+}
+
+/// The controls' (and sticks') widgets, the press detection and the
+/// painting of the pad or grid; with `tooltips`, each control's key hint on
+/// hover (the compact grid, Story 4.9 AC 9).
+fn sense_and_paint(ui: &mut Ui, geo: &PadGeometry, view: &PadView, tooltips: bool) -> PadInput {
+    let ppp = ui.ctx().pixels_per_point();
     // Interaction first (the tints need the hover target).
     let mut responses: Vec<(Target, Response)> = Vec::with_capacity(18);
     for (c, s) in &geo.controls {
         let resp = ui.interact(s.rect(), control_id(*c), Sense::CLICK | Sense::DRAG);
         let name = c.a11y_name();
         resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, name));
+        if tooltips {
+            let mut tip = Tooltip::for_enabled(&resp);
+            tip.popup = tip.popup.frame(theme::tooltip_frame());
+            let hint = c.key_hint();
+            let _ = tip.show(|ui: &mut Ui| {
+                ui.label(theme::rich(&theme::BODY, hint).color(theme::TEXT));
+            });
+        }
         responses.push((Target::Control(*c), resp));
     }
-    for s in Stick::ALL {
-        let resp = ui.interact(geo.well(s).rect(), stick_id(s), Sense::DRAG);
-        let name = s.a11y_name();
-        resp.widget_info(|| WidgetInfo::labeled(Role::Slider, true, name));
-        responses.push((Target::Stick(s), resp));
+    if geo.has_sticks {
+        for s in Stick::ALL {
+            let resp = ui.interact(geo.well(s).rect(), stick_id(s), Sense::DRAG);
+            let name = s.a11y_name();
+            resp.widget_info(|| WidgetInfo::labeled(Role::Slider, true, name));
+            responses.push((Target::Stick(s), resp));
+        }
     }
     let (pressed, origin, released, down, hover, interact) = ui.input(|i| {
         (
@@ -486,10 +907,12 @@ pub fn show(ui: &mut Ui, region: Rect, view: &PadView) -> PadInput {
     // The press reached the pad (no layer above it took it): egui marks
     // the widget pressed, or (a press and release in one frame) clicked;
     // the pad's own hit test then picks the control (circles by distance).
+    let reached = on_pad(Response::is_pointer_button_down_on)
+        || on_pad(Response::clicked)
+        || on_pad(Response::contains_pointer);
+    input.panel_press = pressed && reached;
     if pressed
-        && (on_pad(Response::is_pointer_button_down_on)
-            || on_pad(Response::clicked)
-            || on_pad(Response::contains_pointer))
+        && reached
         && let Some(o) = origin
         && let Some(t) = geo.hit(o)
     {
@@ -500,6 +923,7 @@ pub fn show(ui: &mut Ui, region: Rect, view: &PadView) -> PadInput {
         }
     }
     if let Some(s) = view.dragging
+        && geo.has_sticks
         && let Some(p) = interact
     {
         let d = p - geo.well(s).center;
@@ -516,7 +940,7 @@ pub fn show(ui: &mut Ui, region: Rect, view: &PadView) -> PadInput {
     };
     let state = |t: Target| {
         let held = match t {
-            Target::Control(c) => view.held == Some(c),
+            Target::Control(c) => view.pressed(c),
             Target::Stick(s) => view.dragging == Some(s),
         };
         if !view.enabled {
@@ -529,15 +953,21 @@ pub fn show(ui: &mut Ui, region: Rect, view: &PadView) -> PadInput {
             ButtonState::Idle
         }
     };
-    paint_controls(ui, &geo, view, &state, ppp);
-    paint_legend(ui, &lay);
-    if let Some(text) = view.hint {
-        let _ = widgets::inline_hint(ui, lay.hint, text);
-    }
+    paint_controls(ui, geo, view, &state, ppp);
     input
 }
 
-fn paint_header(ui: &mut Ui, lay: &PanelLayout) {
+/// The header boxes of either variant.
+struct Header {
+    tab: Rect,
+    /// The chip, while the panel has focus.
+    chip: Option<Rect>,
+    underline_y: f32,
+    underline_x: (f32, f32),
+    caption: Rect,
+}
+
+fn paint_header(ui: &mut Ui, lay: &Header, caption: std::sync::Arc<egui::Galley>) {
     let ctx = ui.ctx().clone();
     let ppp = ctx.pixels_per_point();
     let painter = ui.painter();
@@ -565,7 +995,17 @@ fn paint_header(ui: &mut Ui, lay: &PanelLayout) {
         lay.tab.max,
     );
     let _ = widgets::text_node_colored(ui, text_rect, tab, Align2::CENTER_TOP, theme::INK);
-    let caption = paint::layout_line(&ctx, &theme::SMALL, CAPTION, theme::TEXT_MUTED);
+    if let Some(chip) = lay.chip {
+        use theme::components::chip_keys_active::{FILL, FOREGROUND, RADIUS};
+        let painter = ui.painter();
+        painter.rect_filled(chip, theme::corner(RADIUS), FILL);
+        let g = paint::layout_line(&ctx, &theme::CHIP, CHIP_KEYS_ACTIVE, FOREGROUND);
+        let pos = Align2::CENTER_CENTER
+            .align_size_within_rect(g.rect.size(), chip)
+            .min
+            - g.rect.min.to_vec2();
+        painter.galley(pos, g, FOREGROUND);
+    }
     let _ = widgets::text_node_colored(
         ui,
         lay.caption,
@@ -577,6 +1017,9 @@ fn paint_header(ui: &mut Ui, lay: &PanelLayout) {
 
 fn paint_body(ui: &Ui, geo: &PadGeometry, ppp: f32) {
     use theme::components::gamepad_body::{BORDER, BORDER_COLOR, FILL};
+    if !geo.has_body {
+        return;
+    }
     let painter = ui.painter();
     let outline = geo.body_outline();
     // The fill: a fan of triangles (each convex) from a point the outline
@@ -612,7 +1055,11 @@ fn paint_controls(
     // Wells under the controls.
     painter.circle_filled(geo.dpad_well.center, geo.dpad_well.radius, WELL);
     painter.circle_filled(geo.abxy_well.center, geo.abxy_well.radius, WELL);
-    for (i, s) in Stick::ALL.into_iter().enumerate() {
+    for (i, s) in Stick::ALL
+        .into_iter()
+        .enumerate()
+        .take(geo.stick_wells().len())
+    {
         let well = geo.well(s);
         let st = state(Target::Stick(s));
         // The well's ring is the stick's border: tinted with its knob.
@@ -696,17 +1143,7 @@ fn paint_controls(
         2.6,
         FOREGROUND,
     );
-    let o = geo.origin;
-    let house = [
-        (156.5, 90.5),
-        (160.0, 87.0),
-        (163.5, 90.5),
-        (163.5, 93.0),
-        (156.5, 93.0),
-    ]
-    .map(|(x, y)| o + vec2(x, y))
-    .to_vec();
-    let _ = paint::fill_convex(painter, house, FOREGROUND, egui::Stroke::NONE);
+    let _ = paint::fill_convex(painter, geo.house.clone(), FOREGROUND, egui::Stroke::NONE);
     paint_chips(ui, geo, ppp);
 }
 
@@ -720,23 +1157,7 @@ fn is_dpad(c: Control) -> bool {
 /// The cross outline of the D-pad (arm rects and the centre square).
 #[must_use]
 pub fn dpad_outline(geo: &PadGeometry) -> Vec<Pos2> {
-    let o = geo.origin;
-    [
-        (97.0, 103.0),
-        (111.0, 103.0),
-        (111.0, 115.0),
-        (123.0, 115.0),
-        (123.0, 129.0),
-        (111.0, 129.0),
-        (111.0, 141.0),
-        (97.0, 141.0),
-        (97.0, 129.0),
-        (85.0, 129.0),
-        (85.0, 115.0),
-        (97.0, 115.0),
-    ]
-    .map(|(x, y)| o + vec2(x, y))
-    .to_vec()
+    geo.dpad_outline.clone()
 }
 
 /// The knob's offset from its well centre for a stick value: the deflection
@@ -777,9 +1198,9 @@ fn paint_chips(ui: &Ui, geo: &PadGeometry, ppp: f32) {
             }
         }
     }
-    for anchor in geo.mouse_labels {
+    for anchor in geo.mouse_labels.iter().take(geo.stick_wells().len()) {
         let g = paint::layout_line(&ctx, &theme::KEY_CHIP, MOUSE, theme::TEXT_MUTED);
-        let pos = anchor - g.rect.size() / 2.0 - g.rect.min.to_vec2();
+        let pos = *anchor - g.rect.size() / 2.0 - g.rect.min.to_vec2();
         painter.galley(pos, g, theme::TEXT_MUTED);
     }
 }
@@ -835,6 +1256,7 @@ pub fn view_of(pad: &gamepad::Pad, enabled: bool, hint: Option<&'static str>) ->
         enabled,
         hint,
         held: pad.held(),
+        key_held: pad.keys_held().fold(0, |m, k| m | control_bit(k.control())),
         dragging: pad.dragging(),
         sticks: [pad.stick_value(Stick::Left), pad.stick_value(Stick::Right)],
     }
