@@ -4,18 +4,20 @@
 //! it returns.
 //!
 //! The rules ([`Rule`], in this order; [`Rule::ALL`] is the table the tests
-//! iterate):
+//! iterate). The frame-start rows are in match precedence (Esc, Space,
+//! Enter, then the shortcuts), which is why `Shortcut` comes after Space and
+//! Enter here while `EXPERIENCE.md` lists the global shortcuts first:
 //!
 //! | Rule | Phase | Key and context | Action | Event |
 //! |---|---|---|---|---|
 //! | `EscStop` | frame start | fresh Esc, any modifiers, any context | STOP | read, left in the input |
 //! | `SpaceText` | frame start | Space press, a text edit focused | none (the text edit types it) | left |
 //! | `SpaceOs` | frame start | Cmd/Ctrl+Space press, nothing focused | none (the OS's) | left |
-//! | `SpaceListen` | frame start | fresh Space, no Cmd/Ctrl, no text edit, no dialog | Listen (preview play/stop) | consumed |
+//! | `SpaceListen` | frame start | fresh Space, no Cmd/Ctrl, no Alt, no text edit, no dialog | Listen (preview play/stop) | consumed |
 //! | `SpaceConsume` | frame start | any other Space press outside a text edit | none: Space never activates a button | consumed |
 //! | `EnterRepeat` | frame start | Enter key repeat, no text edit focused | none: a held Enter activates once | consumed |
 //! | `EnterText` | frame start | Enter key repeat, a text edit focused | none (the text edit's) | left |
-//! | `Shortcut` | frame start | fresh Cmd/Ctrl combo of [`Shortcut`], any context | reported | left |
+//! | `Shortcut` | frame start | fresh Cmd (macOS) / Ctrl (Windows, Linux) combo of [`Shortcut`], no Alt, any context | reported | left |
 //! | `PadKey` | gamepad pass | a mapped physical key, no Cmd/Ctrl | a [`KeyEdge`] | consumed |
 //! | `PadCommand` | gamepad pass | a mapped physical key with Cmd/Ctrl | a [`KeyEdge`] with `command` | left |
 //! | `FocusEsc` | gamepad pass | Esc press without modifiers | the panel loses focus | read |
@@ -25,7 +27,7 @@
 //! | `LogicKeyUp` | `logic`, every pass | a mapped physical key's release in the raw input | the pad releases it | read |
 //! | `DialogArming` | dialog | Enter, Space or Esc down | the dialog takes no answer until all are up | read |
 //! | `DialogFreshEsc` | dialog, opening frame | fresh Esc | the dialog may still be dismissed | read |
-//! | `DialogEsc` | dialog | Esc without modifiers, top dialog, no popup | `Dismissed` | consumed |
+//! | `DialogEsc` | dialog | Esc without Cmd/Ctrl (Shift and Alt still dismiss), top dialog, no popup | `Dismissed` | consumed |
 //!
 //! **Phases.** [`frame_start`] runs once per frame in the first pass
 //! (`ctx.current_pass_index() == 0`: input reaches only that pass, egui
@@ -40,9 +42,10 @@
 //!
 //! **Esc is STOP, always.** Read, never consumed by [`frame_start`]: the
 //! open dialog, if any, consumes the same Esc afterwards ([`dialog_takes_esc`])
-//! and closes as `Dismissed`, so one press does both (except Esc with a
-//! modifier, which the dialog ignores, and the firmware dialog's opening
-//! frame, Story 4.6). Key repeats of a held Esc never ask again.
+//! and closes as `Dismissed`, so one press does both (except Esc with
+//! Cmd/Ctrl, which the dialog ignores, and the firmware dialog's opening
+//! frame, Story 4.6; Shift+Esc and Alt+Esc still dismiss: egui's
+//! `consume_key` matches modifiers logically and ignores Shift and Alt). Key repeats of a held Esc never ask again.
 //!
 //! **Buttons activate with Enter only (UX-DR61).** egui fake-clicks a
 //! focused clickable widget on Space or Enter, whatever the modifiers, and
@@ -51,18 +54,27 @@
 //! focused it stays for the OS), and Enter key repeats are dropped.
 //!
 //! **Listen on Space** (Story 5.11 acts on it). A fresh Space press without
-//! Cmd/Ctrl (Shift and Alt do not block it, as for the gamepad keys), with
-//! no text edit focused and no dialog open, sets [`FrameKeys::listen`],
-//! whatever widget or the gamepad panel has focus (Space is not a gamepad
-//! key). Accepted limit: [`frame_start`] cannot know of a dialog requested
-//! later in the same frame (the firmware dialog), so a Space in that very
-//! frame still sets `listen`; the consumer re-checks the dialog host.
+//! Cmd/Ctrl and without Alt (Alt+Space opens the window menu on Windows;
+//! Shift does not block it), with no text edit focused and no dialog open,
+//! sets [`FrameKeys::listen`], whatever widget or the gamepad panel has focus
+//! (Space is not a gamepad key). Accepted limits for the consumer: (1)
+//! [`frame_start`] knows only the dialog open at frame start, not one
+//! requested later in the same frame (the firmware dialog after a new
+//! snapshot, a gallery dialog, or the firmware request's discarded pass),
+//! so a Space in that very frame still sets `listen`: re-check the dialog
+//! host before acting; (2) `listen` is one flag per frame: two Space
+//! presses batched into one frame give one toggle.
 //!
-//! **Global shortcuts** ([`Shortcut`]): fresh Cmd/Ctrl presses matched by
-//! the logical key (so Cmd+Z follows the layout's letters), Alt held
-//! matches none; reported in every context in [`FrameKeys::shortcuts`] and
-//! left in the input. Since Story 5.0 nothing acts on them; the story that
-//! adds each feature decides whether its row is consumed.
+//! **Global shortcuts** ([`Shortcut`]): fresh presses with egui's
+//! `Modifiers::command` (Cmd on macOS, Ctrl on Windows and Linux; Ctrl on
+//! macOS is not a shortcut, `EXPERIENCE.md`), matched by the logical key
+//! (so Cmd+Z follows the layout's letters), Alt held matches none; reported
+//! in every context in [`FrameKeys::shortcuts`] and left in the input.
+//! Since Story 5.0 nothing acts on them; the story that adds each feature
+//! decides whether its row is consumed. Note for the Play stories: a
+//! Cmd/Ctrl+Enter left in the input also fake-clicks a focused button (egui
+//! clicks on Enter whatever the modifiers), so Play's rows must be consumed
+//! when Play acts on them.
 //!
 //! **Text fields.** One test, [`Context::text_edit_focused`] read once at
 //! frame start: a focused text edit keeps Space and Enter repeats, gets no
@@ -123,8 +135,10 @@ impl Rule {
         Self::DialogEsc,
     ];
 
-    /// The rule's place in [`Rule::ALL`]. Exhaustive: a new rule does not
-    /// compile until it has a place (and G.26 then wants a test row).
+    /// The rule's place in [`Rule::ALL`]. Exhaustive, so a new rule does not
+    /// compile without an index; G.26 checks `ALL[i].index() == i` and that
+    /// every rule of `ALL` has a test row. A rule left out of `ALL` is not
+    /// caught by a test: add it to both.
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
@@ -173,11 +187,12 @@ pub fn command_held(m: Modifiers) -> bool {
     m.command || m.ctrl || m.mac_cmd
 }
 
-/// The shortcut of a key press, if any: Cmd/Ctrl held, Alt not; Shift
-/// tells the paired shortcuts apart. `key` is the logical key.
+/// The shortcut of a key press, if any: `m.command` (Cmd on macOS, Ctrl
+/// elsewhere) held, Alt not; Shift tells the paired shortcuts apart. `key`
+/// is the logical key.
 #[must_use]
 pub fn shortcut(key: Key, m: Modifiers) -> Option<Shortcut> {
-    if !command_held(m) || m.alt {
+    if !m.command || m.alt {
         return None;
     }
     Some(match (key, m.shift) {
@@ -247,7 +262,7 @@ pub fn frame_route(e: &Event, cx: FrameContext) -> Option<FrameRoute> {
         }),
         Key::Space if cx.text_edit => Some(FrameRoute::new(Rule::SpaceText, true)),
         Key::Space if command && !cx.widget_focused => Some(FrameRoute::new(Rule::SpaceOs, true)),
-        Key::Space if fresh && !command && !cx.dialog_open => Some(FrameRoute {
+        Key::Space if fresh && !command && !modifiers.alt && !cx.dialog_open => Some(FrameRoute {
             listen: true,
             ..FrameRoute::new(Rule::SpaceListen, false)
         }),
@@ -267,7 +282,8 @@ pub fn frame_route(e: &Event, cx: FrameContext) -> Option<FrameRoute> {
 pub struct FrameKeys {
     /// A fresh Esc press: request STOP.
     pub stop: bool,
-    /// A fresh Space press for the preview (Story 5.11 acts on it).
+    /// A fresh Space press for the preview (Story 5.11 acts on it; one flag
+    /// per frame, see the module doc).
     pub listen: bool,
     /// The frame's global shortcuts, in order (nothing acts on them yet).
     pub shortcuts: Vec<Shortcut>,
@@ -519,8 +535,8 @@ pub fn fresh_esc(ctx: &Context) -> bool {
     ctx.input(|i| has_fresh_esc(&i.events))
 }
 
-/// Rule `DialogEsc`: consumes an Esc without modifiers; true if there was
-/// one. Call only for the top dialog with no popup open.
+/// Rule `DialogEsc`: consumes an Esc without Cmd/Ctrl (egui's
+/// `consume_key` ignores Shift and Alt); true if there was one. Call only for the top dialog with no popup open.
 pub fn dialog_takes_esc(ctx: &Context) -> bool {
     ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
 }

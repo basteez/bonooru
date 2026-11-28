@@ -258,7 +258,7 @@ Behavioural rules. Visual specs live in `DESIGN.md` › Components.
 
 ## Interaction Primitives
 
-**Global shortcuts** (work everywhere, including editor and gamepad focus; consumed at the start of each frame before widgets read input):
+**Global shortcuts** (work everywhere, including editor and gamepad focus; recognised at the start of each frame before widgets read input; Cmd on macOS, Ctrl on Windows/Linux; each is consumed there once the story that adds its feature acts on it, Story 5.0):
 
 | Key | Action |
 |---|---|
@@ -269,7 +269,7 @@ Behavioural rules. Visual specs live in `DESIGN.md` › Components.
 | Cmd/Ctrl+S | Save (save-as for new or converted scores) |
 | Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z | Undo / redo (app-level history); same as the ↶ ↷ buttons in the note-card header |
 
-Since Story 5.0 every keyboard rule (these shortcuts, the context shortcuts and the gamepad keys below) lives in one module, `ui::keyboard`; Listen on Space and the global shortcuts are recognised there and acted on by the stories that add those features (Listen: Story 5.11; Open: Story 5.7; Play: Epic 6; Save, Undo/Redo: Epic 9). A dialog open blocks Listen; Space is still consumed.
+Since Story 5.0 every keyboard rule (these shortcuts, the context shortcuts and the gamepad keys below) lives in one module, `ui::keyboard`; Listen on Space and the global shortcuts are recognised there and acted on by the stories that add those features (Listen: Story 5.11; Open: Story 5.7; Play: Epic 6; Save, Undo/Redo: Epic 9). A dialog open or Alt held blocks Listen (Alt+Space is the window menu on Windows); Space is still consumed.
 
 **Context shortcuts:**
 

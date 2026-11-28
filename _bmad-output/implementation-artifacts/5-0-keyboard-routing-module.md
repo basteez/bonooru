@@ -65,7 +65,7 @@ Origin: Epic 4 retrospective action **E4-A2** (`epic-4-retro-2026-11-28.md` §5 
   - [x] 4.2 Add `g26_one_owner` (scan) and the full table tests.
 - [x] **Task 5: Red proofs for every new or changed test (AC: 10; E4-A3)** — see Dev Notes › Red proofs; record command, failing assertion, then the passing run.
 - [x] **Task 6: Docs (AC: 9)** — README, EXPERIENCE.md sentence, test-plan G.20 / G.24 / G.26 and intro, sprint-status E4-A2.
-- [x] **Task 7: Green (AC: 10)** — fmt, clippy, two `cargo test --workspace` runs, deny; push; CI green on three OS.
+- [ ] **Task 7: Green (AC: 10)** — fmt, clippy, two `cargo test --workspace` runs, deny; push; CI green on three OS.
 
 ## Dev Notes
 
@@ -180,6 +180,26 @@ None. D2–D6 are technical defaults drawn from `EXPERIENCE.md`; the code review
 - [Source: app/gui/src/ui/keys.rs, app/gui/src/ui/pad_keys.rs, app/gui/src/app.rs, app/gui/src/ui/modal.rs]
 - [Source: docs/test-plan.md] G.20, G.24, G.25
 
+### Review Findings (2026-11-28)
+
+Code review (gds-code-review, three layers: Blind Hunter, Edge Case Hunter, Acceptance Auditor) of `d731a7b..594d42e`. No behaviour regression found: every Story 4.7 and 4.9 rule was compared old against new and matches. G.26 and the touched suites pass, and clippy is clean.
+
+- [x] [Review][Decision] Ctrl on macOS counts as a global shortcut. `shortcut()` uses `command_held` (`command || ctrl || mac_cmd`), so on macOS Ctrl+Z/S/O/Enter are reported as Undo/Save/Open/Play. `EXPERIENCE.md:143` says "Ctrl on Windows/Linux, Cmd on macOS", and `g26_shortcuts` pins the current behaviour. Options: match `m.command` only (egui's platform-correct flag) for shortcuts and keep `command_held` for the pad keys (D7); or accept the current behaviour and write it down. [app/gui/src/ui/keyboard.rs:179-181] → **Resolved (Claude, technical, following `EXPERIENCE.md`):** shortcuts now need `m.command` (Cmd on macOS, Ctrl on Windows/Linux); Ctrl on macOS gives none; `command_held` stays for the pad keys and Space. Red proof N1.
+- [x] [Review][Decision] Cmd/Ctrl+Enter is reported as `PlayFromCursor`/`PlayFromStart` and left in the input, and egui fake-clicks a focused clickable widget on Enter whatever the modifiers (egui 0.37 `context.rs` ~l.1758). With STOP or a dialog button focused, one press would be both Play and a button click once Epic 6 acts on it. The old code also left Cmd+Enter in the input, so this is not a regression. Options: consume the Enter shortcut rows now (this changes the "Cmd+Enter … stay in the input" case of G.25); or document in the `Shortcut` row that the consumer story must consume Enter shortcuts. [app/gui/src/ui/keyboard.rs:257-260] → **Resolved (Claude, technical):** kept D4 (not consumed in 5.0, so G.25 is unchanged). The module doc now says that Play's Enter rows must be consumed when Play acts on them, because egui fake-clicks a focused button on Enter.
+- [x] [Review][Decision] Alt+Space sets Listen (Shift and Alt do not block it). On Windows, Alt+Space opens the window system menu, so a press would also toggle the preview. Options: block Listen on Alt; or keep it and note it for Story 5.11. [app/gui/src/ui/keyboard.rs:250] → **Resolved (Claude, technical; amends D3):** Alt blocks Listen because Alt+Space is the window menu on Windows; Shift still does not. `EXPERIENCE.md` updated. Red proof N2.
+- [x] [Review][Patch] (Medium) The `DialogEsc` docs are wrong. `consume_key(Modifiers::NONE, Escape)` uses `matches_logically`, which ignores Shift and Alt, so Shift+Esc and Alt+Esc do close the dialog as `Dismissed`. Only Cmd/Ctrl is ignored, as the removed `keys.rs` doc and the `app.rs:960` comment say. Fix the table row, the "Esc is STOP" paragraph and the `dialog_takes_esc` and `g26_dialog_helpers` docs to say "without Cmd/Ctrl", and add a Shift+Esc → taken row to `g26_dialog_helpers`. [app/gui/src/ui/keyboard.rs:28,43,522; app/gui/tests/keyboard.rs:451-453] → Fixed: docs say "without Cmd/Ctrl", and `g26_dialog_helpers` checks that Shift+Esc and Alt+Esc are taken. Red proof N3.
+- [x] [Review][Patch] The "every rule has a test row" check is partly self-fulfilling. `Focus*`, `LogicKeyUp`, `DialogFreshEsc`, `DialogArming` and `DialogEsc` are added to `covered` by hand, and `DialogArming`/`DialogEsc` have no assertion in that test. Also, `Rule::index` being exhaustive does not force a new variant into `Rule::ALL`, contrary to its doc. Derive `covered` from route results where possible, or reword both claims honestly. [app/gui/tests/keyboard.rs:295-300,311,325-326; app/gui/src/ui/keyboard.rs:126-127] → Fixed (reworded): the `Rule::index` doc says honestly what it guarantees, and the test comment says the two dialog rules are asserted in `g26_dialog_helpers`.
+- [x] [Review][Patch] The `g26_one_owner` scan has holes. `i.key_down(k)` with a non-literal key (for example `ANSWER_KEYS`), `consume_shortcut`, `num_presses`, `EventFilter`/`event_filter`, and `use eframe::egui::{Key}` or `use egui::*` followed by a bare `Key` all pass. Add them to `forbidden()` and to the self-test's bad snippets (receiver-bounded `key_down` so `Pad::key_down` stays legal). [app/gui/tests/keyboard.rs:512-553] → Fixed: `forbidden()` also catches `consume_shortcut`, `num_presses`, `EventFilter`, `event_filter`, `key_down(` on any receiver but `pad`/`p`, `use eframe::egui::{Key}` and egui glob imports; the self-test gained the bad and good snippets. Red proof N4.
+- [x] [Review][Patch] R18 has no automated guard. Changing `key_ups(&i.raw.events)` to `&i.events` in `logic` stays green. Add a source assertion (for example in `g26_one_owner`) that `app.rs` calls `key_ups(&i.raw.events)`, and give it a red proof. [app/gui/src/app.rs:863] → Fixed: `g26_logic_reads_raw_events` pins `keyboard::key_ups(&i.raw.events)` in `app.rs`. Red proof N5 (R18's mutation now fails).
+- [x] [Review][Patch] `g26_frame_keys_default` has no red proof (E4-A3). Add one or drop the test. [app/gui/tests/keyboard.rs:617-621] → Fixed: test dropped (it could not fail meaningfully).
+- [x] [Review][Patch] The accepted limit on the dialog flag is named too narrowly. It covers every dialog requested later in the frame (Gallery dialogs too, and the firmware request's discarded pass), not only the firmware dialog. Reword the module doc. [app/gui/src/ui/keyboard.rs:56-59] → Fixed: the module doc names every dialog requested later in the frame.
+- [x] [Review][Patch] `listen` is a bool, so two fresh Space presses batched in one frame collapse into one (`shortcuts` is a `Vec` and keeps the count). Make it a count, or document the collapse for Story 5.11's toggle. [app/gui/src/ui/keyboard.rs:268-273,292] → Fixed (documented): `listen` stays one flag per frame, and the collapse is an accepted limit in the module doc and on the field.
+- [x] [Review][Patch] The rule table order differs from `EXPERIENCE.md` › Interaction Primitives (AC 2): `Shortcut` comes after Space and Enter. Say in the module doc that match precedence requires it, or reorder the doc table. [app/gui/src/ui/keyboard.rs:9-28] → Fixed: the module doc explains the match-precedence order.
+- [x] [Review][Patch] Stale docs. The G.24 row header still lists `ocb_app::ui::pad_keys` [docs/test-plan.md:1117]. `EXPERIENCE.md:261` still says the global shortcuts are "consumed at the start of each frame", which contradicts D4 (reported, left in the input) [_bmad-output/planning-artifacts/ux-designs/ux-bonooru-2026-11-20/EXPERIENCE.md:261]. → Fixed: G.24 row header and `EXPERIENCE.md` global-shortcut line updated.
+- [x] [Review][Patch] Task 7 is ticked, but push and CI on three OS are not done (no remote branch, no PR). E4-A2 is `done` in `sprint-status.yaml` without a PR number (AC 9, 10). Untick Task 7, or tick it only after CI is green. [5-0-keyboard-routing-module.md:68; sprint-status.yaml E4-A2] → Fixed: Task 7 unticked until push and CI. E4-A2 gets the PR number when the PR exists.
+
+Dismissed (6): the test oracle mirrors the `frame_route` chain (accepted for a move-refactor; explicit tuples are a nice-to-have), the trivially true baseline `armed_blocked` assertion, the manual `repeat` flag in the harness (kittest does not set it, so it is needed), the "gamepad live" proxy `cx(false, true, false)` (the panel is a focused widget; G.25 covers the real panel), the leftover `"g20-edit"` Id name, and `FrameKeys` losing `Copy`.
+
 ## Dev Agent Record
 
 ### Agent Model Used
@@ -226,6 +246,20 @@ Found on the way: the first `g26_one_owner` run failed on a real leftover, `set_
 
 Green runs (macOS, 2026-11-28, after all restores): `cargo fmt --check` ok; `cargo clippy --workspace --all-targets -- -D warnings` ok; `cargo test --workspace` twice: 545 passed, 0 failed each (Story 4.9 ended at 539: +8 G.26, −2 moved); `cargo deny check`: advisories, bans, licenses, sources ok.
 
+Review fixes (2026-11-28), red proofs for the new or changed checks, same method:
+
+| # | Mutation | Test | Red result |
+|---|---|---|---|
+| N1 | Shortcuts back on `command_held` (macOS Ctrl counts) | `g26_shortcuts`, `g26_rule_table` | `Enter Modifiers { ctrl: true }`: `left: Some(PlayFromCursor) right: None` |
+| N2 | Alt no longer blocks Listen | `g26_rule_table` | `Modifiers { alt: true }` → `SpaceListen` ≠ `SpaceConsume` |
+| N3 | The dialog takes only an exactly unmodified Esc | `g26_dialog_helpers` | panics at `keyboard.rs:524` ("Shift+Esc not taken") |
+| N4 | `num_presses` dropped from the scan's list | `g26_one_owner` | self-test "missed: let p = i.num_presses(k);" |
+| N5 | `App::logic` passes `&i.events` (R18's mutation) | `g26_logic_reads_raw_events` | panics at `keyboard.rs:685` ("App::logic must pass the raw input's events …") |
+
+After the Alt change, R1, R2, R3, R5, R6, R8, R12 and R13 were re-run against the new code and still fail as listed above. R18 is now guarded by N5. `g26_frame_keys_default` was dropped.
+
+Green runs after the review fixes (macOS): fmt ok, clippy `-D warnings` ok, `cargo test --workspace` twice 545 passed / 0 failed (+1 `g26_logic_reads_raw_events`, −1 `g26_frame_keys_default`), deny ok.
+
 ### Completion Notes List
 
 - `ui::keyboard` (`app/gui/src/ui/keyboard.rs`) now holds every keyboard rule as one table, `Rule` / `Rule::ALL` with an exhaustive `Rule::index`, and the module doc mirrors `EXPERIENCE.md` › Interaction Primitives. The pure core is `frame_route`, `pad_route`, `focus_route`, `key_ups`, `has_fresh_esc` and `shortcut`; the egui adapters are `frame_start(ctx, dialog_open)`, `pad_keys`, `focus_scan`, `lock_focus`, `answer_key_down`, `fresh_esc` and `dialog_takes_esc`. `ui::keys` and `ui::pad_keys` are deleted.
@@ -259,3 +293,4 @@ Green runs (macOS, 2026-11-28, after all restores): `cargo fmt --check` ok; `car
 
 - 2026-11-28: story created (ready-for-dev).
 - 2026-11-28: implemented: `ui::keyboard` owns every key rule (table `Rule::ALL`), Listen on Space and the global shortcuts recognised, G.26 added, G.20/G.24 cases moved; 24 red proofs (one not provable on the host, explained); status review.
+- 2026-11-28: code review (3 decisions, 10 patches) handled: shortcuts need Cmd on macOS / Ctrl elsewhere, Alt blocks Listen (D3 amended), dialog Esc docs, scan holes, raw-events guard, docs; red proofs N1–N5.

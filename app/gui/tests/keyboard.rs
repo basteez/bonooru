@@ -171,7 +171,7 @@ fn g26_rule_table() {
                 } else if command(m) && !c.widget_focused {
                     assert_eq!(o.rule, Some(Rule::SpaceOs), "{ctx}");
                     assert!(o.keep && !o.listen, "{ctx}");
-                } else if !rep && !command(m) && !c.dialog_open {
+                } else if !rep && !command(m) && !m.alt && !c.dialog_open {
                     assert_eq!(o.rule, Some(Rule::SpaceListen), "{ctx}");
                     assert!(!o.keep && o.listen, "{ctx}");
                 } else {
@@ -182,11 +182,13 @@ fn g26_rule_table() {
             // A Space release: nothing.
             assert_eq!(route(&ev(Key::Space, false, false, m), c).rule, None);
 
-            // Enter: a fresh press is a shortcut with Cmd/Ctrl (no Alt),
-            // else nothing; a repeat is dropped outside a text edit.
+            // Enter: a fresh press is a shortcut with `command` (Cmd on
+            // macOS, Ctrl elsewhere; no Alt), else nothing (Ctrl alone is a
+            // macOS Ctrl: no shortcut); a repeat is dropped outside a text
+            // edit.
             let o = route(&press(Key::Enter, m), c);
             note(&o);
-            if command(m) {
+            if m.command {
                 assert_eq!(o.rule, Some(Rule::Shortcut), "{ctx}");
                 assert_eq!(o.shortcut, Some(Shortcut::PlayFromCursor), "{ctx}");
                 assert!(o.keep, "{ctx}");
@@ -211,10 +213,13 @@ fn g26_rule_table() {
                 assert_eq!(route(&press(k, m), c).rule, None, "{k:?} {ctx}");
             }
         }
-        // Shift and Alt never block Listen.
+        // Shift never blocks Listen; Alt does (the Windows window menu).
         if !c.text_edit && !c.dialog_open {
-            for m in [SHIFT, ALT, SHIFT | ALT] {
-                assert!(route(&press(Key::Space, m), c).listen, "{c:?} {m:?}");
+            assert!(route(&press(Key::Space, SHIFT), c).listen, "{c:?} Shift");
+            for m in [ALT, SHIFT | ALT] {
+                let o = route(&press(Key::Space, m), c);
+                assert_eq!(o.rule, Some(Rule::SpaceConsume), "{c:?} {m:?}");
+                assert!(!o.listen && !o.keep, "{c:?} {m:?}");
             }
         }
     }
@@ -310,8 +315,9 @@ fn g26_rule_table() {
     assert_eq!(keyboard::key_ups(&raw), vec![PadKey::L, PadKey::ArrowUp]);
     covered.insert(Rule::LogicKeyUp);
 
-    // Dialog rules: `DialogFreshEsc` here, the other two in
-    // `g26_dialog_helpers` (they need a frame).
+    // Dialog rules: `DialogFreshEsc` asserted here; `DialogArming` and
+    // `DialogEsc` need a frame and are asserted in `g26_dialog_helpers`,
+    // listed here only so this check names every rule of the table.
     assert!(keyboard::has_fresh_esc(&[esc(false)]));
     assert!(keyboard::has_fresh_esc(&[press(Key::Escape, SHIFT)]));
     assert!(!keyboard::has_fresh_esc(&[esc(true)]));
@@ -336,7 +342,9 @@ fn g26_rule_table() {
 #[test]
 fn g26_shortcuts() {
     let cmd_shift = CMD | SHIFT;
-    for m in [CMD, CTRL, MAC_CMD] {
+    // As egui-winit sends them: Cmd on macOS sets `mac_cmd` and `command`,
+    // Ctrl on Windows/Linux `ctrl` and `command`.
+    for m in [CMD, MAC_CMD | CMD, CTRL | CMD] {
         let s = m | SHIFT;
         assert_eq!(shortcut(Key::Enter, m), Some(Shortcut::PlayFromCursor));
         assert_eq!(shortcut(Key::Enter, s), Some(Shortcut::PlayFromStart));
@@ -354,7 +362,9 @@ fn g26_shortcuts() {
     for k in [Key::P, Key::L, Key::Space, Key::Escape, Key::Num1] {
         assert_eq!(shortcut(k, CMD), None, "{k:?}");
     }
-    for m in [NONE, SHIFT, ALT] {
+    // Ctrl on macOS (`ctrl` without `command`) is not a shortcut
+    // (`EXPERIENCE.md`: Ctrl on Windows/Linux, Cmd on macOS).
+    for m in [NONE, SHIFT, ALT, CTRL, CTRL | SHIFT, MAC_CMD] {
         for k in [Key::Enter, Key::O, Key::S, Key::Z] {
             assert_eq!(shortcut(k, m), None, "{k:?} {m:?}");
         }
@@ -506,6 +516,15 @@ fn g26_dialog_helpers() {
     );
     release(&mut h, &[Key::Escape]);
     h.step();
+    // Shift and Alt do not stop the dialog taking Esc (egui's `consume_key`
+    // ignores them).
+    for m in [SHIFT, ALT] {
+        h.input_mut().events.push(key_event(Key::Escape, true, m));
+        h.step();
+        assert!(h.state().took && !h.state().esc_left, "{m:?}+Esc not taken");
+        release(&mut h, &[Key::Escape]);
+        h.step();
+    }
 }
 
 /// Tokens of egui key input that only `ui/keyboard.rs` may use (AC 1).
@@ -518,6 +537,10 @@ fn forbidden(code: &str) -> Vec<String> {
         "key_released",
         "keys_down",
         "set_focus_lock_filter",
+        "consume_shortcut",
+        "num_presses",
+        "EventFilter",
+        "event_filter",
     ] {
         if code.contains(sub) {
             hits.push(sub.to_owned());
@@ -537,16 +560,45 @@ fn forbidden(code: &str) -> Vec<String> {
             from = at + tok.len();
         }
     }
-    // `Key` as a word inside a `use egui::…;` statement.
+    // `InputState::key_down(…)`: any receiver but the pad model's
+    // (`pad.key_down`, `p.key_down` in its unit tests) and its definition.
     let mut from = 0;
-    while let Some(i) = code[from..].find("use egui::") {
+    while let Some(i) = code[from..].find("key_down(") {
         let at = from + i;
-        let end = code[at..].find(';').map_or(code.len(), |e| at + e);
-        let stmt = &code[at..end];
-        if stmt.split(|c: char| !ident(c)).any(|w| w == "Key") {
-            hits.push("use egui::{Key}".to_owned());
+        let before = code[..at].trim_end();
+        let receiver: String = before
+            .strip_suffix('.')
+            .unwrap_or("")
+            .chars()
+            .rev()
+            .take_while(|c| ident(*c))
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let allowed = before.ends_with("fn") || receiver == "pad" || receiver == "p";
+        let word = !code[..at].chars().next_back().is_some_and(ident);
+        if word && !allowed {
+            hits.push("key_down(".to_owned());
         }
-        from = end;
+        from = at + "key_down(".len();
+    }
+    // `Key` as a word inside a `use egui::…;` / `use eframe::egui::…;`
+    // statement, and glob imports of egui.
+    for head in ["use egui::", "use eframe::egui::"] {
+        let mut from = 0;
+        while let Some(i) = code[from..].find(head) {
+            let at = from + i;
+            let end = code[at..].find(';').map_or(code.len(), |e| at + e);
+            let stmt = &code[at..end];
+            if stmt.split(|c: char| !ident(c)).any(|w| w == "Key") {
+                hits.push("use egui::{Key}".to_owned());
+            }
+            if stmt.contains('*') {
+                hits.push("use egui::*".to_owned());
+            }
+            from = end;
+        }
     }
     hits
 }
@@ -563,11 +615,19 @@ fn g26_one_owner() {
         "use egui::{Context, Key, Modifiers};",
         "m.set_focus_lock_filter(id, f);",
         "i.keys_down.len()",
+        "if i.key_down(k) {}",
+        "let p = i.num_presses(k);",
+        "i.consume_shortcut(&s)",
+        "let f = egui::EventFilter::default();",
+        "use eframe::egui::{Key, Ui};",
+        "use egui::*;",
     ] {
         assert!(!forbidden(bad).is_empty(), "missed: {bad}");
     }
     for ok in [
         "p.key_down(PadKey::L, 0);",
+        "self.pad.key_down(e.key, now);",
+        "pub fn key_down(&mut self, key: PadKey, now_us: u64) {",
         "let k = PadKey::ALL;",
         "use crate::gamepad::{PadKey, Pad};",
         "use egui::{Context, KeyboardShortcut};",
@@ -613,11 +673,20 @@ fn g26_one_owner() {
     );
 }
 
-/// `FrameKeys` default: nothing asked.
+/// E4-A5, review 2026-11-28: `App::logic` takes its key releases from the
+/// raw input. kittest cannot tell `raw.events` from `events` (it always runs
+/// `logic` before `ui` on one input, so nothing is consumed yet when
+/// `logic` reads it), so the call itself is pinned here.
 #[test]
-fn g26_frame_keys_default() {
-    let k = FrameKeys::default();
-    assert!(!k.stop && !k.listen && k.shortcuts.is_empty());
+fn g26_logic_reads_raw_events() {
+    let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs");
+    let code = common::code_only(&std::fs::read_to_string(app).unwrap());
+    let compact: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        compact.contains("keyboard::key_ups(&i.raw.events)"),
+        "App::logic must pass the raw input's events to keyboard::key_ups"
+    );
+    assert_eq!(compact.matches("keyboard::key_ups(").count(), 1);
 }
 
 /// The harness of `g26_frame_start_keys`: `frame_start`, then a text edit.
