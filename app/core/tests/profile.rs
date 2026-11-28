@@ -28,8 +28,13 @@ fn app_dir() -> PathBuf {
         .to_path_buf()
 }
 
+/// The bundled file with LF line breaks: a Windows checkout may give CRLF
+/// (git `core.autocrlf`), and the edits below match `\n`-separated text.
+/// CRLF parsing itself is covered by `c30_crlf`.
 fn bundled() -> String {
-    std::fs::read_to_string(app_dir().join("profiles/oot-switch2-1.1.1.toml")).unwrap()
+    std::fs::read_to_string(app_dir().join("profiles/oot-switch2-1.1.1.toml"))
+        .unwrap()
+        .replace("\r\n", "\n")
 }
 
 /// The bundled text with one `from` → `to` replacement (must match once).
@@ -537,6 +542,14 @@ fn c30_one_parser() {
         offenders.is_empty(),
         "TOML/serde outside core/src/profile: {offenders:?}"
     );
+}
+
+/// The bundled text with CRLF line breaks parses to the same profile.
+#[test]
+fn c30_crlf() {
+    let lf = bundled();
+    let crlf = lf.replace('\n', "\r\n");
+    assert_eq!(profile::parse(&crlf).unwrap(), profile::parse(&lf).unwrap());
 }
 
 proptest! {

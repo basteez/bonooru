@@ -362,6 +362,8 @@ The A9 hang left one test process, which was killed by hand. The temp dirs `ocb-
 
 Green runs after the review fixes (macOS): fmt ok, clippy `-D warnings` ok, `cargo test --workspace` twice 562 passed / 0 failed (+1 `c31_candidates_and_hostile_files`), deny ok.
 
+**CI fix (windows-latest, first PR run).** `c30_shape` and `c30_validation_rules` failed on Windows because git's `core.autocrlf` checked out the profile with CRLF, while the test edits match `\n`-separated text. The test helper `bundled()` now normalises the line breaks to LF. A new `c30_crlf` proves that the parser reads the CRLF text the same as LF. Red proof: `parse` refusing any `\r` → `c30_crlf` panics at `profile.rs:552`. 563 tests in all.
+
 ### Completion Notes List
 
 - **`ocb_core::profile`** (`app/core/src/profile.rs`):
