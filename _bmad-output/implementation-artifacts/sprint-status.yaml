@@ -72,7 +72,7 @@ development_status:
   4-6-firmware-version-check-and-gating: done
   4-7-stop-esc-and-the-bottom-bar: done
   4-8-virtual-gamepad-with-mouse: done
-  4-9-gamepad-keyboard-focus-and-compact-layout: in-progress
+  4-9-gamepad-keyboard-focus-and-compact-layout: review
   epic-4-retrospective: optional
 
   epic-5: backlog
