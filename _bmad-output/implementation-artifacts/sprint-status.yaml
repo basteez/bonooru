@@ -216,7 +216,7 @@ action_items:
   - id: E4-A2
     source: epic-4-retrospective
     action: One module owns keyboard routing (Space, Enter, Esc, the gamepad keys, Cmd/Ctrl shortcuts, text fields) before Story 5.10; the G.20 and Story 4.9 rules move there
-    status: done # Story 5.0: ui::keyboard, G.26
+    status: done # Story 5.0 (PR #55): ui::keyboard, G.26
   - id: E4-A3
     source: epic-4-retrospective
     action: A red proof for every new or changed test or check, not only bench tools, listed in the story's Debug Log

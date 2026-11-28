@@ -65,7 +65,7 @@ Origin: Epic 4 retrospective action **E4-A2** (`epic-4-retro-2026-11-28.md` §5 
   - [x] 4.2 Add `g26_one_owner` (scan) and the full table tests.
 - [x] **Task 5: Red proofs for every new or changed test (AC: 10; E4-A3)** — see Dev Notes › Red proofs; record command, failing assertion, then the passing run.
 - [x] **Task 6: Docs (AC: 9)** — README, EXPERIENCE.md sentence, test-plan G.20 / G.24 / G.26 and intro, sprint-status E4-A2.
-- [ ] **Task 7: Green (AC: 10)** — fmt, clippy, two `cargo test --workspace` runs, deny; push; CI green on three OS.
+- [x] **Task 7: Green (AC: 10)** — fmt, clippy, two `cargo test --workspace` runs, deny; push; CI green on three OS.
 
 ## Dev Notes
 
@@ -259,6 +259,8 @@ Review fixes (2026-11-28), red proofs for the new or changed checks, same method
 After the Alt change, R1, R2, R3, R5, R6, R8, R12 and R13 were re-run against the new code and still fail as listed above. R18 is now guarded by N5. `g26_frame_keys_default` was dropped.
 
 Green runs after the review fixes (macOS): fmt ok, clippy `-D warnings` ok, `cargo test --workspace` twice 545 passed / 0 failed (+1 `g26_logic_reads_raw_events`, −1 `g26_frame_keys_default`), deny ok.
+
+CI: PR #55, every job green at `7a3d9d4` (app on ubuntu-24.04, windows-latest, macos-latest; firmware; four probe artifacts), no flake, no rerun.
 
 ### Completion Notes List
 
