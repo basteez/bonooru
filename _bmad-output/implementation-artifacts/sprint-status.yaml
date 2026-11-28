@@ -62,7 +62,7 @@ development_status:
   3-5-hardware-fail-safe-and-console_ready-checks: done
   epic-3-retrospective: done
 
-  epic-4: in-progress
+  epic-4: done
   4-0-cleanup-purity-gates-and-p2-overflow-status: done
   4-1-app-shell-with-theme-fonts-and-main-screen-regions: done
   4-2-decide-the-screen-reader-accesskit-level: done
@@ -72,7 +72,7 @@ development_status:
   4-6-firmware-version-check-and-gating: done
   4-7-stop-esc-and-the-bottom-bar: done
   4-8-virtual-gamepad-with-mouse: done
-  4-9-gamepad-keyboard-focus-and-compact-layout: review
+  4-9-gamepad-keyboard-focus-and-compact-layout: done
   epic-4-retrospective: optional
 
   epic-5: backlog
