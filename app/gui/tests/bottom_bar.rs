@@ -14,7 +14,7 @@
 mod common;
 
 use egui::epaint::{Shape, TextShape};
-use egui::{Color32, Key, Rect, Role, pos2, vec2};
+use egui::{Color32, Key, Modifiers, Rect, Role, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ocb_app::app::WorkerHealth;
@@ -356,10 +356,10 @@ fn g19_stop_focus_ring() {
                 .any(near),
             "no ring without focus"
         );
-        for _ in 0..4 {
-            h.key_press(Key::Tab);
-            h.run();
-        }
+        // Story 4.9: Tab now reaches the gamepad panel after the LEDs (and
+        // stays there in the app); STOP is one Shift+Tab from nothing.
+        h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+        h.run();
         assert_eq!(h.ctx.memory(|m| m.focused()), Some(bottom_bar::stop_id()));
         let rings: Vec<_> = ring_rects(&common::shapes_flat(&h.output().shapes))
             .into_iter()

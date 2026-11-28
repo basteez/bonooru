@@ -4,7 +4,7 @@ baseline_commit: 5722d28c11342502d2f9dac2ae2d6a17cd0f147a
 
 # Story 4.8: Virtual gamepad with mouse
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

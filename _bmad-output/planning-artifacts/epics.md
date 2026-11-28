@@ -1016,6 +1016,8 @@ So that navigating the game is quick and the keyboard never presses buttons by a
 **Then** it uses the compact variant (200 px, buttons only, key hints in tooltips) (UX-DR6)
 **And** the panel is a `Role::Group` AccessKit node whose name says whether keys are active, and the Story 4.8 control nodes are its children: the panel node is created before the controls and their `Ui` is built with `UiBuilder::accessibility_parent(panel_id)` (egui otherwise parents a node to the nearest ancestor that already has one) (Story 4.2: basic)
 
+Bench: keyboard on the real rig with OoT running (held keys, key repeat, chords, focus loss, Esc, blur, compact) → H.36 (Story 4.9)
+
 ## Epic 5: Load a song and hear it on the PC (M6)
 
 The user opens a `.mid` or text score (or an example), picks the track, transpose and tempo, sees the fit proposal and the Roll view with fingerings, and listens to it on the PC; nothing is sent to the Switch. All pipeline code lives in `ocb-core` (integer µs downstream of import; float seconds only inside import).

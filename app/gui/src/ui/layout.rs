@@ -41,6 +41,21 @@ pub struct Regions {
     pub bottom: Rect,
 }
 
+/// Below this content width (logical points) the gamepad panel is the
+/// compact variant, `spacing.gamepad-compact-width` wide (UX-DR6: the window
+/// between 1024 and 1279 pt; Story 4.9).
+pub const COMPACT_BELOW: f32 = 1280.0;
+
+/// Whether a content rect this wide gets the compact gamepad (the one test
+/// both [`regions`] and the panel use, so they never disagree).
+///
+/// Half a point of slack: at a fractional pixel density a 1280 pt window's
+/// content rect can come out a hair narrower (review 2026-11-28).
+#[must_use]
+pub fn is_compact(content: Rect) -> bool {
+    content.width() < COMPACT_BELOW - 0.5
+}
+
 /// Computes the regions from the content rect: status strip on top, bottom
 /// bar at the bottom, song panel left, gamepad panel right, note view in the
 /// rest. Sizes are clamped so no rect turns negative in a tiny window.
@@ -55,9 +70,14 @@ pub fn regions(content: Rect) -> Regions {
     let mid_top = (t + spacing::STATUS_STRIP_HEIGHT).min(b);
     let mid_bottom = (b - spacing::BOTTOM_BAR_HEIGHT).max(mid_top);
     let song_right = (l + spacing::SONG_PANEL_WIDTH).min(r);
-    // Always the full 300 pt here: the compact variant below 1280 is
-    // Story 4.9, the collapsed song rail Story 5.12.
-    let gamepad_left = (r - spacing::GAMEPAD_PANEL_WIDTH).max(song_right);
+    // 300 pt from 1280 pt up, the 200 pt compact variant below (Story 4.9,
+    // UX-DR6); the collapsed song rail is Story 5.12.
+    let gamepad_width = if is_compact(content) {
+        spacing::GAMEPAD_COMPACT_WIDTH
+    } else {
+        spacing::GAMEPAD_PANEL_WIDTH
+    };
+    let gamepad_left = (r - gamepad_width).max(song_right);
 
     let note_view = Rect::from_min_max(pos2(song_right, mid_top), pos2(gamepad_left, mid_bottom));
     let inset = spacing::CARD_INSET
@@ -96,8 +116,9 @@ mod tests {
     use super::*;
     use egui::vec2;
 
-    const SIZES: [(f32, f32); 4] = [
+    const SIZES: [(f32, f32); 5] = [
         (1024.0, 680.0),
+        (1279.0, 800.0),
         (1280.0, 800.0),
         (1920.0, 1080.0),
         (2560.0, 1440.0),
@@ -114,12 +135,37 @@ mod tests {
             assert_eq!(r.status.height(), 44.0, "{w}x{h}");
             assert_eq!(r.bottom.height(), 88.0, "{w}x{h}");
             assert_eq!(r.song.width(), 260.0, "{w}x{h}");
-            assert_eq!(r.gamepad.width(), 300.0, "{w}x{h}");
-            assert_eq!(r.note_view.width(), w - 560.0, "{w}x{h}");
+            // Story 4.9 (UX-DR6): the compact gamepad below 1280 pt, the
+            // note view takes the 100 pt it frees.
+            let gamepad = if w < 1280.0 { 200.0 } else { 300.0 };
+            assert_eq!(r.gamepad.width(), gamepad, "{w}x{h}");
+            assert_eq!(r.note_view.width(), w - 260.0 - gamepad, "{w}x{h}");
             assert_eq!(r.note_view.height(), h - 132.0, "{w}x{h}");
             assert_eq!(r.note_card, r.note_view.shrink(6.0), "{w}x{h}");
             assert_eq!(r.status.width(), w, "{w}x{h}");
             assert_eq!(r.bottom.width(), w, "{w}x{h}");
+        }
+    }
+
+    /// Story 4.9: the compact threshold is the content width, in points,
+    /// independent of where the content rect starts; half a point of slack
+    /// below 1280 (review 2026-11-28).
+    #[test]
+    fn g1_compact_threshold() {
+        for (w, compact) in [
+            (1024.0, true),
+            (1279.0, true),
+            (1279.4, true),
+            (1279.6, false),
+            (1280.0, false),
+            (1920.0, false),
+        ] {
+            for x in [0.0, 37.0] {
+                let c = Rect::from_min_size(pos2(x, 10.0), vec2(w, 800.0));
+                assert_eq!(is_compact(c), compact, "{w} at {x}");
+                let g = regions(c).gamepad.width();
+                assert_eq!(g, if compact { 200.0 } else { 300.0 }, "{w} at {x}");
+            }
         }
     }
 

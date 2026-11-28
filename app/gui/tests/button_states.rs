@@ -207,10 +207,10 @@ fn g21_stop_states() {
     press(&mut h, rect.center(), false);
     // The focus ring is unchanged under the pointer: 2 pt amber, alpha 255.
     let mut h = screen();
-    for _ in 0..4 {
-        h.key_press(Key::Tab);
-        h.run();
-    }
+    // Story 4.9: STOP is one Shift+Tab from nothing (Tab × 4 is the
+    // gamepad panel now).
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    h.run();
     h.input_mut()
         .events
         .push(Event::PointerMoved(rect.center()));

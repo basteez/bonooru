@@ -229,12 +229,11 @@ impl Rig {
         self.h.step();
     }
 
-    /// Tab four times: the ring on STOP.
+    /// Shift+Tab once from nothing focused: the ring on STOP (Story 4.9:
+    /// Tab × 4 now reaches the gamepad panel, which keeps Tab).
     fn focus_stop(&mut self) {
-        for _ in 0..4 {
-            self.h.key_press(Key::Tab);
-            self.h.step();
-        }
+        self.h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+        self.h.step();
         assert_eq!(
             self.h.ctx.memory(|m| m.focused()),
             Some(bottom_bar::stop_id())
@@ -776,7 +775,10 @@ fn g20_tab_stays_in_dialog() {
     assert!(inside > 0, "Tab focused nothing in the dialog");
 }
 
-/// AC 10: Tab runs LED, LED, LED, STOP and wraps; Shift+Tab goes back.
+/// AC 10 (Story 4.7), updated by Story 4.9 AC 11: Tab runs LED, LED, LED,
+/// then the gamepad panel, which keeps Tab and Shift+Tab (the focus lock);
+/// Esc leaves it (and is STOP); Shift+Tab from nothing focused reaches
+/// STOP.
 #[test]
 fn g20_tab_order() {
     let mut r = rig(vec![]);
@@ -785,8 +787,9 @@ fn g20_tab_order() {
         led_id("pc_bridge"),
         led_id("bridge_controller"),
         led_id("switch"),
-        bottom_bar::stop_id(),
-        led_id("pc_bridge"),
+        ocb_app::ui::gamepad::panel_id(),
+        ocb_app::ui::gamepad::panel_id(),
+        ocb_app::ui::gamepad::panel_id(),
     ];
     for (i, id) in want.iter().enumerate() {
         r.h.key_press(Key::Tab);
@@ -795,12 +798,43 @@ fn g20_tab_order() {
     }
     r.h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
     r.h.step();
+    r.h.step();
+    assert_eq!(
+        r.h.ctx.memory(|m| m.focused()),
+        Some(ocb_app::ui::gamepad::panel_id()),
+        "Shift+Tab stays on the panel"
+    );
+    r.h.key_press(Key::Escape);
+    r.h.step();
+    assert_eq!(
+        r.h.ctx.memory(|m| m.focused()),
+        None,
+        "Esc leaves the panel"
+    );
+    assert_eq!(
+        r.stops()
+            .iter()
+            .filter(|l| l.starts_with("requested source=esc "))
+            .count(),
+        1,
+        "Esc is STOP"
+    );
+    r.h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    r.h.step();
     assert_eq!(r.h.ctx.memory(|m| m.focused()), Some(bottom_bar::stop_id()));
-    // 100 idle frames: no stop line.
+    // 100 idle frames: no new STOP request (the worker's own line for the
+    // Esc above may still arrive: only the app's requests are counted).
+    let requested = |r: &Rig| {
+        r.stops()
+            .iter()
+            .filter(|l| l.starts_with("requested "))
+            .count()
+    };
+    let stops = requested(&r);
     for _ in 0..100 {
         r.h.step();
     }
-    assert!(r.stops().is_empty());
+    assert_eq!(requested(&r), stops);
 }
 
 /// AC 11, 13 (E3-A3): the H.34 steps replayed on a fake bridge and an
@@ -886,15 +920,12 @@ fn g20_h34_dry_run() {
     r.pump_until("step 2", |l| done(l, base + 2));
     let l = print(&r, &mut seen, "step 2 (click STOP)");
     four(&l, "button");
-    // Step 3: Tab ×4, Space (nothing), Enter.
+    // Step 3: Shift+Tab (STOP; Story 4.9: Tab × 4 is the gamepad panel
+    // now), Space (nothing), Enter.
     r.focus_stop();
     r.h.key_press(Key::Space);
     r.h.step();
-    let l = print(
-        &r,
-        &mut seen,
-        "step 3a (Tab x4: Bridge, Controller, Switch, STOP; Space)",
-    );
+    let l = print(&r, &mut seen, "step 3a (Shift+Tab: STOP; Space)");
     assert_eq!(count(&l, "stop "), 0, "{l:?}");
     r.h.key_press(Key::Enter);
     r.h.step();

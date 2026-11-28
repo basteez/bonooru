@@ -31,7 +31,9 @@ pub struct FrameKeys {
     pub stop: bool,
 }
 
-fn command_held(m: Modifiers) -> bool {
+/// Cmd, Ctrl or macOS Cmd held: the one definition of "a Cmd/Ctrl combo"
+/// (also `ui::pad_keys`, Story 4.9).
+pub(crate) fn command_held(m: Modifiers) -> bool {
     m.command || m.ctrl || m.mac_cmd
 }
 

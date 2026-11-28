@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
-use common::{Pat, TestClock, Wake};
+use common::{TestClock, Wake};
 use egui::accesskit::Role;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::Harness;
@@ -31,7 +31,6 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ocb_app::app::{App, Mode};
 use ocb_app::gamepad::{Control, Stick, TAP_MIN_US};
 use ocb_app::gating::{HINT_NO_BRIDGE, HINT_SWITCH_NOT_READY};
-use ocb_app::ui::bottom_bar;
 use ocb_core::link::Phase;
 use ocb_core::protocol::consts::{
     BTN_A, BTN_B, BTN_CAPTURE, BTN_HOME, BTN_L, BTN_MINUS, BTN_PLUS, BTN_R, BTN_X, BTN_Y, BTN_ZL,
@@ -53,89 +52,11 @@ fn bridge() -> FakePort {
     FakePort::bridge(CU, SERIAL, Some("Bonooru Bridge"))
 }
 
-const LOG_NAMES: [&str; 16] = [
-    "a", "b", "x", "y", "dup", "ddown", "dleft", "dright", "l", "r", "zl", "zr", "minus", "plus",
-    "home", "capture",
-];
-/// `pad ignored` reasons: the six gate reasons and `busy`.
-const IGNORED_REASONS: [&str; 7] = [
-    "worker",
-    "no_bridge",
-    "bridge_not_ready",
-    "firmware_update",
-    "controller_link",
-    "switch_not_ready",
-    "busy",
-];
-
-/// An app `pad` line (its text after `pad `) against its pattern (Dev Notes
-/// › Log lines).
+/// An app `pad` line against its pattern (Story 4.9 moved the matcher to
+/// `common` and extended it with the keyboard and focus lines; G.25 uses
+/// it too).
 fn is_app_pad_line(text: &str) -> bool {
-    let ignored_controls: Vec<&str> = LOG_NAMES
-        .iter()
-        .copied()
-        .chain(["stick_left", "stick_right"])
-        .collect();
-    let ignored_controls: &'static [&'static str] = Box::leak(ignored_controls.into_boxed_slice());
-    common::line_matches(
-        text,
-        "press",
-        &[
-            ("control", Pat::OneOf(&LOG_NAMES)),
-            ("source", Pat::OneOf(&["mouse", "accesskit"])),
-        ],
-    ) || common::line_matches(
-        text,
-        "release",
-        &[
-            ("control", Pat::OneOf(&LOG_NAMES)),
-            (
-                "reason",
-                Pat::OneOf(&[
-                    "pointer_up",
-                    "tap",
-                    "window_blur",
-                    "stop",
-                    "gate",
-                    "controller_idle",
-                ]),
-            ),
-        ],
-    ) || common::line_matches(
-        text,
-        "ignored",
-        &[
-            ("control", Pat::OneOf(ignored_controls)),
-            ("reason", Pat::OneOf(&IGNORED_REASONS)),
-        ],
-    ) || matches!(text, "stick=left start" | "stick=right start")
-        || ["left", "right"].iter().any(|s| {
-            text.strip_prefix(&format!("stick={s} end "))
-                .is_some_and(|r| {
-                    common::line_matches(
-                        r,
-                        "",
-                        &[(
-                            "reason",
-                            Pat::OneOf(&[
-                                "pointer_up",
-                                "window_blur",
-                                "stop",
-                                "gate",
-                                "controller_idle",
-                            ]),
-                        )],
-                    )
-                })
-        })
-        || common::line_matches(
-            text,
-            "",
-            &[(
-                "command",
-                Pat::OneOf(&["queue_full", "no_worker", "worker_gone"]),
-            )],
-        )
+    common::is_app_pad_line(text)
 }
 
 /// The state of a `pad sent` line.
@@ -399,6 +320,20 @@ impl Rig {
             self.frame(FRAME_US);
         }
         self.until_direct(n);
+        // The worker writes its `pad sent` line after the controller has the
+        // state, so wait for the line too (a slow runner can see the state
+        // before the line).
+        let start = Instant::now();
+        while self
+            .all_now()
+            .iter()
+            .filter(|l| l.starts_with("pad sent "))
+            .count()
+            < self.direct().len()
+        {
+            assert!(start.elapsed() < LIMIT, "pad sent line never written");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 
@@ -467,7 +402,9 @@ fn g23_click_is_a_tap() {
     r.until_direct(2);
     assert_eq!(r.direct(), vec![with(BTN_A), NEUTRAL]);
     let pads = r.pads();
-    assert_eq!(pads[0], "press control=a source=mouse");
+    // Story 4.9: the press gives the panel keyboard focus first.
+    assert_eq!(pads[0], "keys=on source=click");
+    assert_eq!(pads[1], "press control=a source=mouse");
     assert!(
         pads.contains(&"release control=a reason=tap".to_owned()),
         "{pads:?}"
@@ -553,7 +490,12 @@ fn g23_stick_drag_and_spring() {
     assert_eq!(r.direct().last(), Some(&NEUTRAL));
     assert_eq!(&r.direct()[..3], &want[..]);
     let pads = r.pads();
-    assert_eq!(pads.first().map(String::as_str), Some("stick=left start"));
+    // Story 4.9: the press on the stick gives the panel focus first.
+    assert_eq!(
+        pads.first().map(String::as_str),
+        Some("keys=on source=click")
+    );
+    assert_eq!(pads.get(1).map(String::as_str), Some("stick=left start"));
     assert!(pads.contains(&"stick=left end reason=pointer_up".to_owned()));
 }
 
@@ -776,32 +718,27 @@ fn g23_blur_releases() {
     );
 }
 
-/// AC 8b: Esc (and the STOP button by Enter) while A is held: one `stop
+/// AC 8b: Esc (and the STOP button) while A is held: one `stop
 /// requested`, `pad release … reason=stop`, no SetState after; the release
-/// sends nothing; the next press sends A again. STOP keeps its focus during
-/// the hold.
+/// sends nothing; the next press sends A again. Story 4.9: a press on the
+/// pad takes the panel's keyboard focus (so Enter would press +), so the
+/// STOP button is activated by an AccessKit click, not by Enter.
 #[test]
 fn g23_stop_drops_held() {
     for by_button in [false, true] {
         let mut r = rig(vec![bridge()]);
         r.until_open();
         let a = r.center("A");
-        if by_button {
-            for _ in 0..4 {
-                r.h.key_press(Key::Tab);
-                r.frame(0);
-            }
-            assert_eq!(r.h.ctx.memory(|m| m.focused()), Some(bottom_bar::stop_id()));
-        }
         r.press(a);
         r.until_direct(1);
         if by_button {
             assert_eq!(
                 r.h.ctx.memory(|m| m.focused()),
-                Some(bottom_bar::stop_id()),
-                "a press keeps STOP's focus"
+                Some(ocb_app::ui::gamepad::panel_id()),
+                "a press takes the panel's focus (Story 4.9)"
             );
-            r.h.key_press(Key::Enter);
+            r.h.get_by_role_and_label(Role::Button, ocb_app::stop::STOP_A11Y_NAME)
+                .click_accesskit();
         } else {
             r.push(esc());
         }
@@ -967,9 +904,14 @@ fn g23_blocked_clicks_send_nothing() {
             r.frame(FRAME_US);
         }
         let pads = r.pads();
+        // Story 4.9: the click gives the panel focus (also while gated),
+        // then the press is ignored.
         assert_eq!(
             pads,
-            vec![format!("ignored control=a reason={reason}")],
+            vec![
+                "keys=on source=click".to_owned(),
+                format!("ignored control=a reason={reason}")
+            ],
             "{reason}"
         );
         if has_ctl && reason != "bridge_not_ready" {
@@ -1364,17 +1306,16 @@ fn g23_h35_dry_run() {
         l[seen..].iter().any(|x| x.contains("from=idle to=direct"))
     });
     let _ = print(&r, &mut seen, "step 6 (then a quick click on A)");
-    // Step 7: Tab ×4, hold A, Enter, release.
-    for _ in 0..4 {
-        r.h.key_press(Key::Tab);
-        r.frame(0);
-    }
-    assert_eq!(r.h.ctx.memory(|m| m.focused()), Some(bottom_bar::stop_id()));
+    // Step 7: hold A, STOP by its AccessKit click, release. (Historical
+    // since Story 4.9: the bench's "Tab ×4, hold A, Enter" no longer
+    // reaches STOP, since Tab × 4 is the gamepad panel and a press on the
+    // pad takes its focus; H.36 step 8 covers the Esc path with keys.)
     let n = r.direct().len();
     r.press(a);
     r.until_direct(n + 1);
     r.frame(FRAME_US);
-    r.h.key_press(Key::Enter);
+    r.h.get_by_role_and_label(Role::Button, ocb_app::stop::STOP_A11Y_NAME)
+        .click_accesskit();
     r.frame(0);
     r.pump_until("step 7", |l| {
         l[seen..].iter().any(|x| x.starts_with("stop after "))
@@ -1382,7 +1323,7 @@ fn g23_h35_dry_run() {
     });
     r.release(a);
     r.frame(FRAME_US);
-    let l = print(&r, &mut seen, "step 7 (Tab x4, hold A, Enter)");
+    let l = print(&r, &mut seen, "step 7 (hold A, STOP by AccessKit click)");
     stop_lines(&l, "button");
     // Step 8: hold A, blur, release, focus back.
     r.until_open();

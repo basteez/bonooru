@@ -254,14 +254,28 @@ fn g10_accessibility_check_stays_on() {
 
 /// Story 4.8 AC 14: the gamepad panel is 16 `Button` nodes and 2 `Slider`
 /// nodes (plus its labels); the D-pad triangles, the ⌫ ↵ chips and the
-/// other chips add no `Image` node.
+/// other chips add no `Image` node. Story 4.9: plus the panel's one
+/// `Group` node; the 200 pt compact panel has no `Slider`.
 #[test]
 fn g10_gamepad_nodes() {
     use egui::accesskit::Role as AkRole;
+    let compact = harness(|ui| {
+        let region = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 548.0));
+        let view = ocb_app::ui::gamepad::PadView {
+            variant: ocb_app::ui::gamepad::Variant::Compact,
+            ..ocb_app::ui::gamepad::PadView::default()
+        };
+        let _ = ocb_app::ui::gamepad::show(ui, region, &view);
+    });
+    assert_eq!(compact.query_all_by_role(AkRole::Group).count(), 1);
+    assert_eq!(compact.query_all_by_role(AkRole::Button).count(), 16);
+    assert_eq!(compact.query_all_by_role(AkRole::Slider).count(), 0);
+    assert_eq!(compact.query_all_by_role(AkRole::Image).count(), 0);
     let h = harness(|ui| {
         let region = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 560.0));
         let _ = ocb_app::ui::gamepad::show(ui, region, &ocb_app::ui::gamepad::PadView::default());
     });
+    assert_eq!(h.query_all_by_role(AkRole::Group).count(), 1);
     assert_eq!(h.query_all_by_role(AkRole::Button).count(), 16);
     assert_eq!(h.query_all_by_role(AkRole::Slider).count(), 2);
     assert_eq!(h.query_all_by_role(AkRole::Image).count(), 0);
