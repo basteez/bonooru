@@ -141,6 +141,16 @@ fn c30_validation_rules() {
             "game_version = \" \"",
             "profile.game_version",
         ),
+        (
+            "game_version = \"1.1.1\"",
+            "game_version = \"1.1.1 \"",
+            "profile.game_version",
+        ),
+        (
+            "name = \"OoT Switch 2\"",
+            "name = \" OoT Switch 2\"",
+            "profile.name",
+        ),
         ("L = 74", "L = 128", "buttons.L"),
         ("X = 86", "X = -1", "buttons.X"),
         ("dpad_up = 1 ", "dpad_up = 13 ", "modifiers.dpad_up"),
@@ -420,6 +430,23 @@ fn c30_resolve() {
         profile::USER_REFUSED_MESSAGE,
         "This mapping profile can't be read by this version. Defaults are in use."
     );
+    assert_eq!(
+        r.refusal_message(),
+        Some("This mapping profile can't be read by this version. Defaults are in use.")
+    );
+    // A broken file next to the valid user copy in use: refused, but
+    // "Defaults are in use" would be false, so no message.
+    let r = profile::resolve(&b, &[user("a.toml", "schema = = 1"), user("b.toml", &mine)]).unwrap();
+    assert_eq!(
+        r.source,
+        Source::User {
+            file: "b.toml".to_owned()
+        }
+    );
+    assert!(matches!(&r.events[..], [ProfileEvent::Refused { .. }]));
+    assert_eq!(r.refusal_message(), None);
+    // No refusal: no message.
+    assert_eq!(profile::resolve(&b, &[]).unwrap().refusal_message(), None);
     // Another identity: ignored, not refused.
     let other = b.replacen("game_version = \"1.1.1\"", "game_version = \"1.0.0\"", 1);
     let named = b.replacen("name = \"OoT Switch 2\"", "name = \"Mine\"", 1);
@@ -495,7 +522,7 @@ fn c30_one_parser() {
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
-        if rel.starts_with("core/src/profile") {
+        if rel == "core/src/profile.rs" {
             continue;
         }
         let code = std::fs::read_to_string(f).unwrap();

@@ -206,6 +206,59 @@ None. D1 (two pure crates in the core) follows the epic's own AC. D4 (location) 
 - [Source: app/services/src/log.rs#log_dir]
 - [Source: _bmad-output/implementation-artifacts/epic-4-retro-2026-11-28.md] E4-A3, E4-A4, E4-A6
 
+### Review Findings (2026-11-28)
+
+Code review (gds-code-review: Blind Hunter, Edge Case Hunter, Acceptance Auditor) of `ce9c80e..866a0b1`, full review against this spec. Result: 1 decision-needed, 12 patch, 3 defer, 9 dismissed.
+
+**Decision needed**
+
+- [x] [Review][Decision] **The refusal message can be false, and the event does not carry it** (medium) [app/core/src/profile.rs:654-716]. Every unusable `*.toml` file becomes `ProfileEvent::Refused`, even when another file is the valid user copy in use. Example: `a.toml` is broken and `b.toml` is a valid copy, so `resolve` returns `source = User { b.toml }` plus one `Refused` (checked in a scratch crate). Story 5.13 would then show "… Defaults are in use.", which is false. The same happens with OS or editor junk (`._x.toml`, `.#x.toml`, a folder named `dir.toml`). AC 5 also says the event "carries … the exact message", but `Refused { file, error }` has no message field, and the test only compares the constant with a literal. Options: (a) keep the event as it is and add `Resolved::refusal_message() -> Option<&'static str>`, which gives `USER_REFUSED_MESSAGE` only when `source == Bundled` and a second text (or none) when a user copy is in use; (b) add a `message: &'static str` field to `Refused`, chosen by the outcome; (c) keep it as it is and reword AC 5 and the docs ("refused file(s) were skipped"). Whichever option is picked, add a test with one valid copy and one broken copy. → **Resolved (Claude, technical: option a).** `Resolved::refusal_message()` returns `USER_REFUSED_MESSAGE` only when a file was refused and the bundled default is in use. `c30_resolve` covers a broken file next to the valid copy in use (refused, no message) and a run with no refusal. Docs updated. Red proof R6.
+
+**Patch**
+
+- [x] [Review][Patch] **C.4 allow list can be bypassed** (medium) [app/core/tests/purity.rs:220-247]. The crate is taken from the key and `pinned` only looks for `="=`. These manifests all return no problem (the code was copied into a scratch binary): → Fixed. The runtime-dep check collects every key per crate (inline, table and dotted forms) and requires exactly one `version = "=X.Y.Z"`. `package`, `path`, `git`, `registry`, `registry-index`, `workspace`, `branch`, `tag` and `rev` are refused, and so is `=1` / `=1.2`. 12 new bad cases and 2 new good ones. Red proofs P1–P3, P5–P7.
+  - `toml = { package = "regex", version = "=1.11.0" }`
+  - `toml = { version = "=1.2.3", path = "../x" }` and the same with `git = …` or `registry = …`
+  - `[dependencies.toml]` followed by `package = "regex"` or `registry = …` or `workspace = true`, or by no `version` line at all
+  - `toml = "=1"` (Cargo reads `=1` as `>=1.0.0, <2.0.0`, so it is not an exact pin)
+
+  This breaks AC 2 ("any other crate is still a hit"), and the C.4 row and the Completion Notes claim more than the code does ("path / git sources are refused"). Fix: refuse `package`, `path`, `git`, `registry`, `workspace`, `branch`, `tag` and `rev` in both the inline and the table form; require exactly one `version = "=MAJOR.MINOR.PATCH"` per allowed crate; drop the redundant `version="=` check; add these manifests as bad fixtures, with red proofs.
+- [x] [Review][Patch] **A FIFO or a huge `*.toml` file hangs or bloats app start** (medium) [app/services/src/profiles.rs:86]. `fs::read_to_string` runs inside `App::new` with no file-type check and no size cap. A scratch run of `load_from` on a dir with a `mkfifo`'d `p.toml` was still blocked after 3 s. A 200 MB file took 17 s and 426 MB of RSS. This breaks AC 10 ("the app never fails to start because of a user file"). Fix: refuse as `read` anything that is not a regular file (`metadata().is_file()`), and cap the read (for example `File::take(1 MiB + 1)`, refused above 1 MiB). → Fixed. Candidates are checked with `metadata().is_file()` before opening, so a FIFO is refused as `read` without blocking. Files over 1 MiB (`MAX_PROFILE_BYTES`) are refused, and the read goes through `take()`. Red proofs A9 (the test hangs without the check) and A10.
+- [x] [Review][Patch] **An unreadable profiles dir and failing entries are silent** (low) [app/services/src/profiles.rs:77-78]. Any `read_dir` error is treated like a missing dir: permission denied, or `profiles` being a regular file (checked). `entries.flatten()` also drops entry errors, although the doc comment says "an entry that cannot be read is a refused candidate". The only line written is `loaded … source=bundled`. Fix: only `ErrorKind::NotFound` means no user copy. Any other dir or entry error becomes a refused `read` candidate, or at least a `profile` line. → Fixed. Only `NotFound` means no user copy. Any other dir error, or an entry error, is a refused `read` candidate named after the dir. Red proof A13.
+- [x] [Review][Patch] **File names go into the log unescaped** (low) [app/services/src/profiles.rs:135,140,150]. `file={file}` is raw. A legal Unix name containing `\n` forges a second `profile loaded … source=user` line (checked), and a name with a space breaks `key=value`. Fix: pass the name through `detail()` and quote it (`file="…"`), or escape spaces and control characters. Update the AC 10 formats and the docs to match. → Fixed. `file="…"` and `game_version="…"` are quoted and cleaned by `detail()`. A Unix name with a newline is tested. Red proof A14.
+- [x] [Review][Patch] **`detail()` cleans only `\n`, `\r` and `\t`** (low) [app/services/src/profiles.rs:106-124]. ESC, NUL, VT/FF, U+0085 and U+2028/2029 reach the log, and toml messages can quote file content. Fix: map every `char::is_control()` character and U+2028/2029 to a space. → Fixed. Every `is_control()` character and U+2028/2029 becomes a space. Red proof A8.
+- [x] [Review][Patch] **`.TOML` is skipped silently, and dot-files are read** (low) [app/services/src/profiles.rs:80]. `x != "toml"` is case-sensitive: `UPPER.TOML` holding a valid copy gave `source=bundled` and no line (checked). AppleDouble `._x.toml` files and emacs `.#x.toml` locks are read and refused. Fix: compare with `eq_ignore_ascii_case("toml")` and skip names starting with `.`. Document both rules in the score-format doc. → Fixed. `is_candidate`: `.toml` in any case, never a dot-file. Documented. Red proofs A6, A11, A12.
+- [x] [Review][Patch] **Whitespace around `name` / `game_version` makes a copy silently "other identity"** (low) [app/core/src/profile.rs:487-497, 691]. `text_field` checks `trim().is_empty()` but stores the value untrimmed, and `resolve` compares exactly. So `game_version = "1.1.1 "` is valid but only `ignored other_identity`, and the user's edits never apply. Fix: refuse leading or trailing whitespace as `invalid`, which is consistent with D5 (strict, loud). → Fixed. Leading or trailing spaces are refused as `invalid`. Red proof V13.
+- [x] [Review][Patch] **The G.27 source check does not pin the call inside `App::new`** (low) [app/gui/tests/profile_app.rs:90-108]. It counts `profiles::load()` anywhere in `app.rs`, comments included. If the call moved into `build`, every test constructor would read the real config dir and the check would still pass. Fix: slice the `pub fn new(` body (up to the next `fn `) and assert that the call is in it, and that `fn build` has `bundled_only()` and no `load()`. `profile_lines` should match the kind tag exactly (`" profile refused|ignored|loaded "`), not any `" profile "`. → Fixed. The check slices the `pub fn new` and `fn build` bodies (comments stripped). `profiles::load()` must be in `new` and nowhere else, and `bundled_only()` in `build`. `profile_lines` matches the kind field exactly. Red proofs G3, G4.
+- [x] [Review][Patch] **The `c30_one_parser` exemption is wider than `profile.rs`** (low) [app/core/tests/profile.rs:493]. `rel.starts_with("core/src/profile")` also exempts any future `core/src/profile_x.rs` or `core/src/profiles/…`. Fix: exempt `core/src/profile.rs` exactly, or `core/src/profile/` if the module is split later. → Fixed. The exemption is exactly `core/src/profile.rs`.
+- [x] [Review][Patch] **The doc says shape errors carry a line, but migrated files never do** (low) [app/core/src/profile.rs:434, docs/score-format-and-mapping.md › Loading and validation step 3]. `shape_error(&e, None)` runs on the migration path. Fix: change the doc to "with the line when the file needed no migration", or keep spans. → Fixed (doc wording). The `Invalid` doc comment and the score-format doc say the line exists only for a file at the current schema.
+- [x] [Review][Patch] **Red proofs are missing or stale (AC 13, E4-A3)** (low) [Debug Log › Red proofs]. → Fixed. The missing red proofs were added (V14, L1, SH1–SH3, F2 for `c30_fuzz_edits`, B1 for `c31_bundled_is_the_repo_file`, G3 for `g27_test_constructor_uses_the_bundled_default`, A6–A8, A11–A13). Every old one was re-run on the final tests, with current line numbers in the Debug Log.
+  - Missing for: `c30_fuzz_edits`, `c31_bundled_is_the_repo_file`, `g27_test_constructor_uses_the_bundled_default`, the empty `name` / `game_version` rule, the `line: Some(_)` assertions (parse and shape), the missing-key, wrong-type and unknown-enum cases of `c30_shape`, the `*.toml` filter, and the 160-character cap and newline flattening of `detail` (A5 covers only quotes).
+  - Stale: S1 `:266`, S2 `:288`, V11 `:316` and O1 `:484` point to lines from before the final `c30_shape` change (now about 291, 313, 341 and 509). Re-run them on the committed tests.
+  - Also cover the tests added by the patches above.
+- [x] [Review][Patch] **The Debug Log and the deviation notes are inaccurate** (low) [story Debug Log and Completion Notes]. → Fixed in the Debug Log and the Completion Notes (`toml_writer`, ints into `f64`, the API deviations, the AC wording).
+  - `toml_writer` does not come from `egui_kittest` turning on `display`. `egui_kittest` 0.37 enables only `parse` and `serde`; `cargo tree -i toml_writer` prints nothing; `toml_writer` and `indexmap` are weak (`?/std`) lock entries and are not compiled. `indexmap` is not mentioned at all.
+  - The "TOML ints into `f64`" check that the Dev Notes asked for is not recorded (it works: serde accepts `visit_i64` for `f64`).
+  - Undocumented deviations: `Schema` has no `supported` field (Task 2.4, AC table `Schema { found: 2, .. }`); `Invalid` has a `line` field and `Io` is a fourth kind (D3 says three); there is no `ProfileEvent::Loaded` (Task 2.5); the 600-frame and 600 000 ms caps and the non-empty name rule are not in AC 8.
+  - AC 10 still says `App::profile()` (the code has `mapping_profile()`), and AC 3 says "six timing values" (there are five).
+
+**Defer**
+
+- [x] [Review][Defer] **Cross-field invariants are not validated** [app/core/src/profile.rs:499-615]: deferred. AC 8 does not ask for them; they belong to Story 5.4 (fingering) or Epic 9 (editor). These all pass today: offsets with the wrong sign or zero (`dpad_up = -1`), `stick_up_ly == stick_down_ly`, a fingering pitch that does not match button + offsets, zero or several `chart` fingerings per pitch, and a button pitch outside the range.
+- [x] [Review][Defer] **Cost weights have no upper bound** [app/core/src/profile.rs:475]: deferred to Story 5.6 (cost function). `1e308` passes and can sum to `inf`.
+- [x] [Review][Defer] **`c30_one_parser` bans every `Deserialize` / `serde::` outside the profile module** [app/core/tests/profile.rs:480-484]: deferred to Story 5.12/5.13. The settings file (`settings.toml`) will need its own TOML reading, so the scan must narrow to profile types, or settings must also live in the core.
+
+**Dismissed (9):**
+- `line_of` fallback: toml spans lie inside the text, on char boundaries.
+- ProjectDirs macOS path: `directories` 6.0.0 drops empty qualifier and organisation, so the path is `…/Application Support/Bonooru` as documented.
+- `bundled_only` panic: documented, with a local allow, and C.30/C.31 parse that text.
+- C.4 fixtures as inline strings: the existing `c4_manifest_rules` style.
+- `c31_settings_apart` early return without a home dir: CI runners have one.
+- No test at the `max_sustain` boundary: a nit.
+- BOM, CRLF, duplicate keys, overflow, migration termination: verified fine.
+- Task 7 / CI not done yet: expected before the PR.
+- The `version="=` dead check: folded into the C.4 patch.
+
 ## Dev Agent Record
 
 ### Agent Model Used
@@ -213,6 +266,10 @@ None. D1 (two pure crates in the core) follows the epic's own AC. D4 (location) 
 Claude Opus 5.5 (claude-opus-5-5)
 
 ### Debug Log References
+
+**Correction (review 2026-11-28).** `toml_writer` 1.2.0 and `indexmap` are lock entries only, not compiled crates. Cargo records the optional dependencies that `toml`'s weak `?/std` features name, but `cargo tree -i toml_writer` prints nothing, so they are not built. The "egui_kittest turns on display" explanation below is wrong.
+
+**TOML integers into `f64` (Dev Notes check).** serde's `f64` visitor accepts integers, so the cost weights `1`, `2`, `1`, `1` in the data file deserialise as `1.0`, `2.0`, `1.0`, `1.0`. `c30_bundled_values` pins them, and the data file did not change.
 
 **Dependencies (E4-A6, Task 1.1)**, re-checked with `cargo info` on 2026-11-28:
 - `toml` 1.2.3+spec-1.1.0: MIT OR Apache-2.0, MSRV 1.85. Used with `default-features = false` and features `std`, `parse`, `serde`. Its normal deps under ocb-core are `serde_core`, `serde_spanned` 1.1.3, `toml_datetime` 1.1.3, `toml_parser` 1.1.7 and `winnow` 1.0.5.
@@ -269,6 +326,42 @@ Claude Opus 5.5 (claude-opus-5-5)
 - deny ok.
 - Release smoke `bonooru --smoke-test`: `OCB_SMOKE ok … worker=1`, and the real log has `profile loaded name="OoT Switch 2" game_version=1.1.1 schema=1 source=bundled file=-` (no user dir on this Mac).
 
+**Review fixes (2026-11-28): red proofs re-run on the final tests.** Same method. Line numbers are those of the final files.
+
+| # | Mutation | Test | Red result |
+|---|---|---|---|
+| P1 | Any runtime crate allowed | C.4 `c4_manifest_rules` | "not flagged" at `purity.rs:472` |
+| P2 | Pin not checked to be exact | C.4 | "not flagged" |
+| P3 | `path` / `git` dropped from the forbidden keys | C.4 | "not flagged" |
+| P5 | `package` dropped from the forbidden keys | C.4 | "not flagged" at `:472` |
+| P6 | `=1` accepted as exact | C.4 | "not flagged" at `:473` |
+| P7 | A missing `version` accepted | C.4 | "not flagged" at `:472` |
+| V13 | Spaces around `name` / `game_version` accepted | C.30 `c30_validation_rules` | "expected Invalid, got Ok" at `profile.rs:45` |
+| V14 | Empty name accepted | C.30 | "expected Invalid, got Ok" at `:45` |
+| L1 | Shape errors lose their line | C.30 `c30_shape` | panics at `:248` (`line: Some(_)`) |
+| SH1 | A missing key defaulted (`#[serde(default)]` on `start_lead_ms`) | C.30 `c30_shape` | panics at `:246` |
+| SH2 | `ZL` accepted as a button (`alias`) | C.30 `c30_shape` | panics at `:246` |
+| SH3 | `left` accepted as a D-pad direction | C.30 `c30_shape` | panics at `:248` |
+| R6 | `refusal_message` ignores the source | C.30 `c30_resolve` | `left == right` failed at `:447` |
+| F2 | `parse` panics on U+FFFD (what random byte edits produce) | C.30 `c30_fuzz_edits` | panic found by proptest |
+| B1 | The embedded text gains a trailing newline | C.31 `c31_bundled_is_the_repo_file` | `left == right` failed at `profiles.rs:30` |
+| A6 | Every file is a candidate | C.31 | panics at `:153` |
+| A7 | `detail` not capped at 160 | C.31 `c31_log_lines` | panics at `:117` |
+| A8 | Control characters kept | C.31 `c31_candidates_and_hostile_files` | panics at `:201` (a line contains `\n`) |
+| A9 | FIFO opened without the type check | C.31 | **hangs** (killed after 120 s): the bug itself |
+| A10 | No size cap (both checks and `take` removed) | C.31 | `big.toml` read whole: "reason=schema …" instead of "larger than 1048576 bytes" at `:186` |
+| A11 | Dot-files read | C.31 | `!is_candidate("._mine.toml")` at `:153` |
+| A12 | Extension compared case-sensitively | C.31 | `is_candidate("MINE.TOML")` at `:151` |
+| A13 | An unreadable profiles dir is silent | C.31 | lines `["loaded …"]` only, at `:217` |
+| A14 | File names unquoted | C.31 | fails on the quoted `file="…"` lines |
+| G3 | `led_log` re-logs the profile | G.27 `g27_test_constructor_uses_the_bundled_default` | panics at `profile_app.rs:50` |
+| G4 | `profiles::load()` moved from `new` into `build` | G.27 `g27_new_loads_through_the_adapter` | "only App::new loads" at `:125` |
+| V1–V12, S1, S2, R1–R5, O1, F1, A1–A5, G1, G2, P4 | (above) | re-run | all still fail; new lines S1 `:301`, S2 `:323`, V11 `:351`, O1 `:536` |
+
+The A9 hang left one test process, which was killed by hand. The temp dirs `ocb-profiles-*` and the proptest regression file written for the F2 mutation were removed.
+
+Green runs after the review fixes (macOS): fmt ok, clippy `-D warnings` ok, `cargo test --workspace` twice 562 passed / 0 failed (+1 `c31_candidates_and_hostile_files`), deny ok.
+
 ### Completion Notes List
 
 - **`ocb_core::profile`** (`app/core/src/profile.rs`):
@@ -284,6 +377,21 @@ Claude Opus 5.5 (claude-opus-5-5)
   - `bundled_only` panics only if the bundled text is invalid, a build bug that C.30 and C.31 rule out. This is documented, with a local `allow(clippy::panic)`.
 - **App:** `App::new` calls `.profile(profiles::load())`. The test constructors keep the bundled default and write no line.
 - **Docs:** the score-format doc (Loading and validation, user copy locations, log lines), README, test plan (C.4, C.30, C.31, G.27) and the profile header comment.
+
+- **Review 2026-11-28, deviations from the story text, recorded for traceability:**
+  - `ProfileError` has four kinds (`Io` for a refused read), not three (D3).
+  - `Schema { found }` has no `supported` field; `SCHEMA` is the constant.
+  - `Invalid` carries `line`.
+  - There is no `ProfileEvent::Loaded`: the `loaded` line comes from `Resolved::source`.
+  - The upper bounds (600 frames, 600 000 ms) and the non-empty, no-surrounding-spaces rule for `name` / `game_version` are additions to AC 8.
+  - AC 5's "the event carries the message" became `Resolved::refusal_message()`, so the message is never false.
+  - AC 10's accessor is `App::mapping_profile()`.
+  - The log fields are quoted (`file="…"`, `game_version="…"`).
+  - AC 3 says six timing values; there are five.
+- **Deferred** (review, kept for later stories):
+  - cross-field invariants (offset signs, distinct stick bytes, fingering pitch = button + offsets, one chart fingering per pitch): Story 5.4 / Epic 9;
+  - an upper bound on the cost weights: Story 5.5;
+  - TOML reading for the settings file, which `c30_one_parser` allows only in `core/src/profile.rs`: Stories 5.12 / 5.13 decide where it lives.
 
 ### File List
 
@@ -310,3 +418,4 @@ Claude Opus 5.5 (claude-opus-5-5)
 
 - 2026-11-28: story created (ready-for-dev).
 - 2026-11-28: implemented (`ocb_core::profile`, `ocb_services::profiles`, App wiring, purity gate allow list, docs); 32 red proofs; status review.
+- 2026-11-28: code review (1 decision, 12 patches, 3 defers) handled: `refusal_message`, a strict C.4 pin check, hostile user files (FIFO, size, dir errors, dot-files, case), quoted log fields, whitespace in the identity, G.27 body check; red proofs re-run (58 in all).

@@ -21,11 +21,16 @@ use ocb_core::profile::{self, Source, UserFile};
 use ocb_services::log::{Logger, MemorySink};
 use ocb_services::profiles::{self, BUNDLED};
 
-/// The text after ` profile ` of each `profile` line.
+/// The text of each `profile` line: the log line is
+/// `<timestamp> +<ms> <kind> <text>`, the kind exactly `profile`.
 fn profile_lines(sink: &MemorySink) -> Vec<String> {
     sink.lines()
         .iter()
-        .filter_map(|l| l.split_once(" profile ").map(|(_, t)| t.to_owned()))
+        .filter_map(|l| {
+            let mut f = l.splitn(4, ' ');
+            let (_ts, _ms, kind, text) = (f.next()?, f.next()?, f.next()?, f.next()?);
+            (kind == "profile").then(|| text.to_owned())
+        })
         .collect()
 }
 
@@ -76,9 +81,9 @@ fn g27_profile_builder_logs_and_keeps_running() {
     assert_eq!(
         profile_lines(&sink),
         vec![
-            "refused file=mine.toml reason=schema detail=\"schema 7, this version reads 1\""
+            "refused file=\"mine.toml\" reason=schema detail=\"schema 7, this version reads 1\""
                 .to_owned(),
-            "loaded name=\"OoT Switch 2\" game_version=1.1.1 schema=1 source=bundled file=-"
+            "loaded name=\"OoT Switch 2\" game_version=\"1.1.1\" schema=1 source=bundled file=-"
                 .to_owned(),
         ]
     );
@@ -86,23 +91,51 @@ fn g27_profile_builder_logs_and_keeps_running() {
     assert_eq!(profile_lines(&sink).len(), 2);
 }
 
+/// The body of `fn <name>` in `code` (comments stripped), up to the next
+/// `fn ` at the same indent.
+fn fn_body<'a>(code: &'a str, header: &str) -> &'a str {
+    let at = code
+        .find(header)
+        .unwrap_or_else(|| panic!("{header} not found"));
+    let rest = &code[at + header.len()..];
+    let end = rest
+        .find("\n    pub fn ")
+        .or_else(|| rest.find("\n    fn "))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
 #[test]
 fn g27_new_loads_through_the_adapter() {
     let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs");
-    let code: String = std::fs::read_to_string(app)
-        .unwrap()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    assert_eq!(
-        code.matches("profiles::load()").count(),
-        1,
+    let raw = std::fs::read_to_string(app).unwrap();
+    // Comments out: a commented call does not count.
+    let code: String = raw
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let new = squash(fn_body(&code, "pub fn new("));
+    let build = squash(fn_body(&code, "fn build("));
+    assert!(
+        new.contains("profiles::load()"),
         "App::new must call profiles::load()"
     );
     assert_eq!(
+        squash(&code).matches("profiles::load()").count(),
+        1,
+        "only App::new loads"
+    );
+    assert!(
+        build.contains("profiles::bundled_only()"),
+        "build must use the bundled default"
+    );
+    assert!(!build.contains("profiles::load()"));
+    assert_eq!(
         profiles::log_lines(&profiles::bundled_only()),
         vec![
-            "loaded name=\"OoT Switch 2\" game_version=1.1.1 schema=1 source=bundled file=-"
+            "loaded name=\"OoT Switch 2\" game_version=\"1.1.1\" schema=1 source=bundled file=-"
                 .to_owned()
         ]
     );

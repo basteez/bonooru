@@ -187,6 +187,73 @@ fn header(line: &str) -> Option<String> {
     )
 }
 
+/// Keys that replace the registry pin or rename the crate: never allowed
+/// on a runtime dependency.
+const FORBIDDEN_DEP_KEYS: &[&str] = &[
+    "package",
+    "path",
+    "git",
+    "registry",
+    "registry-index",
+    "workspace",
+    "branch",
+    "tag",
+    "rev",
+];
+
+/// `"=X.Y.Z"` (an optional `-pre` / `+build` suffix allowed): Cargo's only
+/// exact requirement. `"=1"` means `>=1, <2`, so it is not exact.
+fn exact_pin(v: &str) -> bool {
+    let Some(inner) = v.strip_prefix("\"=").and_then(|v| v.strip_suffix('"')) else {
+        return false;
+    };
+    let core = inner.split(['-', '+']).next().unwrap_or("");
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The pairs of a dependency value: a string is `version`; an inline table
+/// `{ k = v, … }` is split at top-level commas (arrays and strings kept).
+fn dep_pairs(value: &str) -> Vec<(String, String)> {
+    let v = value.trim();
+    if v.starts_with('"') {
+        return vec![("version".to_owned(), v.to_owned())];
+    }
+    let Some(inner) = v.strip_prefix('{').and_then(|v| v.strip_suffix('}')) else {
+        return vec![("?".to_owned(), v.to_owned())];
+    };
+    let mut parts = Vec::new();
+    let (mut depth, mut quoted, mut cur) = (0i32, false, String::new());
+    for c in inner.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' | '{' if !quoted => depth += 1,
+            ']' | '}' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                parts.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    parts.push(cur);
+    parts
+        .iter()
+        .filter_map(|p| p.split_once('='))
+        .map(|(k, v)| {
+            let k: String = k
+                .chars()
+                .filter(|c| !c.is_whitespace() && *c != '"')
+                .collect();
+            (k, v.trim().to_owned())
+        })
+        .collect()
+}
+
 fn is_dep_table(name: &str) -> bool {
     name.split('.').any(|seg| seg.ends_with("dependencies"))
 }
@@ -197,6 +264,9 @@ fn is_dep_table(name: &str) -> bool {
 fn manifest_problems(toml: &str) -> Vec<String> {
     let mut problems = Vec::new();
     let mut section = String::new();
+    // Runtime deps: crate → (first line, `version` values, forbidden keys).
+    let mut runtime_deps: std::collections::BTreeMap<String, (usize, Vec<String>, Vec<String>)> =
+        std::collections::BTreeMap::new();
     for (i, raw) in toml.lines().enumerate() {
         if let Some(h) = header(raw) {
             if h.starts_with("target.") && is_dep_table(&h) {
@@ -220,30 +290,28 @@ fn manifest_problems(toml: &str) -> Vec<String> {
             || section.starts_with("dependencies.")
             || (section.is_empty() && key.starts_with("dependencies."));
         if runtime {
-            // The crate: the table's (`[dependencies.toml]`), the dotted
-            // key's (`dependencies.toml = …`) or the key (`toml = …`).
-            let (krate, pin_value) = if let Some(c) = section.strip_prefix("dependencies.") {
-                // `path` / `git` replace the registry pin: not allowed.
-                let source = matches!(key.as_str(), "path" | "git");
-                (c.to_owned(), (key == "version" || source).then_some(line))
-            } else if let Some(c) = key.strip_prefix("dependencies.") {
-                (c.to_owned(), Some(line))
+            // The crate and its key/value pairs: `[dependencies.toml]` +
+            // `k = v`, `dependencies.toml.k = v`, `dependencies.toml = v`
+            // or `toml = v` (v an inline string or table).
+            let value = line.split_once('=').map_or("", |(_, v)| v.trim());
+            let (krate, pairs) = if let Some(c) = section.strip_prefix("dependencies.") {
+                (c.to_owned(), vec![(key.clone(), value.to_owned())])
             } else {
-                (key.clone(), Some(line))
+                let rest = key.strip_prefix("dependencies.").unwrap_or(&key);
+                match rest.split_once('.') {
+                    Some((c, sub)) => (c.to_owned(), vec![(sub.to_owned(), value.to_owned())]),
+                    None => (rest.to_owned(), dep_pairs(value)),
+                }
             };
-            let allowed = ALLOWED_RUNTIME.contains(&krate.as_str());
-            // An exact pin: the value (inline string or `version = …`)
-            // starts with `"=`.
-            let pinned = |v: &str| {
-                let v: String = v.chars().filter(|c| !c.is_whitespace()).collect();
-                v.contains("=\"=") || v.contains("version=\"=")
-            };
-            let pin_ok = match pin_value {
-                Some(v) => pinned(v),
-                None => true,
-            };
-            if !allowed || !pin_ok {
-                problems.push(format!("line {}: runtime dependency `{line}`", i + 1));
+            let e = runtime_deps
+                .entry(krate)
+                .or_insert_with(|| (i + 1, Vec::new(), Vec::new()));
+            for (k, v) in pairs {
+                if k == "version" {
+                    e.1.push(v);
+                } else if FORBIDDEN_DEP_KEYS.contains(&k.as_str()) {
+                    e.2.push(k);
+                }
             }
         }
         let in_dep_table = is_dep_table(&section) || key.contains("dependencies.");
@@ -257,6 +325,17 @@ fn manifest_problems(toml: &str) -> Vec<String> {
             || (section.contains("dependencies.") && BANNED_CRATES.contains(&table_crate))
         {
             problems.push(format!("line {}: banned crate in `{line}`", i + 1));
+        }
+    }
+    for (krate, (line, versions, bad)) in runtime_deps {
+        let ok = ALLOWED_RUNTIME.contains(&krate.as_str())
+            && bad.is_empty()
+            && versions.len() == 1
+            && versions.first().is_some_and(|v| exact_pin(v));
+        if !ok {
+            problems.push(format!(
+                "line {line}: runtime dependency `{krate}` (versions {versions:?}, keys {bad:?})"
+            ));
         }
     }
     problems
@@ -347,6 +426,8 @@ fn c4_manifest_rules() {
         "[dependencies]\ntoml = \"=1.2.3\"\n",
         "[dependencies.serde]\nversion = \"=1.0.229\"\nfeatures = [\"derive\"]\n",
         "dependencies.toml = \"=1.2.3\"\n[package]\n",
+        "dependencies.toml.version = \"=1.2.3\"\n",
+        "[dependencies]\ntoml = \"=1.2.3+spec-1.1.0\"\n",
     ] {
         assert_eq!(
             manifest_problems(good),
@@ -375,6 +456,19 @@ fn c4_manifest_rules() {
         "[target.'cfg(unix)'.dependencies]\ntoml = \"=1.2.3\"\n",
         "[dependencies.toml]\npath = \"../toml\"\n",
         "[dependencies]\ntoml = { path = \"../toml\" }\n",
+        // Review 2026-11-28: renames, other sources, no or loose pins.
+        "[dependencies]\ntoml = { package = \"regex\", version = \"=1.11.0\" }\n",
+        "[dependencies]\ntoml = { version = \"=1.2.3\", path = \"../toml\" }\n",
+        "[dependencies]\ntoml = { version = \"=1.2.3\", git = \"https://x\" }\n",
+        "[dependencies]\ntoml = { version = \"=1.2.3\", registry = \"other\" }\n",
+        "[dependencies.toml]\nversion = \"=1.2.3\"\npackage = \"regex\"\n",
+        "[dependencies.toml]\nversion = \"=1.2.3\"\nregistry = \"other\"\n",
+        "[dependencies.toml]\nworkspace = true\n",
+        "[dependencies.toml]\nfeatures = [\"parse\"]\n",
+        "[dependencies]\ntoml = \"=1\"\n",
+        "[dependencies]\ntoml = \"=1.2\"\n",
+        "[dependencies]\ntoml = { version = \"=1.2.3\", tag = \"v1\" }\n",
+        "dependencies.toml.package = \"regex\"\ndependencies.toml.version = \"=1.2.3\"\n",
     ] {
         assert!(!manifest_problems(bad).is_empty(), "not flagged:\n{bad}");
     }

@@ -45,7 +45,8 @@ pub enum ProfileError {
     /// No integer `schema`, or one this version cannot migrate.
     Schema { found: Option<i64> },
     /// A key missing, unknown or of the wrong type (`field` empty, the
-    /// parser's message in `rule`), or a value breaking a rule.
+    /// parser's message in `rule`; `line` set for a file at the current
+    /// schema, `None` after a migration), or a value breaking a rule.
     Invalid {
         field: String,
         value: String,
@@ -491,6 +492,13 @@ fn text_field(field: &str, v: String) -> Result<String, ProfileError> {
             format!("{v:?}"),
             "must not be empty",
         ))
+    } else if v.trim() != v {
+        // Strict (D5): `"1.1.1 "` would silently fail the identity match.
+        Err(ProfileError::invalid(
+            field,
+            format!("{v:?}"),
+            "must not start or end with spaces",
+        ))
     } else {
         Ok(v)
     }
@@ -652,7 +660,8 @@ impl IgnoreReason {
 /// What happened to a user file.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProfileEvent {
-    /// Might be the user copy but cannot be used: [`USER_REFUSED_MESSAGE`].
+    /// Might be the user copy but cannot be used (see
+    /// [`Resolved::refusal_message`]).
     Refused { file: String, error: ProfileError },
     /// Valid, not used.
     Ignored { file: String, reason: IgnoreReason },
@@ -665,6 +674,21 @@ pub struct Resolved {
     pub profile: Profile,
     pub source: Source,
     pub events: Vec<ProfileEvent>,
+}
+
+impl Resolved {
+    /// The message for Settings (Story 5.13): [`USER_REFUSED_MESSAGE`] only
+    /// when a user file was refused **and** the bundled default is in use.
+    /// When another file is the user copy in use, a broken neighbour does
+    /// not make "Defaults are in use" true (review 2026-11-28).
+    #[must_use]
+    pub fn refusal_message(&self) -> Option<&'static str> {
+        let refused = self
+            .events
+            .iter()
+            .any(|e| matches!(e, ProfileEvent::Refused { .. }));
+        (refused && self.source == Source::Bundled).then_some(USER_REFUSED_MESSAGE)
+    }
 }
 
 /// Picks the profile: the first valid user copy (by file name) with the

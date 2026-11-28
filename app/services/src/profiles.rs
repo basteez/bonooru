@@ -11,6 +11,7 @@
 //! contents come with Stories 5.12 and 5.13).
 
 use std::fs;
+use std::io::{ErrorKind, Read as _};
 use std::path::{Path, PathBuf};
 
 use ocb_core::profile::{self, ProfileEvent, Resolved, Source, UserFile};
@@ -68,23 +69,78 @@ fn unreachable_bundled(e: &profile::ProfileError) -> ! {
     panic!("the bundled mapping profile is invalid: {e}")
 }
 
-/// Loads the profile with the user copies in `dir` (`*.toml`, by name). A
-/// missing dir means no user copy; an entry that cannot be read is a
-/// refused candidate.
+/// Largest user profile read (the bundled one is about 10 KiB): a bigger
+/// file is refused, never read whole (review 2026-11-28).
+pub const MAX_PROFILE_BYTES: u64 = 1024 * 1024;
+
+/// Whether a directory entry is a user profile candidate: a `.toml`
+/// extension in any case, and not a dot-file (`._x.toml` from macOS,
+/// `.#x.toml` editor locks).
+#[must_use]
+pub fn is_candidate(name: &str) -> bool {
+    !name.starts_with('.')
+        && Path::new(name)
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("toml"))
+}
+
+/// Reads one candidate: a regular file (symlinks followed) of at most
+/// [`MAX_PROFILE_BYTES`], else an error message. Never blocks on a FIFO
+/// or a device: the type is checked before the file is opened.
+fn read_candidate(path: &Path) -> Result<String, String> {
+    let meta = fs::metadata(path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a regular file".to_owned());
+    }
+    if meta.len() > MAX_PROFILE_BYTES {
+        return Err(format!("larger than {MAX_PROFILE_BYTES} bytes"));
+    }
+    let mut text = String::new();
+    fs::File::open(path)
+        .and_then(|f| f.take(MAX_PROFILE_BYTES + 1).read_to_string(&mut text))
+        .map_err(|e| e.to_string())?;
+    if text.len() as u64 > MAX_PROFILE_BYTES {
+        return Err(format!("larger than {MAX_PROFILE_BYTES} bytes"));
+    }
+    Ok(text)
+}
+
+/// Loads the profile with the user copies in `dir` (candidates by
+/// [`is_candidate`], by name). Only a missing dir means no user copy; a
+/// dir or an entry that cannot be read is a refused candidate (`read`),
+/// so a permission problem is visible in the log.
 #[must_use]
 pub fn load_from(dir: &Path) -> Resolved {
     let mut user = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for e in entries.flatten() {
-            let path = e.path();
-            if path.extension().is_none_or(|x| x != "toml") {
-                continue;
+    let dir_name = dir.file_name().map_or_else(
+        || "profiles".to_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    match fs::read_dir(dir) {
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => user.push(UserFile {
+            name: dir_name,
+            text: Err(e.to_string()),
+        }),
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        user.push(UserFile {
+                            name: dir_name.clone(),
+                            text: Err(e.to_string()),
+                        });
+                        continue;
+                    }
+                };
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !is_candidate(&name) {
+                    continue;
+                }
+                let text = read_candidate(&entry.path());
+                user.push(UserFile { name, text });
             }
-            let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
-                continue;
-            };
-            let text = fs::read_to_string(&path).map_err(|err| err.to_string());
-            user.push(UserFile { name, text });
         }
     }
     resolve(&user)
@@ -100,15 +156,17 @@ pub fn load() -> Resolved {
     }
 }
 
-/// A one-line `detail`: newlines and tabs as spaces, quotes and
-/// backslashes escaped, at most 160 characters.
+/// A one-line, quotable text: every control character (newlines, tabs,
+/// ESC, NUL …) and the Unicode line and paragraph separators as spaces,
+/// quotes and backslashes escaped, at most 160 characters. Used for
+/// `detail`, file names and the profile name.
 #[must_use]
 pub fn detail(text: &str) -> String {
     let mut out = String::new();
     let mut n = 0;
     for c in text.chars() {
         let piece = match c {
-            '\n' | '\r' | '\t' => " ".to_owned(),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => " ".to_owned(),
             '"' => "\\\"".to_owned(),
             '\\' => "\\\\".to_owned(),
             c => c.to_string(),
@@ -124,7 +182,8 @@ pub fn detail(text: &str) -> String {
 }
 
 /// The `profile` log lines (without the kind tag): the refused and ignored
-/// files in name order, then one `loaded` line. File names only.
+/// files in name order, then one `loaded` line. File names only, quoted
+/// and cleaned like `detail` (a name cannot forge a line).
 #[must_use]
 pub fn log_lines(r: &Resolved) -> Vec<String> {
     let mut lines: Vec<String> = r
@@ -132,24 +191,29 @@ pub fn log_lines(r: &Resolved) -> Vec<String> {
         .iter()
         .map(|e| match e {
             ProfileEvent::Refused { file, error } => format!(
-                "refused file={file} reason={} detail=\"{}\"",
+                "refused file=\"{}\" reason={} detail=\"{}\"",
+                detail(file),
                 error.reason(),
                 detail(&error.to_string())
             ),
             ProfileEvent::Ignored { file, reason } => {
-                format!("ignored file={file} reason={}", reason.as_str())
+                format!(
+                    "ignored file=\"{}\" reason={}",
+                    detail(file),
+                    reason.as_str()
+                )
             }
         })
         .collect();
     let (source, file) = match &r.source {
-        Source::Bundled => ("bundled", "-"),
-        Source::User { file } => ("user", file.as_str()),
+        Source::Bundled => ("bundled", "-".to_owned()),
+        Source::User { file } => ("user", format!("\"{}\"", detail(file))),
     };
     let p = &r.profile;
     lines.push(format!(
-        "loaded name=\"{}\" game_version={} schema={} source={source} file={file}",
+        "loaded name=\"{}\" game_version=\"{}\" schema={} source={source} file={file}",
         detail(&p.name),
-        p.game_version,
+        detail(&p.game_version),
         p.schema
     ));
     lines
