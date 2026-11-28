@@ -261,7 +261,7 @@ pub fn inline_hint(ui: &mut Ui, rect: Rect, text: &str) -> Response {
 /// 75 % opacity, no glow; hover and pressed tint the fill and border
 /// (`components.state-layer`, before the 75 %). Always enabled; focusable, clicked by a click,
 /// Enter with focus or an AccessKit click (Space never reaches it: the
-/// frame start consumes it, `ui::keys`). The focus ring is painted at full
+/// frame start consumes it, `ui::keyboard`). The focus ring is painted at full
 /// opacity. One `Role::Button` node "Stop" with the description "Esc stops
 /// at any time.". Epic 6 adds the live look.
 pub fn stop_button(ui: &mut Ui, rect: Rect) -> Response {

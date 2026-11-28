@@ -30,7 +30,6 @@ use ocb_app::app::{App, Mode};
 use ocb_app::leds::LedState;
 use ocb_app::stop::{self, StopSource};
 use ocb_app::ui::bottom_bar;
-use ocb_app::ui::keys::{self, FrameKeys};
 use ocb_app::ui::modal::ModalOutcome;
 use ocb_app::ui::status_strip::led_id;
 use ocb_app::ui::{firmware, gallery};
@@ -374,103 +373,6 @@ fn g20_esc_in_the_firmware_arrival_frame() {
             format!("skipped reason=incompatible port={CU}"),
         ]
     );
-}
-
-/// The harness of `g20_frame_start_keys`: `frame_start`, then a text edit.
-#[derive(Default)]
-struct KeysState {
-    keys: FrameKeys,
-    esc_left: bool,
-    space_left: bool,
-    cmd_space_left: bool,
-    text: String,
-    focus: bool,
-}
-
-/// AC 4, 6: `frame_start` reads Esc without consuming it (also when a text
-/// field had focus: egui's `Memory::begin_pass` clears that focus on Esc
-/// before the read, and Esc is read anyway), consumes Space (Cmd/Ctrl+Space
-/// only while a widget has focus), and leaves Space to a focused text edit.
-#[test]
-fn g20_frame_start_keys() {
-    let edit_id = egui::Id::unique("g20-edit");
-    let mut h = Harness::builder()
-        .with_size(vec2(400.0, 200.0))
-        .build_ui_state(
-            move |ui, s: &mut KeysState| {
-                // First pass only, as the app does (a discarded pass reruns
-                // the frame with no input events).
-                let first = ui.ctx().current_pass_index() == 0;
-                if first {
-                    s.keys = keys::frame_start(ui.ctx());
-                }
-                let left = |k: Key, cmd: bool| {
-                    ui.input(|i| {
-                        i.events.iter().any(|e| {
-                            matches!(e, Event::Key { key, pressed: true, modifiers, .. }
-                                if *key == k && modifiers.command == cmd)
-                        })
-                    })
-                };
-                if first {
-                    s.esc_left = left(Key::Escape, false);
-                    s.space_left = left(Key::Space, false);
-                    s.cmd_space_left = left(Key::Space, true);
-                }
-                let label = ui.label("Edit");
-                let resp = ui
-                    .add(egui::TextEdit::singleline(&mut s.text).id(edit_id))
-                    .labelled_by(label.id);
-                if s.focus {
-                    resp.request_focus();
-                }
-            },
-            KeysState::default(),
-        );
-    h.run();
-    // No text edit focused: Esc read, kept; Space consumed; Cmd+Space kept.
-    h.input_mut().events.push(esc(false));
-    h.input_mut()
-        .events
-        .push(key_event(Key::Space, true, Modifiers::NONE));
-    h.input_mut()
-        .events
-        .push(key_event(Key::Space, true, Modifiers::COMMAND));
-    release(&mut h, &[Key::Escape, Key::Space]);
-    h.step();
-    assert!(h.state().keys.stop);
-    assert!(h.state().esc_left, "Esc consumed");
-    assert!(!h.state().space_left, "Space not consumed");
-    assert!(h.state().cmd_space_left, "Cmd+Space consumed");
-    // A focused text edit: Esc still read and kept, Space reaches it.
-    h.state_mut().focus = true;
-    h.run();
-    assert!(h.ctx.text_edit_focused());
-    h.state_mut().focus = false;
-    h.input_mut()
-        .events
-        .push(key_event(Key::Space, true, Modifiers::NONE));
-    h.input_mut().events.push(Event::Text(" ".to_owned()));
-    release(&mut h, &[Key::Space]);
-    h.step();
-    assert!(!h.state().keys.stop);
-    assert!(h.state().space_left, "Space taken from the text edit");
-    assert_eq!(h.state().text, " ", "the text edit got its space");
-    assert!(
-        h.ctx.text_edit_focused(),
-        "the text edit has focus before the Esc"
-    );
-    h.input_mut().events.push(esc(false));
-    h.step();
-    assert!(h.state().keys.stop, "Esc with a focused text edit");
-    assert!(h.state().esc_left);
-    // Esc still held: the next press is a repeat (egui marks a press of a
-    // key that is down as a repeat), no STOP.
-    h.input_mut().events.push(esc(true));
-    h.step();
-    assert!(!h.state().keys.stop, "a repeat is not a fresh press");
-    release(&mut h, &[Key::Escape]);
-    h.step();
 }
 
 /// Key releases in the next frame's input.

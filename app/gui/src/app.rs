@@ -19,9 +19,8 @@ use crate::leds::{self, LedTracker, Leds};
 use crate::smoke::{self, Report, Smoke};
 use crate::stop::{self, CommandResult, StopSource};
 use crate::ui::gamepad::{PadInput, Variant, panel_id, view_of};
-use crate::ui::keys::{self, FrameKeys};
+use crate::ui::keyboard::{self, FrameKeys};
 use crate::ui::modal::{ModalOutcome, Modals};
-use crate::ui::pad_keys;
 use crate::ui::{firmware, gallery, main_screen, theme};
 
 /// Which screen the window shows.
@@ -561,7 +560,7 @@ impl App {
         let focused_now = ctx.memory(|m| m.has_focus(panel_id()));
         if focused_now {
             let apply = self.panel_focused && !ignore_new;
-            for e in pad_keys::take(ctx) {
+            for e in keyboard::pad_keys(ctx) {
                 if !e.pressed {
                     self.pad.key_up(e.key, now);
                 } else if !apply || e.repeat || e.command {
@@ -576,17 +575,7 @@ impl App {
         // frame (which resets the filter); egui accepts it from the panel's
         // second frame of focus.
         if focused_now {
-            ctx.memory_mut(|m| {
-                m.set_focus_lock_filter(
-                    panel_id(),
-                    egui::EventFilter {
-                        tab: true,
-                        horizontal_arrows: true,
-                        vertical_arrows: true,
-                        escape: false,
-                    },
-                );
-            });
+            keyboard::lock_focus(ctx, panel_id());
         }
         // The compact grid has no sticks: a drag ends at the switch (AC 9).
         if input.variant == Variant::Compact && self.pad.dragging().is_some() {
@@ -606,55 +595,13 @@ impl App {
     fn panel_focus(&mut self, ctx: &Context, input: &PadInput, stopped: bool, ignore_new: bool) {
         let pid = panel_id();
         let was = self.panel_focused;
-        let (esc_plain, lock_event, tab_event, any_press, accesskit_focus) = ctx.input(|i| {
-            let mut esc = false;
-            let mut lock = false;
-            let mut tab = false;
-            let mut ak = false;
-            for e in &i.events {
-                match e {
-                    // Only what egui's own focus navigation acts on (review
-                    // 2026-11-28): unmodified arrows and Tab, Shift-only
-                    // Shift+Tab. Key repeats count too: `Memory::begin_pass`
-                    // (egui 0.37 `memory/mod.rs` ~l.583) moves the focus on a
-                    // repeated press as on a fresh one.
-                    egui::Event::Key {
-                        key,
-                        pressed: true,
-                        modifiers,
-                        ..
-                    } => match key {
-                        egui::Key::Escape if !modifiers.any() => esc = true,
-                        egui::Key::Tab if !modifiers.any() || modifiers.shift_only() => {
-                            tab = true;
-                            lock = true;
-                        }
-                        egui::Key::ArrowUp
-                        | egui::Key::ArrowDown
-                        | egui::Key::ArrowLeft
-                        | egui::Key::ArrowRight
-                            if !modifiers.any() =>
-                        {
-                            lock = true;
-                        }
-                        _ => {}
-                    },
-                    egui::Event::AccessKitActionRequest(r)
-                        if r.action == egui::accesskit::Action::Focus =>
-                    {
-                        ak = true;
-                    }
-                    _ => {}
-                }
-            }
-            (
-                esc,
-                lock,
-                tab,
-                i.pointer.any_pressed() || i.pointer.any_click(),
-                ak,
-            )
-        });
+        let keyboard::FocusKeys {
+            esc_plain,
+            lock: lock_event,
+            tab: tab_event,
+            accesskit_focus,
+        } = keyboard::focus_scan(ctx);
+        let any_press = ctx.input(|i| i.pointer.any_pressed() || i.pointer.any_click());
         let dialog = self.modals.is_open();
         // A press of any button that reached the panel gives it focus (only
         // the primary button presses a control); the release of such a
@@ -913,18 +860,7 @@ impl eframe::App for App {
                         .events
                         .iter()
                         .any(|e| matches!(e, egui::Event::WindowFocused(false))),
-                    i.raw
-                        .events
-                        .iter()
-                        .filter_map(|e| match e {
-                            egui::Event::Key {
-                                pressed: false,
-                                physical_key: Some(k),
-                                ..
-                            } => pad_keys::pad_key(*k),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>(),
+                    keyboard::key_ups(&i.raw.events),
                 )
             });
             if let Some(d) = self.pad_background_keys(focused, visible, blur_event, &key_ups) {
@@ -942,8 +878,10 @@ impl eframe::App for App {
         // (contract on `ui::modal::Modals`). Space is consumed here so it
         // never clicks a focused button. Input reaches the first pass only.
         let first_pass = ui.ctx().current_pass_index() == 0;
+        // `listen` (Story 5.11) and `shortcuts` (5.7, Epic 6, Epic 9) are
+        // routed here and acted on by the stories that add those features.
         let keys = if first_pass {
-            keys::frame_start(ui.ctx())
+            keyboard::frame_start(ui.ctx(), self.modals.is_open())
         } else {
             FrameKeys::default()
         };

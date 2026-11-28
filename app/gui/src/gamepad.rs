@@ -233,7 +233,7 @@ impl Control {
 }
 
 /// A keyboard key that drives the pad while the panel has focus (Story 4.9
-/// AC 4, UX-DR37), matched by its physical position (`ui::pad_keys` maps
+/// AC 4, UX-DR37), matched by its physical position (`ui::keyboard` maps
 /// egui's `physical_key` to it). Home, Capture and the sticks have none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PadKey {

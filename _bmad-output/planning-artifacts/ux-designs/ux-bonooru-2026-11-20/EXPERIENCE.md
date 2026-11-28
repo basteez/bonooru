@@ -269,6 +269,8 @@ Behavioural rules. Visual specs live in `DESIGN.md` › Components.
 | Cmd/Ctrl+S | Save (save-as for new or converted scores) |
 | Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z | Undo / redo (app-level history); same as the ↶ ↷ buttons in the note-card header |
 
+Since Story 5.0 every keyboard rule (these shortcuts, the context shortcuts and the gamepad keys below) lives in one module, `ui::keyboard`; Listen on Space and the global shortcuts are recognised there and acted on by the stories that add those features (Listen: Story 5.11; Open: Story 5.7; Play: Epic 6; Save, Undo/Redo: Epic 9). A dialog open blocks Listen; Space is still consumed.
+
 **Context shortcuts:**
 
 | Key | When | Action |

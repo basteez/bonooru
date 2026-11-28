@@ -75,7 +75,8 @@ development_status:
   4-9-gamepad-keyboard-focus-and-compact-layout: done
   epic-4-retrospective: done
 
-  epic-5: backlog
+  epic-5: in-progress
+  5-0-keyboard-routing-module: review
   5-1-mapping-profile-module: backlog
   5-2-text-score-parser: backlog
   5-3-midi-import-with-track-list: backlog
@@ -215,7 +216,7 @@ action_items:
   - id: E4-A2
     source: epic-4-retrospective
     action: One module owns keyboard routing (Space, Enter, Esc, the gamepad keys, Cmd/Ctrl shortcuts, text fields) before Story 5.10; the G.20 and Story 4.9 rules move there
-    status: open
+    status: done # Story 5.0: ui::keyboard, G.26
   - id: E4-A3
     source: epic-4-retrospective
     action: A red proof for every new or changed test or check, not only bench tools, listed in the story's Debug Log
